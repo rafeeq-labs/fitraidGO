@@ -14,6 +14,11 @@ export interface HudOptions {
   container?: HTMLElement;
   /** Shown top-left under the safe-area inset. */
   placeName?: string;
+  /**
+   * Extra pixels to push the whole thing down by. The debug stats overlay lives in the same corner,
+   * so when it is on the HUD steps below it rather than printing through it.
+   */
+  topOffset?: number;
 }
 
 export interface HudState {
@@ -24,6 +29,11 @@ export interface HudState {
   /** Nearest named landmark, if any is close enough to matter. */
   nearby?: string | null;
   biomeLabel?: string;
+  /**
+   * Which source is moving the avatar. A fitness app that quietly falls back to a simulated walk
+   * without saying so is lying about the distance it just credited, so this is not optional polish.
+   */
+  source?: 'gps' | 'sim' | null;
 }
 
 const formatDistance = (metres: number): string =>
@@ -32,8 +42,12 @@ const formatDistance = (metres: number): string =>
 export class Hud {
   private readonly root: HTMLElement;
   private readonly place: HTMLElement;
+  private readonly source: HTMLElement;
   private readonly route: HTMLElement;
   private readonly nearby: HTMLElement;
+  private lastRoute = '';
+  private lastNearby = '';
+  private lastSource = '';
 
   constructor(options: HudOptions = {}) {
     const host = options.container ?? document.getElementById('hud') ?? document.body;
@@ -49,46 +63,73 @@ export class Hud {
           text-shadow: 0 1px 3px rgba(10, 16, 30, 0.85);
         }
         .raidfit-hud .place {
-          position: absolute; top: max(14px, env(safe-area-inset-top)); left: 16px;
+          position: absolute; left: 16px; max-width: 58%;
+          top: calc(max(14px, env(safe-area-inset-top)) + var(--hud-top, 0px));
           font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.82;
         }
+        .raidfit-hud .source { opacity: 0.62; font-size: 11px; }
+        .raidfit-hud .source:empty { display: none; }
+        .raidfit-hud .source::before { content: '\\00b7'; margin: 0 6px; }
         .raidfit-hud .route {
-          position: absolute; top: max(34px, calc(env(safe-area-inset-top) + 20px)); left: 16px;
+          position: absolute; left: 16px;
+          top: calc(max(34px, calc(env(safe-area-inset-top) + 20px)) + var(--hud-top, 0px));
           font-size: 26px; font-weight: 600; letter-spacing: 0.01em;
         }
         .raidfit-hud .route small { font-size: 13px; font-weight: 400; opacity: 0.72; }
         .raidfit-hud .nearby {
-          position: absolute; top: max(14px, env(safe-area-inset-top)); right: 16px;
-          font-size: 13px; text-align: right; opacity: 0.86;
-          border-right: 2px solid #4db8ff; padding-right: 8px;
+          position: absolute; right: 16px; max-width: 38%;
+          top: calc(max(14px, env(safe-area-inset-top)) + var(--hud-top, 0px));
+          font-size: 13px; line-height: 1.35; text-align: right; opacity: 0.86;
+          white-space: pre-line; border-right: 2px solid #4db8ff; padding-right: 8px;
         }
         .raidfit-hud .nearby:empty { display: none; }
       </style>
-      <div class="place"></div>
+      <div class="place"><span class="place-name"></span><span class="source"></span></div>
       <div class="route"></div>
       <div class="nearby"></div>
     `;
     host.appendChild(this.root);
 
-    this.place = this.root.querySelector('.place')!;
+    this.place = this.root.querySelector('.place-name')!;
+    this.source = this.root.querySelector('.source')!;
     this.route = this.root.querySelector('.route')!;
     this.nearby = this.root.querySelector('.nearby')!;
+    if (options.topOffset) this.root.style.setProperty('--hud-top', `${options.topOffset}px`);
     if (options.placeName) this.place.textContent = options.placeName;
   }
 
+  /**
+   * Called every frame, so every write is guarded by a comparison. Assigning the same string back
+   * into `innerHTML` still reparses it and still invalidates layout, which for a fixed overlay above
+   * a WebGL canvas is pure cost at sixty hertz.
+   */
   update(state: HudState): void {
-    if (state.remaining === null) {
-      this.route.innerHTML = `${formatDistance(state.walked)} <small>walked</small>`;
-    } else {
-      this.route.innerHTML =
-        `${formatDistance(state.remaining)} <small>to go &middot; ${formatDistance(state.walked)} walked</small>`;
+    const route =
+      state.remaining === null
+        ? `${formatDistance(state.walked)} <small>walked</small>`
+        : `${formatDistance(state.remaining)} <small>to go &middot; ${formatDistance(state.walked)} walked</small>`;
+    if (route !== this.lastRoute) {
+      this.route.innerHTML = route;
+      this.lastRoute = route;
     }
-    this.nearby.textContent = state.nearby ?? '';
-    if (state.biomeLabel) this.place.textContent = state.biomeLabel;
+
+    const nearby = state.nearby ?? '';
+    if (nearby !== this.lastNearby) {
+      this.nearby.textContent = nearby;
+      this.lastNearby = nearby;
+    }
+
+    const source = state.source === 'gps' ? 'GPS' : state.source === 'sim' ? 'SIMULATED' : '';
+    if (source !== this.lastSource) {
+      this.source.textContent = source;
+      this.lastSource = source;
+    }
+
+    if (state.biomeLabel) this.setPlace(state.biomeLabel);
   }
 
   setPlace(text: string): void {
-    this.place.textContent = text;
+    if (this.place.textContent !== text) this.place.textContent = text;
   }
 
   setVisible(visible: boolean): void {

@@ -42,6 +42,42 @@ export interface Scenario {
   to: [number, number];
 }
 
+/**
+ * The seam a real position source uses to take the wheel.
+ *
+ * Simulation is the baseline: the walker always has a route and always moves, so the app works with
+ * no receiver at all. A driver rides on top of that and overrides the pose on the frames where it
+ * has a fix it trusts, handing control straight back on any frame it returns false.
+ */
+export interface WalkerDriver {
+  /** Called once, from the constructor of the walker this driver claimed. */
+  attach(walker: SimWalker): void;
+  /**
+   * Called at the top of that walker's `update`. Write into `walker.pose` and return true to take
+   * the frame; return false to let the simulation advance as usual.
+   */
+  drive(dt: number, walker: SimWalker): boolean;
+}
+
+let pendingDriver: WalkerDriver | null = null;
+
+/**
+ * Hands the NEXT SimWalker constructed to `driver`, then drops the claim.
+ *
+ * One-shot on purpose. `FakePlayers` builds a walker per companion, and a driver registered against
+ * the class rather than one instance would teleport every bystander onto the local player's GPS fix.
+ * The claim is therefore consumed by the first construction after it is made, which is the local
+ * player's walker — the world assembly builds it before it builds anyone else's.
+ */
+export function claimNextWalker(driver: WalkerDriver): void {
+  pendingDriver = driver;
+}
+
+/** Drops an unconsumed claim. */
+export function releaseWalkerClaim(): void {
+  pendingDriver = null;
+}
+
 export class SimWalker {
   readonly pose: WalkPose = { x: 0, z: 0, yaw: 0, station: 0, speed: 0 };
   private path: Polyline = [];
@@ -51,14 +87,26 @@ export class SimWalker {
   private readonly loop: boolean;
   private smoothedYaw = 0;
   private started = false;
+  private driver: WalkerDriver | null = null;
 
   constructor(
-    private readonly tile: WorldTile,
+    readonly tile: WorldTile,
     options: SimWalkerOptions = {}
   ) {
     this.speed = options.speed ?? 1.5;
     this.turnTau = options.turnTau ?? 0.45;
     this.loop = options.loop ?? true;
+
+    if (pendingDriver) {
+      this.driver = pendingDriver;
+      pendingDriver = null;
+      this.driver.attach(this);
+    }
+  }
+
+  /** True when a real position source has claimed this walker. */
+  get driven(): boolean {
+    return this.driver !== null;
   }
 
   /**
@@ -108,6 +156,13 @@ export class SimWalker {
 
   /** Advances by `dt` seconds. */
   update(dt: number): WalkPose {
+    if (this.driver?.drive(dt, this)) {
+      // Keep the turn filter in step with the pose the driver wrote, so that the frame control comes
+      // back to the simulation the heading eases on from where the player is actually facing.
+      this.smoothedYaw = this.pose.yaw;
+      this.started = true;
+      return this.pose;
+    }
     if (!this.total) return this.pose;
     if (!this.started) {
       this.seek(0);

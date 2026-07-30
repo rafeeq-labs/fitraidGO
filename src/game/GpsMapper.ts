@@ -92,7 +92,11 @@ export class GpsMapper {
     const travelled = Math.hypot(x - this.rawX, z - this.rawZ);
     this.lastTimestamp = sample.timestamp;
 
-    if (travelled > 0.05) this.position.heading = Math.atan2(z - this.rawZ, x - this.rawX);
+    // Headings follow the tile convention (src/map/ribbon.ts): the forward vector of heading h is
+    // (cos h, -sin h), so a step of (dx, dz) is atan2(-dz, dx). Using atan2(dz, dx) here mirrored
+    // every GPS heading about the east-west axis and put the avatar's facing 90 degrees out of
+    // agreement with the same route walked by SimWalker.
+    if (travelled > 0.05) this.position.heading = Math.atan2(-(z - this.rawZ), x - this.rawX);
     this.position.speed = travelled > this.teleportDistance ? 0 : travelled / dt;
     this.rawX = x;
     this.rawZ = z;
@@ -118,23 +122,40 @@ export class GpsMapper {
    * Subscribes to the device's geolocation. Returns false where the API is unavailable — which is
    * the case in the headless container the captures run in, so every caller must have a simulated
    * fallback rather than treating this as guaranteed.
+   *
+   * `onSample` reports the verdict on every fix that arrives, including the rejected ones: the
+   * caller decides policy (how long to wait, whether the fix is even on this tile), and it cannot
+   * decide anything if the rejections are silent. `onError` receives the `GeolocationPositionError`
+   * code alongside the message so a denied permission can be told apart from a timeout.
    */
-  start(onError?: (message: string) => void): boolean {
+  start(
+    onError?: (message: string, code?: number) => void,
+    onSample?: (accepted: boolean, sample: GpsSample) => void
+  ): boolean {
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
       onError?.('geolocation unavailable');
       return false;
     }
-    this.watchId = navigator.geolocation.watchPosition(
-      (p) =>
-        this.accept({
-          lat: p.coords.latitude,
-          lon: p.coords.longitude,
-          accuracy: p.coords.accuracy ?? 999,
-          timestamp: p.timestamp,
-        }),
-      (e) => onError?.(e.message),
-      { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 }
-    );
+    try {
+      this.watchId = navigator.geolocation.watchPosition(
+        (p) => {
+          const sample: GpsSample = {
+            lat: p.coords.latitude,
+            lon: p.coords.longitude,
+            accuracy: p.coords.accuracy ?? 999,
+            timestamp: p.timestamp,
+          };
+          onSample?.(this.accept(sample), sample);
+        },
+        (e) => onError?.(e.message, e.code),
+        { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 }
+      );
+    } catch (err) {
+      // A stubbed or partially-implemented geolocation object throws here rather than calling back.
+      onError?.(`watchPosition failed: ${String(err)}`);
+      this.watchId = null;
+      return false;
+    }
     return true;
   }
 
