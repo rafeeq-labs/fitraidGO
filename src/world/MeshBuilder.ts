@@ -301,11 +301,11 @@ export class MeshBuilder {
     }
 
     if (opts.ends !== false) {
-      this.tri([-hw, eaveY(), hd], [-hw, eaveY(), -hd], [-hw, ridgeY(0), 0], null, {
+      this.tri([-hw, eaveY(), -hd], [-hw, eaveY(), hd], [-hw, ridgeY(0), 0], null, {
         ...opts,
         ao: 0.85,
       });
-      this.tri([hw, eaveY(), -hd], [hw, eaveY(), hd], [hw, ridgeY(1), 0], null, {
+      this.tri([hw, eaveY(), hd], [hw, eaveY(), -hd], [hw, ridgeY(1), 0], null, {
         ...opts,
         ao: 0.85,
       });
@@ -354,8 +354,9 @@ export class MeshBuilder {
       const y0r = y0 + height * t0;
       const y1r = y0 + height * t1;
       for (let s = 0; s < segments; s++) {
-        const a0 = (s / segments) * Math.PI * 2;
-        const a1 = ((s + 1) / segments) * Math.PI * 2;
+        // Angles run negative: with +y up, decreasing angle is the winding that faces outward.
+        const a0 = -(s / segments) * Math.PI * 2;
+        const a1 = -((s + 1) / segments) * Math.PI * 2;
         const p0: [number, number, number] = [Math.cos(a0) * rad0, y0r, Math.sin(a0) * rad0];
         const p1: [number, number, number] = [Math.cos(a1) * rad0, y0r, Math.sin(a1) * rad0];
         const p2: [number, number, number] = [Math.cos(a1) * rad1, y1r, Math.sin(a1) * rad1];
@@ -378,8 +379,8 @@ export class MeshBuilder {
     const y0 = opts.y ?? 0;
     const y1 = y0 + height;
     for (let s = 0; s < segments; s++) {
-      const a0 = (s / segments) * Math.PI * 2;
-      const a1 = ((s + 1) / segments) * Math.PI * 2;
+      const a0 = -(s / segments) * Math.PI * 2;
+      const a1 = -((s + 1) / segments) * Math.PI * 2;
       this.quad(
         [Math.cos(a0) * radiusBottom, y0, Math.sin(a0) * radiusBottom],
         [Math.cos(a1) * radiusBottom, y0, Math.sin(a1) * radiusBottom],
@@ -391,8 +392,8 @@ export class MeshBuilder {
     }
     if (opts.cap !== false) {
       for (let s = 0; s < segments; s++) {
-        const a0 = (s / segments) * Math.PI * 2;
-        const a1 = ((s + 1) / segments) * Math.PI * 2;
+        const a0 = -(s / segments) * Math.PI * 2;
+        const a1 = -((s + 1) / segments) * Math.PI * 2;
         this.tri(
           [0, y1, 0],
           [Math.cos(a0) * radiusTop, y1, Math.sin(a0) * radiusTop],

@@ -26,8 +26,14 @@ export interface TileSurfaceResult {
   stats: { triangles: number; draws: number };
 }
 
-/** Emits a tile FlatMesh (interleaved XZ positions plus indices and metre UVs) at a fixed height. */
-function emitFlatMesh(b: MeshBuilder, mesh: FlatMesh, y: number, uvScale: number, ao = 1): void {
+/**
+ * Emits a tile FlatMesh (interleaved XZ positions plus indices) at a fixed height.
+ *
+ * Ribbon UVs from the map compiler are metres-along-the-road in u but normalised 0..1 ACROSS in v,
+ * so `vSpan` converts v back into metres. Without it the texture is stretched the full width of the
+ * carriageway and cobblestones smear into stripes along the street.
+ */
+function emitFlatMesh(b: MeshBuilder, mesh: FlatMesh, y: number, uvScale: number, ao = 1, vSpan = 1): void {
   const { positions, indices, uvs } = mesh;
   for (let i = 0; i + 2 < indices.length; i += 3) {
     const ia = indices[i]!;
@@ -44,7 +50,7 @@ function emitFlatMesh(b: MeshBuilder, mesh: FlatMesh, y: number, uvScale: number
     const cross = (bx - ax) * (cz - az) - (bz - az) * (cx - ax);
     const uvOf = (idx: number): [number, number] => [
       (uvs[idx * 2] ?? positions[idx * 2]!) / uvScale,
-      (uvs[idx * 2 + 1] ?? positions[idx * 2 + 1]!) / uvScale,
+      ((uvs[idx * 2 + 1] ?? positions[idx * 2 + 1]!) * vSpan) / uvScale,
     ];
     const tri: [number, number, number][] = [
       [ax, y, az],
@@ -61,8 +67,15 @@ function emitFlatMesh(b: MeshBuilder, mesh: FlatMesh, y: number, uvScale: number
 }
 
 /** Extrudes a kerb: a narrow raised strip along one side of a carriageway, with a visible face. */
-function emitKerb(b: MeshBuilder, strip: FlatMesh, topY: number, bottomY: number, uvScale: number): void {
-  emitFlatMesh(b, strip, topY, uvScale, 1);
+function emitKerb(
+  b: MeshBuilder,
+  strip: FlatMesh,
+  topY: number,
+  bottomY: number,
+  uvScale: number,
+  vSpan = 1
+): void {
+  emitFlatMesh(b, strip, topY, uvScale, 1, vSpan);
   // The outer boundary of the strip is walked to drop a short vertical face down to the road, which
   // is what makes a kerb read as a kerb from a high camera rather than as a paint line.
   const { positions, indices } = strip;
@@ -159,9 +172,9 @@ export function buildTileSurfaces(
 
   for (const road of tile.roads) {
     const uv = road.klass === 'footway' || road.klass === 'path' ? 3 : 4.5;
-    emitFlatMesh(b.road, road.ribbon, road.bridge ? LAYER.bridgeDeck : LAYER.road, uv);
+    emitFlatMesh(b.road, road.ribbon, road.bridge ? LAYER.bridgeDeck : LAYER.road, uv, 1, road.width);
     for (const strip of road.kerbs) {
-      emitKerb(b.kerb, strip, LAYER.kerb, LAYER.road - 0.02, 1.4);
+      emitKerb(b.kerb, strip, LAYER.kerb, LAYER.road - 0.02, 1.4, 0.35);
     }
   }
 
@@ -178,9 +191,9 @@ export function buildTileSurfaces(
       }
     }
     for (const bridge of tile.bridges) {
-      emitFlatMesh(b.road, bridge.deck, LAYER.bridgeDeck, 4.5);
+      emitFlatMesh(b.road, bridge.deck, LAYER.bridgeDeck, 4.5, 1, bridge.width);
       // Parapets along both sides of the deck, walked from the deck's boundary edges.
-      emitKerb(b.stone, bridge.deck, LAYER.bridgeDeck + 0.85, LAYER.bridgeDeck - 0.35, 1.4);
+      emitKerb(b.stone, bridge.deck, LAYER.bridgeDeck + 0.85, LAYER.bridgeDeck - 0.35, 1.4, bridge.width);
     }
   }
 
@@ -191,7 +204,10 @@ export function buildTileSurfaces(
 
   const materials = {
     ground: new RampMaterial({ map: groundTex, vertexAO: true, rim: 0 }),
-    park: new RampMaterial({ map: groundTex, vertexAO: true, rim: 0, color: kit.palette.groundLit }),
+    // Parks read as mown ground purely through a tighter texture tile and a very light tint.
+    // Tinting with a mid-tone palette colour multiplies an already dark grass texture into near
+    // black — a park must never be darker than the rough ground around it.
+    park: new RampMaterial({ map: groundTex, vertexAO: true, rim: 0, color: 0xd8e0c4 }),
     road: new RampMaterial({ map: roadTex, vertexAO: true, rim: 0 }),
     kerb: new RampMaterial({ map: stoneTex, vertexAO: true, rim: 0.6 }),
     water: new RampMaterial({

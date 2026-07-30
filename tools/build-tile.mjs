@@ -745,10 +745,21 @@ function compileLandmarks(ctx, roads, plots, warn) {
         plot = p.id;
       }
     }
+    const name = tagOf(el, 'name') || KIND_FALLBACK_NAME[kind];
+    // The same real landmark is usually tagged twice: once as a POI node and once on the
+    // building way around it. Merge them so the world gets one marker, not two stacked.
+    const twin = out.find(
+      (o) => o.kind === kind && (o.name === name || Math.hypot(o.x - x, o.z - z) < 20)
+    );
+    if (twin) {
+      if (twin.plot === undefined && plot !== undefined) twin.plot = plot;
+      if (twin.name === KIND_FALLBACK_NAME[kind] && name !== KIND_FALLBACK_NAME[kind]) twin.name = name;
+      return;
+    }
     out.push({
       id: out.length,
       osmId: el.id,
-      name: tagOf(el, 'name') || KIND_FALLBACK_NAME[kind],
+      name,
       kind,
       x,
       z,

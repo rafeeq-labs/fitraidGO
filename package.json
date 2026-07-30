@@ -9,7 +9,7 @@
     "watch": "tsc -p tsconfig.json --watch",
     "serve": "http-server . -a 127.0.0.1 -p 8231 -c-1",
     "tile": "node tools/build-tile.mjs",
-    "test": "node --test tools/tests/",
+    "test": "node --test \"tools/tests/*.test.mjs\"",
     "shoot": "NODE_PATH=/opt/node22/lib/node_modules node tools/capture.mjs"
   }
 }
