@@ -705,11 +705,24 @@ function formalForecourt(ctx: KitContext, site: Site, frontZ: number): void {
     for (const sx of [-1, 1]) {
       placePiece(ctx, 'planter', { x: sx * flank, y, z: zBand }, { w: 1, d: 1, h: 0.55 });
       placePiece(ctx, 'planter', { x: sx * flank, y, z: zBand + 2.4 }, { w: 1, d: 1, h: 0.55 });
-      withTransform(ctx, () => buildTree(ctx, { archetype: 'cypress', height: 4.4, seed: sx }), {
-        x: sx * flank,
-        y: y + 0.5,
-        z: zBand,
-      });
+      // In a planter, so no ground dressing: `buildTree` now rings a trunk with grass tufts and
+      // half-sunk stones by default, and a stone lying on a raised stone planter reads as debris.
+      withTransform(
+        ctx,
+        () =>
+          buildTree(ctx, {
+            archetype: 'cypress',
+            height: 4.4,
+            seed: sx,
+            base: false,
+            leafDensity: 0.4,
+          }),
+        {
+          x: sx * flank,
+          y: y + 0.5,
+          z: zBand,
+        }
+      );
     }
   }
   for (const sx of [-1, 1]) {

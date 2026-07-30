@@ -400,12 +400,12 @@ export function createKitMaterials(kit: BiomeKit, textures: TextureFactory): Kit
         clump: 0.8,
       }),
       vertexAO: true,
-      rim: 0.5,
+      rim: 0.15,
     }),
     // Foliage takes a much weaker rim than masonry. At 0.7 the cool `#8FA8C4` edge landed on every
     // one of a canopy's several hundred facet boundaries and tipped the whole tree blue-grey — the
     // rim is meant to catch a roof ridge and a kerb capstone, not to re-light a leaf mass.
-    canopy: new RampMaterial({ map: textures.leaf(kit.id, t.leaf), vertexAO: true, rim: 0.3 }),
+    canopy: new RampMaterial({ map: textures.leaf(kit.id, t.leaf), vertexAO: true, rim: 0.1 }),
     // The water-margin tree's own green. REFERENCE-SPEC 3.1 separates trees by value and hue before
     // shape: sharing the deciduous map made the willow and the shade tree the same mark from above,
     // whatever the drooping strands did to the profile.
@@ -417,7 +417,7 @@ export function createKitMaterials(kit: BiomeKit, textures: TextureFactory): Kit
         clump: 1.4,
       }),
       vertexAO: true,
-      rim: 0.3,
+      rim: 0.12,
     }),
     conifer: new RampMaterial({
       map: textures.leaf(`${kit.id}:conifer`, {
@@ -430,13 +430,47 @@ export function createKitMaterials(kit: BiomeKit, textures: TextureFactory): Kit
         // albedo-modulated, so a desaturated needle stop comes back out of the renderer with more
         // blue than green — which is exactly how the conifers measured, bluer than the temperate
         // `#22302C` they are supposed to be.
-        lit: new Color(p.foliageLit).lerp(new Color(0x9ab488), 0.55).getHex(),
-        mid: new Color(p.foliageLit).lerp(new Color(p.foliageDark), 0.34).getHex(),
+        // Lifted much further than it was, and toward a yellow-green rather than a grey sage.
+        // Reference asset-tree-species.png's spruce is a DARK tree with BRIGHT sunlit tips: its lit
+        // needles measure around rgb(140,160,70) against an interior at rgb(27,39,38). At the old
+        // 0.55 toward `#9AB488` the lit stop landed at `#7F9C74` and the whole archetype rendered
+        // as one smooth near-black cone at luma 30 with no needle sprays visible on it at all.
+        lit: new Color(p.foliageLit).lerp(new Color(0xb6d466), 0.62).getHex(),
+        mid: new Color(p.foliageLit).lerp(new Color(0x6d8a48), 0.35).getHex(),
         shade: p.foliageDark,
         clump: 0.6,
       }),
       vertexAO: true,
-      rim: 0.3,
+      rim: 0.08,
+    }),
+    /**
+     * Tree bark and birch bark, split off `timber`.
+     *
+     * The building kit's timber is a dark stained frame member and a trunk wearing it measured a
+     * flat maroon pole at luma 44, against the reference sheet's warm bark at rgb(154,118,74) with
+     * a visible ridge. `planks` is pushed to eleven because on a trunk the generated u runs AROUND
+     * the barrel, so the plank boundaries come out as the vertical bark ridging the reference has —
+     * eleven of them over a 0.55 m repeat is a ridge every 5 cm.
+     */
+    bark: new RampMaterial({
+      map: textures.timber(`${kit.id}:bark`, {
+        lit: 0xb08a5e,
+        mid: 0x7d5f42,
+        shade: 0x4a3728,
+        planks: 11,
+      }),
+      vertexAO: true,
+      rim: 0.5,
+    }),
+    birch: new RampMaterial({
+      map: textures.timber(`${kit.id}:birch`, {
+        lit: 0xefe9dc,
+        mid: 0xd2cbba,
+        shade: 0x6f6a5c,
+        planks: 7,
+      }),
+      vertexAO: true,
+      rim: 0.5,
     }),
     cloth: new RampMaterial({ map: textures.cloth(kit.id, t.cloth), vertexAO: true, rim: 0.35 }),
   };

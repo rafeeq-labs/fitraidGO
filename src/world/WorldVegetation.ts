@@ -20,7 +20,8 @@ import { makeNoise2D } from '../engine/noise.js';
 import { makeRng, mix } from '../engine/rng.js';
 import type { Polyline, WorldTile } from '../map/types.js';
 import { createKitContext } from './KitPieces.js';
-import { KIT_CHANNELS } from './KitTypes.js';
+import { CHANNEL_SLOTS, KIT_CHANNELS } from './KitTypes.js';
+import { splitTags } from './PlotBuilder.js';
 import { DEFAULT_HEIGHT, buildTree, buildUnderstory } from './Vegetation.js';
 
 /**
@@ -55,8 +56,11 @@ export interface WorldVegetationResult {
 
 interface Prototype {
   geometry: BufferGeometry;
-  /** Which channel slot the geometry belongs to, so it gets the right material. */
-  foliage: boolean;
+  /**
+   * Which material this part takes. `canopy` is a stand-in resolved per prototype set to whichever
+   * of the four leaf materials that archetype uses; everything else is absolute.
+   */
+  slot: 'canopy' | 'lawn' | 'bark' | 'birch' | 'stone';
 }
 
 /** Which of the canopy materials a prototype's foliage takes. */
@@ -78,7 +82,15 @@ interface ProtoSet {
   hue: number;
 }
 
-/** Builds one tree or shrub through the kit context and flattens it to per-material geometries. */
+/**
+ * Builds one tree or shrub through the kit context and flattens it to per-material geometries.
+ *
+ * The channels are TAG-SPLIT here, which they were not before. A tree is no longer one canopy mesh
+ * on one bark mesh: the grass tufts at its foot are untagged foliage and must come out as lawn
+ * rather than as conifer needle, the stones beside them are `stone`, and the trunk takes the bark
+ * material rather than the building kit's stained timber. `splitTags` is the same routine
+ * PlotBuilder uses on the trees that stand inside plots, so the two agree.
+ */
 function prototype(
   kit: BiomeKit,
   seedValue: number,
@@ -90,7 +102,24 @@ function prototype(
   for (const name of KIT_CHANNELS) {
     const builder = ctx.channel[name];
     if (builder.isEmpty) continue;
-    out.push({ geometry: builder.toGeometry(`veg:${name}`), foliage: name === 'foliage' });
+    const geometry = builder.toGeometry(`veg:${name}`);
+    if (name === 'stone') {
+      out.push({ geometry, slot: 'stone' });
+      continue;
+    }
+    if (name === 'timber') {
+      for (const [tagName, part] of splitTags(geometry, CHANNEL_SLOTS.timber)) {
+        out.push({ geometry: part, slot: tagName === 'birch' ? 'birch' : 'bark' });
+      }
+      continue;
+    }
+    if (name === 'foliage') {
+      for (const [tagName, part] of splitTags(geometry, CHANNEL_SLOTS.foliage)) {
+        out.push({ geometry: part, slot: tagName === 'foliage' ? 'lawn' : 'canopy' });
+      }
+      continue;
+    }
+    out.push({ geometry, slot: 'bark' });
   }
   return out;
 }
@@ -125,7 +154,7 @@ function foliageMaterials(
     map: textures.leaf(kit.id, kit.textures.leaf),
     vertexAO: true,
     sway: true,
-    rim: 0.3,
+    rim: 0.1,
   });
   // The blossom accent, on the same recipe PlotBuilder uses for the trees inside plots. Without it
   // `buildWorldVegetation` had nowhere to put a flowering tree, which is why it never planted one.
@@ -142,7 +171,7 @@ function foliageMaterials(
     }),
     vertexAO: true,
     sway: true,
-    rim: 0.5,
+    rim: 0.15,
   });
   const conifer = new RampMaterial({
     /**
@@ -160,16 +189,16 @@ function foliageMaterials(
      * The mid and shade stops carry a deliberate GREEN bias against the blue the fill adds back.
      */
     map: textures.leaf(`${kit.id}:worldconifer`, {
-      lit: new Color(p.foliageLit).lerp(new Color(0xa8c46a), 0.8).getHex(),
-      mid: new Color(p.foliageLit).lerp(new Color(0x6d8a48), 0.72).getHex(),
-      shade: new Color(p.foliageDark).lerp(new Color(0x3c5236), 0.75).getHex(),
+      lit: new Color(p.foliageLit).lerp(new Color(0xb6d466), 0.7).getHex(),
+      mid: new Color(p.foliageLit).lerp(new Color(0x6d8a48), 0.5).getHex(),
+      shade: new Color(p.foliageDark).lerp(new Color(0x3c5236), 0.5).getHex(),
       clump: 0.6,
     }),
     vertexAO: true,
     sway: true,
-    // 0.15, not 0.3. The rim colour is a cool `#8FA8C4`, and on a conifer — the one archetype whose
+    // 0.08, not 0.3. The rim colour is a cool `#8FA8C4`, and on a conifer — the one archetype whose
     // silhouette is made of dozens of small skirt rims — it lands on nearly every visible edge.
-    rim: 0.15,
+    rim: 0.08,
   });
   const willow = new RampMaterial({
     map: textures.leaf(`${kit.id}:willow`, {
@@ -180,7 +209,7 @@ function foliageMaterials(
     }),
     vertexAO: true,
     sway: true,
-    rim: 0.3,
+    rim: 0.12,
   });
   return { canopy, conifer, willow, blossom };
 }
@@ -422,6 +451,16 @@ export function buildWorldVegetation(
     });
   }
 
+  /**
+   * Leaf-cluster density for the near tier.
+   *
+   * The sheet's trees are authored at 1.0, which is 70k triangles for a shade tree — right for a
+   * 300 px asset shot and wrong for a thousand of them in one frame. Cluster count is the only knob
+   * that scales cost smoothly without touching silhouette, armature or the crown's light gradient,
+   * so the world takes the same geometry at a lower coverage rather than a different tree.
+   */
+  const NEAR_LEAF_DENSITY = 0.34;
+
   const protoSets: ProtoSet[] = specs.map((spec, i) => ({
     slot: foliageSlotFor(spec.archetype, spec.blossom),
     hue: spec.hue,
@@ -430,6 +469,7 @@ export function buildWorldVegetation(
         archetype: spec.archetype,
         blossom: spec.blossom,
         seed: mix(seed, 0x200 + i),
+        leafDensity: NEAR_LEAF_DENSITY,
         height:
           (spec.blossom && spec.archetype === 'broadleaf' ? 5 : DEFAULT_HEIGHT[spec.archetype]) *
           spec.heightK,
@@ -455,6 +495,7 @@ export function buildWorldVegetation(
           buildTree(ctx, {
             archetype: 'willow',
             seed: mix(seed, 0x520 + i),
+            leafDensity: NEAR_LEAF_DENSITY,
             height: DEFAULT_HEIGHT.willow * (0.82 + i * 0.13),
           })
         ),
@@ -475,6 +516,8 @@ export function buildWorldVegetation(
         seed: mix(seed, 0x280 + i),
         height: DEFAULT_HEIGHT[spec.archetype] * spec.heightK,
         detail: 'distant',
+        // No tufts or stones past the swap: a 0.4 m tuft is a third of a pixel out there.
+        base: false,
       })
     ),
   }));
@@ -742,10 +785,43 @@ export function buildWorldVegetation(
 
   // --- materials: foliage sways, trunks do not
   const foliageSlots = foliageMaterials(kit, textures);
+  /**
+   * Bark, birch bark, lawn and stone, on exactly the cache keys PlotBuilder registers so a tree
+   * outside a plot and a tree inside one are the same material and cost no extra uploads.
+   *
+   * The world's trunks used to take `<kit>-bark`, a key nothing else uses, carrying the building
+   * kit's stained-timber recipe at rim 0.9 — a dark maroon pole with a cool edge on every facet.
+   */
   const barkMaterial = new RampMaterial({
-    map: textures.timber(`${kit.id}-bark`, kit.textures.timber),
+    map: textures.timber(`${kit.id}:bark`, {
+      lit: 0xb08a5e,
+      mid: 0x7d5f42,
+      shade: 0x4a3728,
+      planks: 11,
+    }),
     vertexAO: true,
-    rim: 0.9,
+    rim: 0.5,
+  });
+  const birchMaterial = new RampMaterial({
+    map: textures.timber(`${kit.id}:birch`, {
+      lit: 0xefe9dc,
+      mid: 0xd2cbba,
+      shade: 0x6f6a5c,
+      planks: 7,
+    }),
+    vertexAO: true,
+    rim: 0.5,
+  });
+  const lawnMaterial = new RampMaterial({
+    map: textures.grass(kit.id, kit.textures.ground),
+    vertexAO: true,
+    sway: true,
+    rim: 0.2,
+  });
+  const stoneMaterial = new RampMaterial({
+    map: textures.ashlar(kit.id, kit.textures.stone),
+    vertexAO: true,
+    rim: 0.6,
   });
 
   const meshes: Object3D[] = [];
@@ -764,19 +840,27 @@ export function buildWorldVegetation(
       const set = sets[i]!;
       const canopy = foliageSlots[set.slot];
       for (const proto of set.parts) {
-        const mesh = new InstancedMesh(
-          proto.geometry,
-          proto.foliage ? canopy : barkMaterial,
-          instances.length
-        );
-        mesh.name = proto.foliage ? `${name}-foliage` : `${name}-bark`;
+        const isCanopy = proto.slot === 'canopy';
+        const material =
+          proto.slot === 'canopy'
+            ? canopy
+            : proto.slot === 'lawn'
+              ? lawnMaterial
+              : proto.slot === 'stone'
+                ? stoneMaterial
+                : proto.slot === 'birch'
+                  ? birchMaterial
+                  : barkMaterial;
+        const mesh = new InstancedMesh(proto.geometry, material, instances.length);
+        mesh.name = `${name}-${proto.slot}`;
         for (let k = 0; k < instances.length; k++) {
           mesh.setMatrixAt(k, instances[k]!);
-          // Every foliage mesh gets a tint, including the shrubs. Leaving `instanceColor` unset
+          // Every canopy mesh gets a tint, including the shrubs. Leaving `instanceColor` unset
           // does not fall back to the material's colour in a useful way here — it leaves the
           // canopy at the map's own value with no per-individual variation at all, and on the
-          // un-mapped material this replaced it left every shrub in the world pure white.
-          if (proto.foliage && tint) {
+          // un-mapped material this replaced it left every shrub in the world pure white. Lawn
+          // tufts and stones are excluded: they are ground dressing and must match the ground.
+          if (isCanopy && tint) {
             mesh.setColorAt(k, canopyTint(rng, kit.vegetation.hueJitter, set.hue));
           }
         }
@@ -785,7 +869,7 @@ export function buildWorldVegetation(
         mesh.castShadow = true;
         mesh.receiveShadow = true;
         // Canopies cast through the dapple mask; trunks cast solid.
-        if (proto.foliage) {
+        if (isCanopy) {
           mesh.customDepthMaterial = set.slot === 'conifer' ? coniferDepth : canopyDepth;
         }
         mesh.computeBoundingSphere();

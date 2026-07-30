@@ -62,15 +62,31 @@ export const PALETTE = {
   grassLit: hex('#5e6e3c'),
   grassMid: hex('#4a5730'),
   grassShade: hex('#363f22'),
-  coniferLit: hex('#45584e'),
-  coniferDark: hex('#22302c'),
-  broadleafLit: hex('#6d8a44'),
-  broadleafDark: hex('#3f5228'),
-  canopyDeciduous: hex('#5a7038'),
+  /**
+   * Foliage albedo, measured back off shots/reference/asset-tree-species.png rather than authored.
+   *
+   * The reference canopies are far warmer and far more saturated than these values used to be. A
+   * sunlit crown there measures rgb(120-146, 135-144, 39-82) — luma 105-140 with BLUE forty to a
+   * hundred below RED — while ours rendered at luma 81 with blue level with red, i.e. a neutral
+   * grey-green. Two things were doing it. The albedos themselves were the palette's "safe" muted
+   * greens; and the cool `#8FA8C4` rim, at the strength masonry uses, landed on every one of a
+   * canopy's several hundred facet boundaries and dragged the hue back to neutral. Both are fixed —
+   * the rim scales for the four canopy materials are down at 0.08-0.15, and these are the albedos
+   * that measure back onto the reference once the ACES toe is accounted for.
+   *
+   * The conifer stays the darkest large mass REFERENCE-SPEC 3.1 asks for; what it stops being is
+   * BLUE. The lift is deliberately green-biased, because the hemisphere fill is a cool sky colour
+   * and it is albedo-modulated, so at a needle albedo this dark the fill is most of what comes back.
+   */
+  coniferLit: hex('#5f7d54'),
+  coniferDark: hex('#2a3b31'),
+  broadleafLit: hex('#bcd857'),
+  broadleafDark: hex('#4e6a26'),
+  canopyDeciduous: hex('#86a83a'),
   /** Willows read as pale drooping fountains against the deciduous mid-green in reference 13. */
-  willowPale: hex('#89975a'),
-  willowDark: hex('#586b34'),
-  blossom: hex('#c9a0b4'),
+  willowPale: hex('#b3c85c'),
+  willowDark: hex('#6d8440'),
+  blossom: hex('#dda6bc'),
   flowerWhite: hex('#f2f0e0'),
   flowerViolet: hex('#b9a8d8'),
   flowerGold: hex('#e8d98a'),

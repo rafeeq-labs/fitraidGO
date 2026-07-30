@@ -7,11 +7,8 @@ import { RampMaterial } from '../engine/RampMaterial.js';
 import { Renderer } from '../engine/Renderer.js';
 import { TextureFactory } from '../engine/TextureGen.js';
 import { makeRng, mix } from '../engine/rng.js';
-import { LAYER } from '../engine/Palette.js';
 import {
-  buildPlotFoundation,
   variantCount,
-  yardSurface,
   type BuildingFamily,
 } from '../world/BuildingKit.js';
 import { createKitContext } from '../world/KitPieces.js';
@@ -253,8 +250,8 @@ function propCells(): Cell[] {
   }));
 }
 
-/** The tree sheet's plot module. Same construction as the ladder's, at 05 and 06's tile size. */
-const VEG_PLOT = 12;
+/** The tree sheet's tile module, at the size the reference species sheet uses. */
+const VEG_PLOT = 7;
 
 /**
  * Every vegetation cell stands on the same kerbed grass plot the ladder uses.
@@ -267,9 +264,51 @@ const VEG_PLOT = 12;
  * canopy is now measurable against them.
  */
 function onVegetationPlot(ctx: KitContext, build: () => void): void {
-  buildPlotFoundation(ctx, { w: VEG_PLOT, d: VEG_PLOT, frontageGap: 2.2 });
-  yardSurface(ctx, VEG_PLOT, VEG_PLOT, 0);
-  withTransform(ctx, build, { y: LAYER.plotSlab });
+  const half = VEG_PLOT / 2;
+  const depth = 0.6;
+  // The soil block, sitting ON the backdrop rather than sunk into it. Cut from y = -depth to 0 its
+  // four sides were entirely below the backdrop quad at y = -0.02 and every tile came back as a
+  // flat diamond with no thickness — which is the one thing the reference sheet's tiles all have.
+  ctx.channel.stone.box(-half, 0, -half, half, depth, half, {
+    uvScale: 1.1,
+    taper: -0.05,
+    // The ashlar map is a cream dressed stone; a tile edge at its own value is the brightest thing
+    // in the cell. The reference sheet's tiles show dark earth under a green lip, at luma 40-55.
+    ao: 0.42,
+    groundAO: 0.24,
+    skip: { ny: true },
+  });
+  // Turf, with the outer 0.9 m darkened so the tile has a lip.
+  const g = ctx.channel.foliage;
+  const top = depth + 0.01;
+  const xs = [-half, -half + 0.9, half - 0.9, half];
+  /**
+   * Turf AO, and it is doing a lot of work.
+   *
+   * The lawn material renders a horizontal sunlit quad at luma 157. Reference asset-tree-species.png
+   * stands every one of its trees on a tile whose grass measures 65, and the whole reason its
+   * canopies read as luminous is that they are BRIGHTER than the ground under them — ours were less
+   * than half the tile's value, which inverts the picture whatever the canopy albedo is.
+   */
+  const edge = (i: number): number => (i === 0 || i === 3 ? 0.2 : 0.36);
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 3; j++) {
+      g.quad(
+        [xs[i]!, top, xs[j + 1]!],
+        [xs[i + 1]!, top, xs[j + 1]!],
+        [xs[i + 1]!, top, xs[j]!],
+        [xs[i]!, top, xs[j]!],
+        { uvScale: 1.6 },
+        [
+          Math.min(edge(i), edge(j + 1)),
+          Math.min(edge(i + 1), edge(j + 1)),
+          Math.min(edge(i + 1), edge(j)),
+          Math.min(edge(i), edge(j)),
+        ]
+      );
+    }
+  }
+  withTransform(ctx, build, { y: top });
 }
 
 function treeCells(): Cell[] {
@@ -297,11 +336,18 @@ function treeCells(): Cell[] {
       // its specified size buries the plot detail it is supposed to soften.
       build: (ctx) =>
         onVegetationPlot(ctx, () => {
-          for (let i = 0; i < 3; i++) {
-            withTransform(ctx, () => buildUnderstory(ctx, { kind, seed: mix(seed, i * 31 + 7) }), {
-              x: (i - 1) * 1.3,
-              z: (i % 2) * 1.1 - 0.5,
-            });
+          // Five clumps at 1.6x, not three at 1x. The reference sheet's twelfth cell is a
+          // flowering shrub that fills its tile and stands as tall as a person; ours was three
+          // 1.2 m lumps in the middle of a 7 m tile and read as a discarded salad.
+          for (let i = 0; i < 5; i++) {
+            withTransform(
+              ctx,
+              () => buildUnderstory(ctx, { kind, seed: mix(seed, i * 31 + 7), scale: 1.6 }),
+              {
+                x: (i - 2) * 1.15,
+                z: (i % 2) * 1.4 - 0.7,
+              }
+            );
           }
         }),
     });
@@ -343,8 +389,12 @@ if (view === 'plots') {
 } else if (view === 'props') {
   layout(propCells(), Number(params.get('cols') ?? 8), 5, 8, 0.55);
 } else if (view === 'trees') {
-  const pitch = VEG_PLOT * Math.SQRT2 + 3;
-  layout(treeCells(), Number(params.get('cols') ?? 4), pitch, pitch + 2, 0.58);
+  // Tight pitch, because the sheet is judged against reference asset-tree-species.png and there a
+  // canopy fills two thirds of its cell. At the old 12 m plot and its 3 m margin a 9 m tree came
+  // back 130 px tall on a 1000 px sheet, which is small enough that the leaf clusters the whole
+  // rebuild is about landed under two pixels each and the comparison was not honest.
+  const pitch = VEG_PLOT * Math.SQRT2 + 1.6;
+  layout(treeCells(), Number(params.get('cols') ?? 4), pitch, pitch + 1.5, 0.56);
 } else {
   layout(ladderCells(), 4, Math.hypot(PLOT_W, PLOT_D) + 3.5, Math.hypot(PLOT_W, PLOT_D) + 5.5);
 }
