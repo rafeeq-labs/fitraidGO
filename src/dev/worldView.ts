@@ -35,7 +35,11 @@ const kit = getBiome(biomeId);
 const seed = Number(params.get('seed') ?? 7);
 const freezeAt = params.get('freeze') === '1' ? Number(params.get('t') ?? 3) : null;
 const scrub = Number(params.get('scrub') ?? 0.36);
-const fogMode = params.get('fog') ?? 'preset';
+// Fog of war is OFF by default. It was hiding most of the world, and for an idle game the point is
+// to look at what you own and what you could own next — obscuring the map fights the whole premise.
+// The system stays intact behind ?fog=preset and costs nothing while uFogEnabled is 0, so it can
+// come back later as a discovered-territory feature rather than a veil over the play area.
+const fogMode = params.get('fog') ?? 'off';
 const camName = params.get('cam') ?? 'gps';
 
 const tile: WorldTile = await fetch(`/public/tiles/${params.get('tile') ?? 'bathwick'}.tile.json`).then(
