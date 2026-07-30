@@ -13,10 +13,10 @@ const hex = (s: string): ColorHex => parseInt(s.replace('#', ''), 16);
 
 export const PALETTE = {
   // --- roofs: deep blue slate, the single strongest identity cue in the references
-  roofLit: hex('#5b7fb4'),
-  roofMid: hex('#3d5f96'),
-  roofShade: hex('#263d63'),
-  roofRidge: hex('#93b3d9'),
+  roofLit: hex('#7189a6'),
+  roofMid: hex('#5c748f'),
+  roofShade: hex('#3b4c63'),
+  roofRidge: hex('#8fa8c4'),
 
   // --- walls
   plasterWarm: hex('#d9cbb0'),
@@ -33,21 +33,21 @@ export const PALETTE = {
   stoneCool: hex('#9aa0a4'),
 
   // --- ground surfaces
-  cobbleStone: hex('#a89f90'),
-  cobbleLit: hex('#c0b7a6'),
-  cobbleGrout: hex('#7a7469'),
+  cobbleStone: hex('#8b7a69'),
+  cobbleLit: hex('#a3927e'),
+  cobbleGrout: hex('#4c4438'),
   gravel: hex('#9c9384'),
   dirt: hex('#8a6f52'),
 
   // --- vegetation
-  grassLit: hex('#87a35d'),
-  grassMid: hex('#6d8a50'),
-  grassShade: hex('#4a6139'),
-  coniferLit: hex('#4c7350'),
-  coniferDark: hex('#2c4634'),
+  grassLit: hex('#5e6e3c'),
+  grassMid: hex('#4a5730'),
+  grassShade: hex('#363f22'),
+  coniferLit: hex('#3d5a42'),
+  coniferDark: hex('#22302c'),
   broadleafLit: hex('#7fa04a'),
   broadleafDark: hex('#44603a'),
-  blossom: hex('#e8b8cf'),
+  blossom: hex('#c9a0b4'),
   flowerWhite: hex('#f2f0e0'),
   flowerViolet: hex('#b9a8d8'),
   flowerGold: hex('#e8d98a'),
@@ -56,10 +56,10 @@ export const PALETTE = {
   windowGold: hex('#ffcf73'),
   lanternCore: hex('#ffe6ad'),
   forgeEmber: hex('#ff7a33'),
-  sunWarm: hex('#ffe9c4'),
+  sunWarm: hex('#fff0d8'),
 
   // --- crystal / route / UI: the cool counterpoint to all that warm gold
-  crystal: hex('#4db8ff'),
+  crystal: hex('#1e8fdb'),
   crystalCore: hex('#c2e9ff'),
   crystalDeep: hex('#1c6fc4'),
   route: hex('#3ea6f5'),
@@ -71,15 +71,15 @@ export const PALETTE = {
   emblemGold: hex('#d8ac4e'),
 
   // --- water
-  waterDeep: hex('#2c5f7f'),
-  waterRiver: hex('#3f849b'),
+  waterDeep: hex('#1b4c5e'),
+  waterRiver: hex('#2e7c8c'),
   waterShallow: hex('#79b8bd'),
   waterFoam: hex('#dff0f2'),
 
   // --- atmosphere
   shadowNavy: hex('#2b3a5e'),
   shadowViolet: hex('#3a3358'),
-  haze: hex('#8fa7bd'),
+  haze: hex('#7c93b8'),
   skyHigh: hex('#a8c8e8'),
   skyHorizon: hex('#dce9f5'),
   voidNavy: hex('#141c30'),
@@ -93,7 +93,7 @@ export type PaletteRole = keyof typeof PALETTE;
  */
 export const RAMP = {
   /** Colour multiplied into fully shadowed surfaces. */
-  shadowTint: hex('#4a5c92'),
+  shadowTint: hex('#5a6a8c'),
   /** Colour multiplied into the mid band. */
   midTint: hex('#c9cfd8'),
   /** Colour multiplied into fully lit surfaces. */
@@ -105,10 +105,13 @@ export const RAMP = {
   softness: 0.13,
   /** Floor on the shadow band so nothing crushes to black. */
   shadowFloor: 0.26,
-  /** Rim light strength and colour on the sun-facing side. */
+  /**
+   * Rim light. Measured from the references as a 1-2 px COOL edge on roof ridges, wall tops and
+   * kerb capstones — sky light catching an edge, not a warm backlight.
+   */
   rimStrength: 0.34,
   rimPower: 2.6,
-  rimColor: hex('#f2d9a8'),
+  rimColor: hex('#8fa8c4'),
 } as const;
 
 /** Vertical layering, in metres, that keeps coplanar ground surfaces from z-fighting. */
