@@ -1,0 +1,127 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  * { box-sizing: border-box; }
+  body { margin:0; width:1400px; background:#20242c; color:#e8eef8;
+         font-family:'DejaVu Sans',system-ui,sans-serif; padding:26px 30px; }
+  h1 { font-size:26px; margin:0 0 4px; letter-spacing:.02em; }
+  .sub { color:#93a3bd; font-size:13px; margin-bottom:22px; }
+  h2 { font-size:15px; text-transform:uppercase; letter-spacing:.10em; color:#8fd0ff;
+       margin:26px 0 10px; border-bottom:1px solid #38414f; padding-bottom:5px; }
+  .sw { display:flex; flex-wrap:wrap; gap:8px; }
+  .c { width:126px; border-radius:5px; overflow:hidden; background:#2a2f38; }
+  .c .p { height:56px; }
+  .c .l { font-size:10.5px; padding:5px 6px; line-height:1.35; }
+  .c .l b { display:block; font-size:11px; }
+  .c .l span { color:#93a3bd; font-family:'DejaVu Sans Mono',monospace; }
+  .row { display:flex; gap:26px; align-items:flex-start; }
+  table { border-collapse:collapse; font-size:12.5px; }
+  td,th { border:1px solid #38414f; padding:5px 9px; text-align:left; }
+  th { background:#2a303b; color:#8fd0ff; font-weight:600; }
+  .frame { position:relative; width:270px; height:480px; border:2px solid #6d7b91;
+           background:linear-gradient(#b9d2ea 0%, #cfe0ef 12%, #8fa7bd 19%, #75894f 34%, #6f8f4a 100%); }
+  .zone { position:absolute; left:0; right:0; border-top:1px dashed rgba(255,255,255,.75);
+          font-size:9.5px; color:#fff; text-shadow:0 1px 2px #000; padding-left:4px; }
+  .ring { position:absolute; left:2%; width:96%; height:calc(96% * 270 / 480 * 0.66 * 480/270);
+          border:2px solid #4db8ff; border-radius:50%; box-shadow:0 0 6px #4db8ff88; }
+  .av { position:absolute; width:9px; height:26px; background:#22304d; border:1px solid #7d90b5;
+        border-radius:3px 3px 1px 1px; }
+  .note { font-size:12px; color:#b9c6da; line-height:1.6; max-width:640px; }
+  .lad { display:flex; gap:10px; align-items:flex-end; }
+  .lv { width:150px; text-align:center; font-size:11px; color:#b9c6da; }
+  .lv .box { position:relative; height:150px; background:#6f8f4a; border:3px solid #b8b2a3;
+             border-radius:3px; display:flex; align-items:flex-end; justify-content:center; }
+  .bld { width:64%; background:#d9cbb0; border-top:0; position:relative; }
+  .bld:before { content:''; position:absolute; left:-12%; right:-12%; height:22px; top:-20px;
+                background:#3d5f96; clip-path:polygon(0 100%,50% 0,100% 100%); }
+  .win { position:absolute; width:9px; height:11px; background:#ffcf73; box-shadow:0 0 5px #ffcf7399; }
+</style></head><body>
+
+<h1>RaidFit — Reference Spec Sheet</h1>
+<div class="sub">Measured transcription of the five AAA MMO benchmark images. Critics score captures against these numbers.</div>
+
+<h2>Palette — authoritative hex values</h2>
+<div class="sw" id="sw"></div>
+
+<h2>Portrait composition targets (900 × 1600)</h2>
+<div class="row">
+  <div class="frame">
+    <div class="zone" style="top:0">0–20 % sky · atmosphere · distant landmarks</div>
+    <div class="zone" style="top:20%">20–34 % far town · haze · horizon spires</div>
+    <div class="zone" style="top:34%">34–66 % mid town · plots & streets (the subject)</div>
+    <div class="zone" style="top:66%">66–100 % near plots · framing trees/rocks</div>
+    <div class="ring" style="bottom:-14%"></div>
+    <div class="av" style="left:calc(50% - 4.5px); bottom:20%"></div>
+    <div class="zone" style="top:80%; border-top:1px solid #4db8ff; color:#bfe6ff">player feet ≈ 80 % down</div>
+  </div>
+  <div>
+    <table>
+      <tr><th>Target</th><th>Value</th><th>Fails if</th></tr>
+      <tr><td>Aspect</td><td>9 : 16 portrait</td><td>anything else</td></tr>
+      <tr><td>Camera elevation</td><td>48–56° above horizontal</td><td>&lt; 40° (too flat) or &gt; 65° (top-down)</td></tr>
+      <tr><td>Camera azimuth</td><td>45° (streets read diagonally)</td><td>axis-aligned, static-feeling</td></tr>
+      <tr><td>Projection</td><td>orthographic (or FOV ≤ 22°)</td><td>visible edge distortion</td></tr>
+      <tr><td>Player height</td><td>3–5 % of frame (48–80 px)</td><td>&lt; 2 % (invisible) or &gt; 8 % (not a map)</td></tr>
+      <tr><td>Player feet position</td><td>76–84 % down the frame</td><td>centred or in the top half</td></tr>
+      <tr><td>GPS ring diameter</td><td>88–98 % of frame width</td><td>small, or thick/bloomed</td></tr>
+      <tr><td>GPS ring ellipse ratio</td><td>minor/major ≈ 0.66 (= sin&nbsp;41°)…0.80</td><td>circular (top-down) or &lt; 0.5 (too flat)</td></tr>
+      <tr><td>GPS ring line weight</td><td>2–4 px, luminous, no fill or ≤ 12 % fill</td><td>thick, opaque, or neon bloom</td></tr>
+      <tr><td>Sky / atmosphere band</td><td>top 15–22 % of the frame</td><td>no horizon, or sky &gt; 30 %</td></tr>
+      <tr><td>Visible ground span</td><td>≈ 90 m across the short axis</td><td>&lt; 50 m (claustrophobic) or &gt; 160 m (mush)</td></tr>
+      <tr><td>Plots visible</td><td>10–24 clearly separated parcels</td><td>&gt; 40 (clutter) or &lt; 6 (empty)</td></tr>
+    </table>
+  </div>
+</div>
+
+<h2>Modular upgrade ladder — one shared plot foundation</h2>
+<div class="lad" id="lad"></div>
+<div class="note" style="margin-top:10px">
+  Every level sits on the <b>same</b> kerb-bounded plot. Escalation must be simultaneous on three axes:
+  <b>height</b> (1 → 2 → 2.5 storeys + spires), <b>material richness</b> (plaster → + timber framing →
+  + stone base course &amp; gold trim), and <b>yard occupancy</b> (bare grass → props → forecourt paving,
+  planting, banner, crystal lamps). Silhouette alone must identify the level at 60 px tall.
+</div>
+
+<h2>Lighting &amp; material rules</h2>
+<div class="note">
+  One warm directional key from the upper-left (azimuth ≈ 315°, elevation ≈ 40°, colour #ffe9c4).
+  Fill is a cool hemisphere (#8fb3ff sky / #5a4a33 ground). Shadow sides settle to navy-violet
+  #2b3a5e at roughly 22–30 % luminance — <b>never</b> pure black, never gray.
+  Roof ridges and the player silhouette carry a pale-gold rim (#f2d9a8).
+  Every surface must show per-unit shading — individual cobbles, individual roof tiles, individual
+  plaster panels — with soft value gradients, not flat fill and not photographic noise.
+  Depth haze (#8fa7bd) reduces distant contrast so the top of the frame recedes.
+</div>
+
+<script>
+const P = [
+  ['Roof slate lit','#4a6fa8'],['Roof slate mid','#3d5f96'],['Roof slate shade','#24395c'],
+  ['Roof ridge rim','#8fb0d8'],['Plaster warm','#d9cbb0'],['Plaster ochre','#c9b391'],
+  ['Timber dark','#4a3524'],['Timber mid','#5d4430'],
+  ['Stone lit','#cdc7b8'],['Stone kerb','#b8b2a3'],['Stone shade','#8a8578'],
+  ['Cobble stone','#a49c8f'],['Cobble grout','#7a746a'],['Cobble lit','#bcb4a6'],
+  ['Grass lit','#86a558'],['Grass mid','#6f8f4a'],['Grass shade','#4c6636'],
+  ['Conifer lit','#446b47'],['Conifer dark','#2f4a38'],
+  ['Window gold','#ffcf73'],['Lantern core','#ffe6ad'],
+  ['Crystal blue','#4db8ff'],['Crystal core','#b3e5ff'],['Route blue','#3ea6f5'],
+  ['Banner navy','#1f2f57'],['Emblem gold','#d8ac4e'],['Violet accent','#6c5a9e'],
+  ['Water river','#3f6f8f'],['Water shallow','#6fa8b8'],
+  ['Sky high','#a8c8e8'],['Sky horizon','#dce9f5'],['Haze / far hills','#8fa7bd'],
+  ['Shadow navy','#2b3a5e'],['Flower white','#f2f0e0'],['Flower violet','#b9a8d8'],
+];
+document.getElementById('sw').innerHTML = P.map(([n,h]) =>
+  `<div class="c"><div class="p" style="background:${h}"></div><div class="l"><b>${n}</b><span>${h}</span></div></div>`).join('');
+
+const L = [
+  ['L0 — empty plot', 0, 0],
+  ['L1 — starter', 46, 2],
+  ['L2 — expanded', 76, 4],
+  ['L3 — prestigious', 108, 6],
+];
+document.getElementById('lad').innerHTML = L.map(([label,h,w]) => {
+  const wins = Array.from({length:w}, (_,i) =>
+    `<div class="win" style="left:${12 + (i%3)*22}px; bottom:${8 + Math.floor(i/3)*24}px"></div>`).join('');
+  const body = h ? `<div class="bld" style="height:${h}px">${wins}</div>` : '';
+  return `<div class="lv"><div class="box">${body}</div><div style="margin-top:5px">${label}</div></div>`;
+}).join('');
+</script>
+</body></html>
