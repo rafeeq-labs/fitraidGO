@@ -89,27 +89,68 @@ export function drum(
   if (opts.cap) disc(mb, radiusTop, y1, segments, { ...opts, ao: aoT });
 }
 
-/** A cone with no base: conifer tiers, spoil heaps, small finials. `segments` triangles. */
+export interface MoundOptions extends RoundOptions {
+  /**
+   * Vertical subdivisions. 1 is the plain cone. Above 1 the profile can BEND, which is what turns a
+   * conifer tier from a paper party hat into a branch layer: real needle skirts are concave, flaring
+   * out and drooping at the rim.
+   */
+  rings?: number;
+  /** Profile curvature, 0 straight. Positive bows the flank outward (concave, drooping skirt). */
+  bow?: number;
+  /** Per-segment radial wobble as a fraction of the radius, so the plan outline is not a polygon. */
+  wobble?: number;
+  rand?: () => number;
+}
+
+/**
+ * A cone with no base: conifer tiers, spoil heaps, small finials.
+ * `segments * rings` triangles-ish (`segments` for the top ring, `2 * segments` for each one below).
+ */
 export function mound(
   mb: MeshBuilder,
   radius: number,
   height: number,
   segments: number,
-  opts: RoundOptions = {}
+  opts: MoundOptions = {}
 ): void {
   const y0 = opts.y ?? 0;
-  const apex: [number, number, number] = [0, y0 + height, 0];
+  const rings = Math.max(1, opts.rings ?? 1);
+  const bow = opts.bow ?? 0;
+  const wob = opts.wobble ?? 0;
+  const rand = opts.rand;
   const face = { ...opts, ao: opts.ao ?? opts.aoTop ?? 0.9 };
+  const aoT = opts.aoTop ?? face.ao ?? 0.9;
+  const aoB = opts.aoBottom ?? aoT;
+
+  const k: number[] = [];
   for (let s = 0; s < segments; s++) {
-    const a0 = -(s / segments) * TAU;
-    const a1 = -((s + 1) / segments) * TAU;
-    mb.tri(
-      [Math.cos(a0) * radius, y0, Math.sin(a0) * radius],
-      [Math.cos(a1) * radius, y0, Math.sin(a1) * radius],
-      apex,
-      null,
-      face
-    );
+    k.push(wob > 0 ? 1 + ((rand ? rand() : 0.5) - 0.5) * 2 * wob : 1);
+  }
+  // t runs 0 at the base to 1 at the apex. The straight cone is r = 1 - t; `bow` adds a sine hump
+  // so the flank swells outward halfway up and the rim is the widest part of a drooping skirt.
+  const rAt = (t: number): number => Math.max(0, 1 - t + bow * Math.sin(Math.PI * t) * (1 - t));
+  const pt = (ri: number, s: number): [number, number, number] => {
+    const t = ri / rings;
+    const rr = radius * rAt(t) * k[((s % segments) + segments) % segments]!;
+    const a = -(s / segments) * TAU;
+    return [Math.cos(a) * rr, y0 + height * t, Math.sin(a) * rr];
+  };
+  const ao = (ri: number): number => aoB + (aoT - aoB) * (ri / rings);
+  const apex: [number, number, number] = [0, y0 + height, 0];
+  for (let ri = 0; ri < rings; ri++) {
+    for (let s = 0; s < segments; s++) {
+      if (ri === rings - 1) {
+        mb.tri(pt(ri, s), pt(ri, s + 1), apex, null, { ...face, ao: ao(ri) });
+      } else {
+        mb.quad(pt(ri, s), pt(ri, s + 1), pt(ri + 1, s + 1), pt(ri + 1, s), opts, [
+          ao(ri),
+          ao(ri),
+          ao(ri + 1),
+          ao(ri + 1),
+        ]);
+      }
+    }
   }
 }
 
@@ -175,37 +216,90 @@ export interface BlobOptions extends FaceOptions {
   aoBottom?: number;
   /** Per-segment radial wobble as a fraction of the radius, so the plan outline is irregular. */
   wobble?: number;
+  /**
+   * Per-VERTEX radial noise, as a fraction of the radius.
+   *
+   * `wobble` displaces a whole meridian, so a wobbled blob is still a lathe: every latitude ring is
+   * the same outline scaled, and the surface between them stays ruled. That is what let a canopy
+   * read as a turned wooden bead however many segments it had. `lumps` breaks the correlation
+   * between bands, so the crown gets the cauliflower relief a real foliage mass has and the
+   * terminator wanders across it instead of following a latitude line.
+   */
+  lumps?: number;
+  /**
+   * Exponent on the latitude radius. 1 is a true ellipsoid; below 1 the mass stays wide close to
+   * the poles, which is the difference between a leaf canopy (full and shouldered, tapering only
+   * at the very crown) and a bead. Above 1 gives a pointed spindle.
+   */
+  plump?: number;
+  /**
+   * Fraction of the vertical radius the lower half is stretched by. A canopy is not symmetric about
+   * its equator: the underside falls away further than the crown rises, which is what puts the
+   * shaded skirt where the camera can see it.
+   */
+  sag?: number;
   rand?: () => number;
 }
 
 /**
- * A shaded canopy volume. Seen from 52 degrees the read is the plan outline and the darkness
- * underneath, so this is a coarse squashed sphere with a strong AO gradient from crown to
- * underside rather than a smooth high-poly ball.
+ * A shaded canopy volume — a lumpy, shouldered mass with a strong AO gradient from crown to
+ * underside.
+ *
+ * This used to be justified as "coarse on purpose, the camera only reads the plan outline". It
+ * does not: at the GPS camera's 11.8 px/m an 8 m canopy is ~95 px across, its facets land at 15 px
+ * and the eye reads every one of them. Roundness and relief are what separate a painted MMO canopy
+ * from a faceted bead, and both are cheap here — this is one of maybe fifteen prototype meshes in
+ * the whole world, instanced thousands of times.
  */
 export function canopyBlob(mb: MeshBuilder, radius: number, opts: BlobOptions = {}): void {
   const rx = radius * (opts.rx ?? 1);
   const ry = radius * (opts.ry ?? 1);
   const rz = radius * (opts.rz ?? 1);
-  const segs = Math.max(3, opts.segments ?? 7);
-  const bands = Math.max(2, opts.bands ?? 4);
+  const segs = Math.max(3, opts.segments ?? 14);
+  const bands = Math.max(2, opts.bands ?? 5);
   const cy = opts.y ?? 0;
   const aoT = opts.aoTop ?? 1;
   const aoB = opts.aoBottom ?? 0.32;
   const wob = opts.wobble ?? 0;
+  const lumps = opts.lumps ?? 0;
+  const plump = opts.plump ?? 1;
+  const sag = opts.sag ?? 0;
   const rand = opts.rand;
 
   const k: number[] = [];
   for (let s = 0; s < segs; s++) {
     k.push(wob > 0 ? 1 + ((rand ? rand() : 0.5) - 0.5) * 2 * wob : 1);
   }
+  // Per-vertex noise has to be TABULATED, not sampled inside `pt`: every interior vertex is
+  // visited four times as the quads around it are emitted, and a fresh random number each visit
+  // would tear the surface into unconnected triangles.
+  const bump: number[][] = [];
+  for (let b = 0; b <= bands; b++) {
+    const row: number[] = [];
+    for (let s = 0; s < segs; s++) {
+      row.push(lumps > 0 ? 1 + ((rand ? rand() : 0.5) - 0.5) * 2 * lumps : 1);
+    }
+    bump.push(row);
+  }
+
   const pt = (band: number, s: number): [number, number, number] => {
+    const si = ((s % segs) + segs) % segs;
     const phi = (Math.PI * band) / bands;
-    const rr = Math.sin(phi) * k[((s % segs) + segs) % segs]!;
+    // The poles must stay on the axis or the blob splits open, so the noise fades out at both.
+    const polar = Math.sin(phi);
+    const j = 1 + (bump[band]![si]! - 1) * polar;
+    const rr = Math.pow(polar, plump) * k[si]! * j;
     const a = -(s / segs) * TAU;
-    return [Math.cos(a) * rx * rr, cy + Math.cos(phi) * ry, Math.sin(a) * rz * rr];
+    const c = Math.cos(phi);
+    const yy = c < 0 ? c * ry * (1 + sag) : c * ry;
+    return [Math.cos(a) * rx * rr, cy + yy, Math.sin(a) * rz * rr];
   };
-  const ao = (band: number): number => aoB + (aoT - aoB) * (1 - band / bands);
+  // Smoothstep rather than linear: a linear crown-to-underside ramp puts its steepest change at the
+  // silhouette edge, which is exactly where the eye reads the outline, and banded it.
+  const ao = (band: number): number => {
+    const u = 1 - band / bands;
+    return aoB + (aoT - aoB) * u * u * (3 - 2 * u);
+  };
 
   const apex = pt(0, 0);
   const nadir = pt(bands, 0);

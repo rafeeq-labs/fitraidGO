@@ -67,6 +67,26 @@ export interface EconomyTuning {
   offlineCap: Millis;
   /** Parcels a player may hold in one zone before buying a capacity upgrade. */
   baseZoneCapacity: number;
+  /**
+   * What a force-buyer pays, as a multiple of the parcel's price.
+   *
+   * Taking someone's developed land should cost more than buying empty ground, or there is no
+   * reason to ever develop anything.
+   */
+  forceBuyMultiplier: number;
+  /**
+   * What the dispossessed owner receives, as a multiple of the price.
+   *
+   * Deliberately less than `forceBuyMultiplier`, and deliberately more than 1. The gap between the
+   * two is DESTROYED, not transferred, which makes forced sales the economy's largest money sink.
+   * Keeping it above 1 preserves the property that matters most for an idle audience checking in
+   * once a day: you can be relocated, but you can never be made poorer. Losing a developed parcel
+   * overnight for a net loss is the single most reliable way to make someone quit.
+   */
+  forceBuyOwnerShare: number;
+  /** How long a protection ticket keeps a parcel safe, and what it costs as a share of price. */
+  protectionDuration: Millis;
+  protectionCostFactor: number;
 }
 
 export const DEFAULT_TUNING: EconomyTuning = {
@@ -109,6 +129,10 @@ export const DEFAULT_TUNING: EconomyTuning = {
    * what sends a player looking for the next zone to unlock.
    */
   baseZoneCapacity: 14,
+  forceBuyMultiplier: 3,
+  forceBuyOwnerShare: 1.8,
+  protectionDuration: 3 * DAY,
+  protectionCostFactor: 0.35,
 };
 
 // --- state ------------------------------------------------------------------

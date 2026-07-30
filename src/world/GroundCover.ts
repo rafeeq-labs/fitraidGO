@@ -124,6 +124,8 @@ interface TuftShape {
   /** Short filler blades built as one tapered quad: 2 triangles, straight, nearly upright. */
   filler: number;
   height: number;
+  /** Blade half-width multiplier. Broader blades read as stylised rather than as wire. */
+  breadth?: number;
 }
 
 /**
@@ -152,22 +154,32 @@ function tuftGeometry(shape: TuftShape, seedValue: number): BufferGeometry {
   const b = new MeshBuilder();
   const rng = makeRng(seedValue);
   const total = shape.arched + shape.filler;
+  const breadth = shape.breadth ?? 1;
   for (let i = 0; i < total; i++) {
     const arched = i < shape.arched;
     // Golden-angle placement around the clump so successive blades never line up, plus jitter.
     const a = i * 2.39996 + rng.range(-0.5, 0.5);
-    const base = rng.range(0.04, 0.13);
+    const base = rng.range(0.04, 0.15);
     const bx = Math.cos(a) * base;
     const bz = Math.sin(a) * base;
     const lean = arched ? rng.range(0.2, 0.5) : rng.range(0.08, 0.32);
-    const h = shape.height * (arched ? rng.range(0.82, 1.15) : rng.range(0.42, 0.78));
-    const halfW = arched ? rng.range(0.026, 0.042) : rng.range(0.02, 0.032);
+    const h = shape.height * (arched ? rng.range(0.82, 1.2) : rng.range(0.42, 0.8));
+    const halfW = (arched ? rng.range(0.032, 0.055) : rng.range(0.024, 0.04)) * breadth;
     const tipX = bx + Math.cos(a) * lean * h;
     const tipZ = bz + Math.sin(a) * lean * h;
     // Across-blade offset: the blade's own width, perpendicular to the direction it leans.
     const px = Math.cos(a + Math.PI / 2) * halfW;
     const pz = Math.sin(a + Math.PI / 2) * halfW;
 
+    /**
+     * The AO attribute is used as a VALUE ramp along the blade, not only as occlusion.
+     *
+     * It multiplies albedo, and nothing stops it exceeding 1. A real blade is dark where it sits
+     * down inside the clump and catches the sky along its upper third, and that gradient — base 0.5
+     * to tip 1.25 — is what makes a tuft read as standing geometry rather than as a green sticker.
+     * Under the old flat 0.72-to-0.94 ramp the whole tuft was simply a darker patch of lawn, which
+     * is exactly how it measured once the ground itself got brighter.
+     */
     if (arched) {
       // The knee sits at 62% of the height but only 22% of the way out, so the blade rises almost
       // straight and then curls: that curl is the whole difference between grass and a spike.
@@ -177,26 +189,26 @@ function tuftGeometry(shape: TuftShape, seedValue: number): BufferGeometry {
       b.quad(
         [bx - px, 0, bz - pz],
         [bx + px, 0, bz + pz],
-        [midX + px * 0.7, midY, midZ + pz * 0.7],
-        [midX - px * 0.7, midY, midZ - pz * 0.7],
+        [midX + px * 0.75, midY, midZ + pz * 0.75],
+        [midX - px * 0.75, midY, midZ - pz * 0.75],
         { uvScale: 0.5 },
-        [0.72, 0.72, 0.94, 0.94]
+        [0.5, 0.5, 1.02, 1.02]
       );
       b.tri(
-        [midX - px * 0.7, midY, midZ - pz * 0.7],
-        [midX + px * 0.7, midY, midZ + pz * 0.7],
+        [midX - px * 0.75, midY, midZ - pz * 0.75],
+        [midX + px * 0.75, midY, midZ + pz * 0.75],
         [tipX, h, tipZ],
         null,
-        { ao: 1 }
+        { ao: 1.25 }
       );
     } else {
       b.quad(
         [bx - px, 0, bz - pz],
         [bx + px, 0, bz + pz],
-        [tipX + px * 0.22, h, tipZ + pz * 0.22],
-        [tipX - px * 0.22, h, tipZ - pz * 0.22],
+        [tipX + px * 0.24, h, tipZ + pz * 0.24],
+        [tipX - px * 0.24, h, tipZ - pz * 0.24],
         { uvScale: 0.5 },
-        [0.72, 0.72, 1, 1]
+        [0.55, 0.55, 1.18, 1.18]
       );
     }
   }
@@ -210,7 +222,10 @@ function tuftGeometry(shape: TuftShape, seedValue: number): BufferGeometry {
  * the whole clump turns the foliage the colour of the petals, which is what made the first pass
  * scatter white blobs across the lawn.
  */
-function flowerGeometry(seedValue: number): { leaves: BufferGeometry; heads: BufferGeometry } {
+function flowerGeometry(
+  seedValue: number,
+  style: 'daisy' | 'spike' | 'umbel' = 'daisy'
+): { leaves: BufferGeometry; heads: BufferGeometry } {
   const b = new MeshBuilder();
   const heads = new MeshBuilder();
   const rng = makeRng(seedValue);
@@ -239,27 +254,68 @@ function flowerGeometry(seedValue: number): { leaves: BufferGeometry; heads: Buf
       [0.4, 0.4, 0.95, 0.95]
     );
   }
-  for (let i = 0; i < 4; i++) {
+  /**
+   * Three head shapes, because one shape repeated across a field is a pattern however pretty it is.
+   *
+   * A daisy is a flat disc on a short stem, a spike is a vertical raceme of small blooms (foxglove,
+   * lupin, loosestrife — the tall colour in every painted meadow), and an umbel is a wide flat head
+   * on a taller stem (yarrow, cow parsley). At 3-5 screen pixels they differ mostly in silhouette and
+   * height, which is exactly the axis the eye reads a scattered field along.
+   */
+  const stems = style === 'spike' ? 3 : style === 'umbel' ? 3 : 5;
+  for (let i = 0; i < stems; i++) {
     const a = rng.range(0, Math.PI * 2);
-    const r = rng.range(0.03, 0.11);
-    const h = rng.range(0.22, 0.36);
+    const r = rng.range(0.03, 0.13);
+    const h = style === 'daisy' ? rng.range(0.24, 0.4) : rng.range(0.38, 0.62);
     const x = Math.cos(a) * r;
     const z = Math.sin(a) * r;
     // Stem in the leaf geometry, head in its own, so only the head takes the petal tint.
     b.quad(
-      [x - 0.009, 0, z],
-      [x + 0.009, 0, z],
-      [x + 0.006, h, z],
-      [x - 0.006, h, z],
+      [x - 0.011, 0, z],
+      [x + 0.011, 0, z],
+      [x + 0.007, h, z],
+      [x - 0.007, h, z],
       { uvScale: 0.2 },
       [0.5, 0.5, 0.95, 0.95]
     );
-    // The head is a horizontal quad: at 52 degrees of elevation an upward face is what is seen.
-    const p = rng.range(0.026, 0.04);
-    heads.quad([x - p, h, z + p], [x + p, h, z + p], [x + p, h, z - p], [x - p, h, z - p], {
-      uvScale: 0.2,
-      ao: 1,
-    });
+    if (style === 'spike') {
+      // A vertical strip of blooms plus a crossed pair, so the raceme keeps a silhouette from any
+      // angle the camera orbits to.
+      const top = h + rng.range(0.14, 0.26);
+      const p = rng.range(0.03, 0.048);
+      heads.quad(
+        [x - p, h, z],
+        [x + p, h, z],
+        [x + p * 0.35, top, z],
+        [x - p * 0.35, top, z],
+        { uvScale: 0.2 },
+        [0.72, 0.72, 1.15, 1.15]
+      );
+      heads.quad(
+        [x, h, z - p],
+        [x, h, z + p],
+        [x, top, z + p * 0.35],
+        [x, top, z - p * 0.35],
+        { uvScale: 0.2 },
+        [0.72, 0.72, 1.15, 1.15]
+      );
+    } else {
+      // A horizontal head: at 52 degrees of elevation an upward face is what is seen. The umbel is
+      // wider and flatter than the daisy, and gets a second smaller plate riding just above it.
+      const p = style === 'umbel' ? rng.range(0.045, 0.07) : rng.range(0.03, 0.048);
+      heads.quad([x - p, h, z + p], [x + p, h, z + p], [x + p, h, z - p], [x - p, h, z - p], {
+        uvScale: 0.2,
+        ao: 1.1,
+      });
+      if (style === 'umbel') {
+        const q = p * 0.55;
+        const y = h + 0.035;
+        heads.quad([x - q, y, z + q], [x + q, y, z + q], [x + q, y, z - q], [x - q, y, z - q], {
+          uvScale: 0.2,
+          ao: 1.3,
+        });
+      }
+    }
   }
   return {
     leaves: withSway(softenNormals(b.toGeometry('flower-leaves'), 0.6), 1.4),
@@ -362,19 +418,20 @@ export function buildGroundCover(
    *
    * Cover used to stop dead on a circle, and at the GPS camera that circle is a visible arc of bare
    * turf about 40% up the frame with living ground below it and printed ground above — the "band
-   * where the world stops breathing". The disc now runs to 2 x the caller's radius with the density
-   * easing away over the outer two thirds, and tufts past the core get progressively cheaper
-   * geometry, so reaching four times the area costs slightly FEWER triangles than the hard-edged
-   * disc did.
+   * where the world stops breathing". The disc ran to 2 x the caller's radius, which at the default
+   * 58 m is 116 m, and the GPS camera's 82 m view span across a 9:16 frame reaches past 240 m of
+   * ground up the long axis: everything beyond that arc was bare printed texture, which is most of
+   * the picture. It now runs to 4 x, so living ground reaches the top of the frame, with the density
+   * easing away over the outer two thirds and far tufts dropping to cheaper geometry.
    */
-  const maxRadius = radius * 2;
-  /** 1 out to 40% of the covered disc, easing to a thin scatter at its edge. */
+  const maxRadius = radius * 4;
+  /** 1 out to 25% of the covered disc, easing to a thin scatter at its edge. */
   const falloff = (dSq: number): number => {
     const u = Math.sqrt(dSq) / maxRadius;
-    if (u <= 0.4) return 1;
-    const k = (u - 0.4) / 0.6;
+    if (u <= 0.25) return 1;
+    const k = (u - 0.25) / 0.75;
     const e = 1 - k * k * (3 - 2 * k);
-    return 0.05 + 0.95 * e * e;
+    return 0.09 + 0.91 * e * e;
   };
 
   // Grid spacing chosen so one candidate per cell yields the requested density.
@@ -406,11 +463,39 @@ export function buildGroundCover(
       mask.stampDisc(j.x, j.z, j.radius + 0.3);
     }
   }
+  /**
+   * Empty parcels are planted, not fenced off.
+   *
+   * REFERENCE-SPEC 4.2 says an L0 plot carries mown grass, wildflowers and one bench or boulder —
+   * yet every plot in the tile was stamped into the block mask, so the built half of the frame was a
+   * grid of flat lawn rectangles with living ground only in the gaps between them. Plots still block
+   * cover by default, because a forecourt, an apron or a building footprint must stay clear; the L0
+   * ones instead get an interior rectangle that cover is allowed into, raised to the slab height so
+   * the blades stand on the parcel rather than through it.
+   */
+  const empties: { x: number; z: number; hw: number; hd: number; cos: number; sin: number }[] = [];
   for (const p of tile.plots) {
-    if ((p.x - centerX) ** 2 + (p.z - centerZ) ** 2 < (maxRadius + 30) ** 2) {
-      mask.stampRect(p.x, p.z, p.w / 2 + 0.4, p.d / 2 + 0.4, p.yaw);
+    if ((p.x - centerX) ** 2 + (p.z - centerZ) ** 2 >= (maxRadius + 30) ** 2) continue;
+    mask.stampRect(p.x, p.z, p.w / 2 + 0.4, p.d / 2 + 0.4, p.yaw);
+    if (assignBuilding(p).level === 0) {
+      const hw = p.w / 2 - PLOT_INSET;
+      const hd = p.d / 2 - PLOT_INSET;
+      if (hw > 0.8 && hd > 0.8) {
+        empties.push({ x: p.x, z: p.z, hw, hd, cos: Math.cos(-p.yaw), sin: Math.sin(-p.yaw) });
+      }
     }
   }
+  /** The slab height a candidate stands at, or -1 when it is on blocked ground. */
+  const insidePlot = (x: number, z: number): number => {
+    for (const e of empties) {
+      const dx = x - e.x;
+      const dz = z - e.z;
+      const u = dx * e.cos - dz * e.sin;
+      const v = dx * e.sin + dz * e.cos;
+      if (Math.abs(u) <= e.hw && Math.abs(v) <= e.hd) return LAYER.plotSlab;
+    }
+    return -1;
+  };
   for (const w of tile.water) {
     for (const ring of w.rings) mask.stampPolyline([...ring, ring[0]!, ring[1]!], 2);
   }
@@ -425,9 +510,10 @@ export function buildGroundCover(
    * field pays for its own coverage.
    */
   const TIERS: readonly { readonly upTo: number; readonly shape: TuftShape }[] = [
-    { upTo: 0.25, shape: { arched: 5, filler: 8, height: 0.62 } },
-    { upTo: 0.52, shape: { arched: 2, filler: 6, height: 0.58 } },
-    { upTo: 1, shape: { arched: 0, filler: 5, height: 0.5 } },
+    { upTo: 0.14, shape: { arched: 8, filler: 11, height: 0.98, breadth: 1.15 } },
+    { upTo: 0.3, shape: { arched: 5, filler: 8, height: 0.9, breadth: 1.1 } },
+    { upTo: 0.58, shape: { arched: 2, filler: 7, height: 0.82, breadth: 1.05 } },
+    { upTo: 1, shape: { arched: 0, filler: 6, height: 0.72, breadth: 1.2 } },
   ];
   const tierOf = (dSq: number): number => {
     const u = Math.sqrt(dSq) / maxRadius;
@@ -445,12 +531,18 @@ export function buildGroundCover(
    * The lit end now lifts `groundLit` toward the kit's own wildflower gold, which lands temperate
    * grass on REFERENCE-SPEC 3.1's `#66794A` lit stop and above rather than below it.
    */
-  const tuftDark = new Color(kit.palette.groundMid).lerp(new Color(kit.palette.groundLit), 0.3);
-  const tuftLit = new Color(kit.palette.groundLit).lerp(new Color(PALETTE.flowerGold), 0.15);
-  // A last warm bias on top: REFERENCE-SPEC 3.1's lit grass `#66794A` is a yellow-green, and the
-  // cool sky fill is 35% of key and albedo-modulated, so a neutral green albedo comes back out of
-  // the renderer with more blue in it than went in.
-  for (const c of [tuftDark, tuftLit]) c.setRGB(c.r * 1.04, c.g * 1.03, c.b * 0.9);
+  /**
+   * Blades are regraded through the SAME function the ground sheets are, one stop brighter.
+   *
+   * This has to be kept in step with `TextureGen.grassScale` or the tufts fall out of the picture:
+   * the ground was regraded from a mid of luma 81 to one of 103 and a lit stop of 142, and blades
+   * left on the kit's raw `groundMid`-to-`groundLit` band immediately measured DARKER than the lawn
+   * they stand in — a dark speckle over bright turf, which is the opposite of the reference, where
+   * the blades are the brightest thing on the ground because they are what is catching the sun. The
+   * dark end now sits at the sheet's mid and the lit end above its sun stop.
+   */
+  const tuftDark = new Color(grade(kit.palette.groundMid, 1.16, 1.55, 0.08));
+  const tuftLit = new Color(grade(kit.palette.groundLit, 1.62, 1.6, 0.32));
 
   const tuftMatrices: Matrix4[][] = TIERS.map(() => []);
   const tuftTints: Color[][] = TIERS.map(() => []);

@@ -2,6 +2,7 @@ import {
   CanvasTexture,
   Color,
   LinearFilter,
+  LinearSRGBColorSpace,
   RepeatWrapping,
   SRGBColorSpace,
   type Texture,
@@ -35,8 +36,30 @@ export interface TextureQuality {
  * street — is minified hard along one axis and barely at all along the other, so the mip level the
  * hardware picks from the major axis averages the block joints, the tile joints and the grout out of
  * existence. At 4 the kerb wall resolved as a smooth pale extrusion at any tile size.
+ *
+ * And 512 was not a quality setting, it was a repetition setting.
+ *
+ * Ground is the one surface in the kit that is asked to cover thousands of square metres from one
+ * sheet, so its authored size sets the wavelength of the lattice the eye picks up: at 512 px and 7 m
+ * of ground per tile, roughly 28 x 28 identical tiles are in frame at the GPS camera and no amount
+ * of per-blade painting hides that. Everything else in the kit simply gets sharper. Ground sheets go
+ * a further step up again — see `GROUND_SIZE_SCALE`.
  */
-export const DEFAULT_QUALITY: TextureQuality = { size: 512, anisotropy: 12 };
+export const DEFAULT_QUALITY: TextureQuality = { size: 1024, anisotropy: 12 };
+
+/** Grass sheets are authored at this multiple of the kit size: 2048 px over ~11 m of ground. */
+const GROUND_SIZE_SCALE = 2;
+
+/**
+ * Metres of ground one grass sheet stands for.
+ *
+ * This is the authoring scale, and it is the number every feature in the grass generator is written
+ * against. At 2048 px it works out at 186 px per metre against the GPS camera's 11.8, so the sheet
+ * carries about sixteen times the detail the screen can resolve — headroom the street and plot
+ * cameras use. Anything that samples the sheet must use the same figure or the clumps come out the
+ * wrong size on the ground.
+ */
+export const GRASS_METRES = 11;
 
 /**
  * Canvas colours must be written in sRGB.
@@ -66,6 +89,31 @@ const mixCss = (a: number, b: number, t: number, alpha = 1): string => {
 const shiftCss = (hex: number, lightness: number, saturation = 0, alpha = 1): string =>
   cssOf(new Color(hex).offsetHSL(0, saturation, lightness), alpha);
 
+/**
+ * Regrades an sRGB colour by value, saturation and a push toward a warm anchor.
+ *
+ * Deliberately done in sRGB byte space rather than through `Color.offsetHSL`. HSL offsets land in
+ * three's LINEAR working space, where a lightness of +0.1 on a mid green is a doubling and the
+ * result is unpredictable to author against; here `value` is a straight multiplier on the sRGB
+ * bytes, which is the space the reference screenshots were measured in, so a target luma can be
+ * dialled in and then verified with the same sampler that measured the benchmark.
+ */
+export function grade(hex: number, value: number, saturation: number, warm = 0, anchor = 0xe8c860): number {
+  const r = (hex >> 16) & 255;
+  const g = (hex >> 8) & 255;
+  const b = hex & 255;
+  const l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const ar = (anchor >> 16) & 255;
+  const ag = (anchor >> 8) & 255;
+  const ab = anchor & 255;
+  const ch = (c: number, a: number): number => {
+    const s = (l + (c - l) * saturation) * value;
+    const m = s + (a - s) * warm;
+    return Math.max(0, Math.min(255, Math.round(m)));
+  };
+  return (ch(r, ar) << 16) | (ch(g, ag) << 8) | ch(b, ab);
+}
+
 function makeCanvas(size: number): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
   const canvas = document.createElement('canvas');
   canvas.width = size;
@@ -79,10 +127,13 @@ function finish(
   canvas: HTMLCanvasElement,
   repeat: number,
   q: TextureQuality,
-  mipmaps = true
+  mipmaps = true,
+  data = false
 ): Texture {
   const tex = new CanvasTexture(canvas);
-  tex.colorSpace = SRGBColorSpace;
+  // A control map is not a picture: its channels are weights, and pushing them through the sRGB
+  // transfer function on the way in bends every blend curve it drives.
+  tex.colorSpace = data ? LinearSRGBColorSpace : SRGBColorSpace;
   tex.wrapS = RepeatWrapping;
   tex.wrapT = RepeatWrapping;
   tex.repeat.set(repeat, repeat);
@@ -93,6 +144,32 @@ function finish(
   return tex;
 }
 
+/**
+ * The sheet's mean colour in LINEAR space, stashed on the texture.
+ *
+ * The stochastic ground blend needs it: averaging three overlapping taps of the same sheet collapses
+ * toward that mean and costs the texture most of its own contrast, so the shader subtracts the mean,
+ * sums the taps, rescales by the weights' norm and adds the mean back. Without it, tiling is
+ * invisible and the ground is flat — trading one failure for the other.
+ */
+function recordMean(canvas: HTMLCanvasElement, tex: Texture): void {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  const toLinear = (v: number): number =>
+    v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  const n = data.length / 4;
+  for (let i = 0; i < data.length; i += 4) {
+    r += toLinear(data[i]! / 255);
+    g += toLinear(data[i + 1]! / 255);
+    b += toLinear(data[i + 2]! / 255);
+  }
+  tex.userData.meanLinear = new Color(r / n, g / n, b / n);
+}
+
 /** Soft mottling that breaks up any large flat fill. Applied under most generators. */
 function mottle(
   ctx: CanvasRenderingContext2D,
@@ -101,10 +178,11 @@ function mottle(
   lo: number,
   hi: number,
   scale: number,
-  strength: number
+  strength: number,
+  cells = 128
 ): void {
   const noise = makeNoise2D(seed);
-  const step = Math.max(2, Math.round(size / 128));
+  const step = Math.max(2, Math.round(size / cells));
   for (let y = 0; y < size; y += step) {
     for (let x = 0; x < size; x += step) {
       const n = fbm(noise, (x / size) * scale, (y / size) * scale, 4);
@@ -229,6 +307,114 @@ export interface GrassParams {
   clump: number;
 }
 
+/**
+ * The three grass sheets the ground blend picks between.
+ *
+ * They exist because one sheet cannot be un-repeated. Stochastic tiling hides the LATTICE, but the
+ * eye still learns a single sheet's inventory of clumps and finds it again three fields away; two
+ * sheets with genuinely different structure, cross-faded by a noise field tens of metres across,
+ * give the ground regions with their own character the way a real meadow has them.
+ *
+ *  - `sward`  — the default: even, lush, fine-bladed lawn.
+ *  - `meadow` — coarser: big tussocks, long blades, bleached patches, many more wildflowers.
+ *  - `mown`   — parks and greens: short, fine, evenly lit, with faint mower stripes.
+ */
+export type GrassVariant = 'sward' | 'meadow' | 'mown';
+
+interface GrassRecipe {
+  /** Multiplier on the whole value scale. */
+  value: number;
+  /** Multiplier on the saturation push. */
+  sat: number;
+  /** Clump radius in metres, min and max. */
+  clump: readonly [number, number];
+  /** Clumps per square metre. */
+  clumpsPerM2: number;
+  /** Tussocks (big shaded-base, lit-crown clumps) per square metre. */
+  tussocksPerM2: number;
+  /** Coarse and fine blade strokes per square metre. */
+  blades: readonly [number, number];
+  /** Coarse blade length in metres, min and max. */
+  bladeLen: readonly [number, number];
+  /** Strength of the low-frequency value zoning, 0..1. */
+  zoning: number;
+  /** Bleached straw patch strength. */
+  dry: number;
+  /** Wildflower multiplier. */
+  flowers: number;
+  /** Mower stripe amplitude; 0 for none. */
+  stripe: number;
+}
+
+const GRASS_RECIPES: Record<GrassVariant, GrassRecipe> = {
+  sward: {
+    value: 1,
+    sat: 1,
+    clump: [0.16, 0.62],
+    clumpsPerM2: 5.2,
+    tussocksPerM2: 0.55,
+    blades: [70, 190],
+    bladeLen: [0.11, 0.24],
+    zoning: 0.78,
+    dry: 0.16,
+    flowers: 0.8,
+    stripe: 0,
+  },
+  meadow: {
+    value: 1.04,
+    sat: 1.06,
+    clump: [0.22, 1.05],
+    clumpsPerM2: 3.4,
+    tussocksPerM2: 1.15,
+    blades: [95, 150],
+    bladeLen: [0.16, 0.4],
+    zoning: 1,
+    dry: 0.55,
+    flowers: 2.6,
+    stripe: 0,
+  },
+  mown: {
+    value: 1.06,
+    sat: 0.94,
+    clump: [0.12, 0.4],
+    clumpsPerM2: 7,
+    tussocksPerM2: 0.12,
+    blades: [55, 230],
+    bladeLen: [0.07, 0.15],
+    zoning: 0.5,
+    dry: 0.08,
+    flowers: 0.35,
+    stripe: 0.06,
+  },
+};
+
+/**
+ * The elevated grass scale: six stops spanning roughly luma 44 to 170 in sRGB.
+ *
+ * The kit's own three stops span 58-103, an 45-luma band that is exactly what "compressed" means —
+ * every fragment of a lawn lands within a quarter of the available range and the surface reads as
+ * felt. The Lost Ark benchmark measures rgb(134,144,64) at luma 136 with B-R at -70 and sunlit p95
+ * at 183, i.e. a strongly YELLOW-green with a wide value spread. So the kit stops are regraded:
+ * saturation is pushed 1.35-1.7x about their own luma, value is opened at both ends, and the lit
+ * stops are pulled toward a warm gold. The kit still sets the hue, so a snow or desert biome regrades
+ * to its own colour rather than to this one.
+ */
+function grassScale(
+  p: GrassParams,
+  r: GrassRecipe
+): { deep: number; shade: number; mid: number; lit: number; sun: number; straw: number } {
+  const v = r.value;
+  const s = r.sat;
+  return {
+    deep: grade(p.shade, 0.72 * v, 1.35 * s, 0.06, 0x2a4038),
+    shade: grade(p.shade, 1.0 * v, 1.45 * s, 0.02),
+    mid: grade(p.mid, 1.18 * v, 1.6 * s, 0.06),
+    lit: grade(p.lit, 1.28 * v, 1.7 * s, 0.16),
+    sun: grade(p.lit, 1.52 * v, 1.6 * s, 0.3),
+    straw: grade(p.lit, 1.45 * v, 1.15 * s, 0.55, 0xdcc474),
+  };
+}
+
 export interface TimberParams {
   lit: number;
   mid: number;
@@ -272,13 +458,16 @@ export class TextureFactory {
     key: string,
     make: (rng: Rng, size: number) => HTMLCanvasElement,
     repeat: number,
-    mipmaps = true
+    mipmaps = true,
+    opts: { sizeScale?: number; data?: boolean; mean?: boolean } = {}
   ): Texture {
     const hit = this.cache.get(key);
     if (hit) return hit;
     let h = this.seed;
     for (let i = 0; i < key.length; i++) h = (Math.imul(h, 31) + key.charCodeAt(i)) | 0;
-    const tex = finish(make(makeRng(h), this.q.size), repeat, this.q, mipmaps);
+    const canvas = make(makeRng(h), Math.round(this.q.size * (opts.sizeScale ?? 1)));
+    const tex = finish(canvas, repeat, this.q, mipmaps, opts.data);
+    if (opts.mean) recordMean(canvas, tex);
     this.cache.set(key, tex);
     return tex;
   }
@@ -597,74 +786,263 @@ export class TextureFactory {
     );
   }
 
-  /** Lawn and meadow. Painted as overlapping soft clumps, never as noise. */
-  grass(key: string, p: GrassParams, repeat = 1): Texture {
+  /**
+   * Lawn and meadow. Painted as overlapping soft clumps, never as noise.
+   *
+   * Authored in METRES rather than in fractions of the sheet. The sheet stands for `GRASS_METRES` of
+   * ground, so a tussock is written as 0.8 m and stays 0.8 m whatever the texture size is — which is
+   * the only way to keep the feature sizes that survive minification (0.3-2 m, four to twenty screen
+   * pixels at the GPS camera) fixed while the resolution moves. The previous recipe expressed
+   * everything as a fraction of a 512 px sheet, so raising the size would have shrunk every clump.
+   */
+  grass(key: string, p: GrassParams, repeat = 1, variant: GrassVariant = 'sward'): Texture {
+    const r = GRASS_RECIPES[variant];
     return this.memo(
-      `grass:${key}`,
+      `grass:${key}:${variant}`,
       (rng, size) => {
         const { canvas, ctx } = makeCanvas(size);
-        ctx.fillStyle = css(p.mid);
-        ctx.fillRect(0, 0, size, size);
-        // Three mottle passes across two octaves. The low-frequency one is what stops a large lawn
-        // reading as flat felt under a high sun, where every fragment lands in the same band; the
-        // spec wants a genuine three-value gradient, so shade and lit are both driven to full.
-        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.lit, 1.3, 0.92);
-        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.lit, 3.2, 0.55);
-        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.mid, 9, 0.3);
+        const ppm = size / GRASS_METRES;
+        const area = GRASS_METRES * GRASS_METRES;
+        const c = grassScale(p, r);
+        const count = (perM2: number): number => Math.round(perM2 * area);
 
-        const clumps = Math.round(180 / Math.max(p.clump, 0.2));
-        for (let i = 0; i < clumps; i++) {
+        ctx.fillStyle = css(c.mid);
+        ctx.fillRect(0, 0, size, size);
+
+        // --- value zoning. Four octaves rather than three, and driven from `deep` to `sun` rather
+        // than shade-to-lit, because the reference's ground swings 100 luma across a single field.
+        mottle(ctx, size, rng.int(0, 1e6), c.deep, c.sun, 1.1, 0.95 * r.zoning, 224);
+        mottle(ctx, size, rng.int(0, 1e6), c.shade, c.lit, 2.7, 0.62 * r.zoning, 224);
+        mottle(ctx, size, rng.int(0, 1e6), c.deep, c.mid, 6.5, 0.34 * r.zoning, 224);
+        mottle(ctx, size, rng.int(0, 1e6), c.mid, c.lit, 13, 0.22 * r.zoning, 224);
+        // Bleached, sun-dried patches: the warm straw notes that keep a green field from reading as
+        // one pigment. The benchmark's lawns are never a single hue over any two square metres.
+        if (r.dry > 0) mottle(ctx, size, rng.int(0, 1e6), c.lit, c.straw, 2.2, 0.55 * r.dry, 192);
+
+        if (r.stripe > 0) {
+          // Mower stripes: alternating lay of the blades, so a park reads as kept ground.
+          const band = ppm * 1.6;
+          const angle = rng.range(0, Math.PI);
+          ctx.save();
+          ctx.translate(size / 2, size / 2);
+          ctx.rotate(angle);
+          for (let i = -Math.ceil(size / band); i <= Math.ceil(size / band); i++) {
+            const g = ctx.createLinearGradient(i * band, 0, (i + 1) * band, 0);
+            const up = i % 2 === 0;
+            g.addColorStop(0, css(up ? c.sun : c.shade, 0));
+            g.addColorStop(0.5, css(up ? c.sun : c.shade, r.stripe));
+            g.addColorStop(1, css(up ? c.sun : c.shade, 0));
+            ctx.fillStyle = g;
+            ctx.fillRect(i * band, -size, band, size * 2);
+          }
+          ctx.restore();
+        }
+
+        // --- tussocks: the 0.5-1.4 m structure that actually survives to the GPS camera. A shaded
+        // base with a lit crown offset toward the sun, which is what makes a clump read as a solid
+        // standing thing rather than as a stain.
+        for (let i = 0; i < count(r.tussocksPerM2); i++) {
           const cx = rng.range(0, size);
           const cy = rng.range(0, size);
-          const r = size * 0.03 * p.clump * rng.range(0.6, 1.5);
+          const rad = ppm * rng.range(r.clump[1] * 0.85, r.clump[1] * 1.9);
           const t = rng.next();
-          const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
-          grad.addColorStop(0, mixCss(p.mid, p.lit, 0.4 + t * 0.6, 0.5));
-          grad.addColorStop(1, mixCss(p.mid, p.lit, 0.4 + t * 0.6, 0));
+          shadedBlob(
+            ctx,
+            cx,
+            cy,
+            rad,
+            rad * rng.range(0.7, 1),
+            rng.range(-0.7, 0.7),
+            mixCss(c.lit, c.sun, t),
+            mixCss(c.mid, c.lit, 0.35 + t * 0.5),
+            css(c.deep),
+            css(c.deep, 0.35)
+          );
+        }
+
+        // --- sward clumps: soft overlapping discs across the whole scale. Each one is given its own
+        // stop rather than a shared tint, so the field carries value everywhere, not just where the
+        // zoning noise happens to swing.
+        const stops = [c.deep, c.shade, c.mid, c.mid, c.lit, c.lit, c.sun, c.straw];
+        for (let i = 0; i < count(r.clumpsPerM2); i++) {
+          const cx = rng.range(0, size);
+          const cy = rng.range(0, size);
+          const rad = ppm * rng.range(r.clump[0], r.clump[1]);
+          const hue = stops[Math.min(stops.length - 1, Math.floor(rng.next() ** 1.4 * stops.length))]!;
+          const grad = ctx.createRadialGradient(
+            cx + LIGHT.x * rad * 0.35,
+            cy + LIGHT.y * rad * 0.35,
+            0,
+            cx,
+            cy,
+            rad
+          );
+          grad.addColorStop(0, css(hue, rng.range(0.5, 0.85)));
+          grad.addColorStop(0.6, css(hue, rng.range(0.2, 0.45)));
+          grad.addColorStop(1, css(hue, 0));
           ctx.fillStyle = grad;
           ctx.beginPath();
-          ctx.arc(cx, cy, r, 0, Math.PI * 2);
+          ctx.arc(cx, cy, rad, 0, Math.PI * 2);
           ctx.fill();
         }
-        // Short directional blade strokes give the surface a nap.
-        const blades = Math.round(size * 2.4);
-        for (let i = 0; i < blades; i++) {
-          const x = rng.range(0, size);
-          const y = rng.range(0, size);
-          const len = rng.range(size / 46, size / 20);
-          const lean = rng.range(-0.45, 0.45);
-          ctx.strokeStyle = rng.chance(0.45) ? css(p.lit, 0.4) : css(p.shade, 0.34);
-          ctx.lineWidth = Math.max(1.2, size / 300);
-          ctx.lineCap = 'round';
-          ctx.beginPath();
-          ctx.moveTo(x, y);
-          // A slight arc rather than a straight tick: straight strokes read as hatching.
-          ctx.quadraticCurveTo(x + lean * len * 0.4, y - len * 0.55, x + lean * len, y - len);
-          ctx.stroke();
-        }
+
+        // --- blades. Two passes: a coarse one that resolves at the street camera and a fine one
+        // that only ever contributes grain and variance, which the stochastic blend then preserves.
+        ctx.lineCap = 'round';
+        const bladePass = (
+          n: number,
+          lo: number,
+          hi: number,
+          width: number,
+          alphaLo: number,
+          alphaHi: number
+        ): void => {
+          for (let i = 0; i < n; i++) {
+            const x = rng.range(0, size);
+            const y = rng.range(0, size);
+            const len = ppm * rng.range(lo, hi);
+            const lean = rng.range(-0.5, 0.5);
+            const u = rng.next();
+            // Weighted toward the light end: a blade standing above the sward catches sun on its
+            // upper half, and it is those catches, not the dark gaps, that read as living grass.
+            const hue = u < 0.16 ? c.deep : u < 0.34 ? c.shade : u < 0.6 ? c.lit : u < 0.88 ? c.sun : c.straw;
+            ctx.strokeStyle = css(hue, rng.range(alphaLo, alphaHi));
+            ctx.lineWidth = Math.max(1, ppm * width * rng.range(0.75, 1.35));
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            ctx.quadraticCurveTo(x + lean * len * 0.35, y - len * 0.6, x + lean * len, y - len);
+            ctx.stroke();
+          }
+        };
+        bladePass(count(r.blades[0]), r.bladeLen[0], r.bladeLen[1], 0.024, 0.3, 0.62);
+        bladePass(count(r.blades[1]), r.bladeLen[0] * 0.42, r.bladeLen[1] * 0.5, 0.014, 0.18, 0.4);
+
         if (p.flowers.length && p.flowerDensity > 0) {
-          // Wildflowers arrive in small drifts, not as an even sprinkle, and each speck has to be
-          // at least two pixels across at 512 or the mipmap eats it before the GPS camera sees it.
-          const drifts = Math.round(14 * p.flowerDensity);
+          /**
+           * Wildflowers arrive in drifts, and each one is a rosette rather than a dot.
+           *
+           * A flat speck is what a flower looks like after the mipmap has had it; painting five
+           * petals around a paler centre at 0.05 m across means the thing that survives to mip 4 is
+           * a soft warm point with a light core, which is what the reference's flower drifts read as
+           * from above. The spec caps wildflower area at 2%, and drifts of nine at this size sit
+           * well under it.
+           */
+          const drifts = Math.round(22 * p.flowerDensity * r.flowers);
           for (let d = 0; d < drifts; d++) {
             const cx = rng.range(0, size);
             const cy = rng.range(0, size);
-            const spread = rng.range(size / 26, size / 12);
+            const spread = ppm * rng.range(0.35, 1.1);
             const hue = rng.pick(p.flowers);
-            for (let i = 0; i < 9; i++) {
+            const heads = rng.int(6, 14);
+            for (let i = 0; i < heads; i++) {
               const x = cx + rng.range(-spread, spread);
               const y = cy + rng.range(-spread, spread);
-              const r = rng.range(size / 230, size / 130);
-              ctx.fillStyle = css(hue, rng.range(0.65, 1));
+              const rad = ppm * rng.range(0.018, 0.034);
+              const petals = rng.int(4, 6);
+              const spin = rng.range(0, Math.PI * 2);
+              ctx.fillStyle = css(hue, rng.range(0.7, 1));
+              for (let k = 0; k < petals; k++) {
+                const a = spin + (k / petals) * Math.PI * 2;
+                ctx.beginPath();
+                ctx.ellipse(
+                  x + Math.cos(a) * rad * 0.55,
+                  y + Math.sin(a) * rad * 0.55,
+                  rad * 0.62,
+                  rad * 0.42,
+                  a,
+                  0,
+                  Math.PI * 2
+                );
+                ctx.fill();
+              }
+              ctx.fillStyle = css(0xf6e9a8, 0.85);
               ctx.beginPath();
-              ctx.arc(x, y, r, 0, Math.PI * 2);
+              ctx.arc(x, y, rad * 0.36, 0, Math.PI * 2);
               ctx.fill();
             }
           }
         }
         return canvas;
       },
-      repeat
+      repeat,
+      true,
+      { sizeScale: GROUND_SIZE_SCALE, mean: true }
+    );
+  }
+
+  /**
+   * The low-frequency control map the ground blend reads, tiled over hundreds of metres.
+   *
+   * Three channels, three jobs: red chooses between the two grass sheets, green drives a slow value
+   * drift, blue swings the hue warm or cool. It replaces the three sine terms the old MOTTLE chunk
+   * used, which were a smooth 200-880 m gradient — a filter over the frame, not ground that varies.
+   * Real fbm at four octaves gives lobes, lakes and filaments at every scale from 15 m up, which is
+   * the shape a field's patchiness actually has.
+   */
+  groundMacro(key: string): Texture {
+    return this.memo(
+      `groundMacro:${key}`,
+      (rng, size) => {
+        const { canvas, ctx } = makeCanvas(size);
+        const n1 = makeNoise2D(rng.int(0, 1e6));
+        const n2 = makeNoise2D(rng.int(0, 1e6));
+        const n3 = makeNoise2D(rng.int(0, 1e6));
+        const img = ctx.createImageData(size, size);
+        for (let y = 0; y < size; y++) {
+          for (let x = 0; x < size; x++) {
+            const u = (x / size) * 4;
+            const v = (y / size) * 4;
+            const i = (y * size + x) * 4;
+            const clamp01 = (t: number): number => Math.max(0, Math.min(1, t));
+            img.data[i] = clamp01(fbm(n1, u, v, 4) * 0.85 + 0.5) * 255;
+            img.data[i + 1] = clamp01(fbm(n2, u * 0.55, v * 0.55, 4) * 0.8 + 0.5) * 255;
+            img.data[i + 2] = clamp01(fbm(n3, u * 1.7, v * 1.7, 3) * 0.7 + 0.5) * 255;
+            img.data[i + 3] = 255;
+          }
+        }
+        ctx.putImageData(img, 0, 0);
+        return canvas;
+      },
+      1,
+      true,
+      { data: true, sizeScale: 0.5 }
+    );
+  }
+
+  /**
+   * A fine, directionless nap multiplied over the ground at a couple of metres per tile.
+   *
+   * Directionless is the point: anything with a recognisable feature tiled every 2 m puts its own
+   * lattice back into the frame at a higher frequency. Pure band-limited noise has nothing to
+   * recognise, so it adds grain in the near field and mips cleanly to a flat 0.5 in the far field.
+   */
+  groundDetail(key: string): Texture {
+    return this.memo(
+      `groundDetail:${key}`,
+      (rng, size) => {
+        const { canvas, ctx } = makeCanvas(size);
+        const a = makeNoise2D(rng.int(0, 1e6));
+        const b = makeNoise2D(rng.int(0, 1e6));
+        const img = ctx.createImageData(size, size);
+        for (let y = 0; y < size; y++) {
+          for (let x = 0; x < size; x++) {
+            const u = (x / size) * 16;
+            const v = (y / size) * 16;
+            const n = fbm(a, u, v, 3) * 0.62 + fbm(b, u * 3.1, v * 3.1, 2) * 0.38;
+            const t = Math.max(0, Math.min(1, n * 0.62 + 0.5));
+            const i = (y * size + x) * 4;
+            img.data[i] = t * 255;
+            img.data[i + 1] = t * 255;
+            img.data[i + 2] = t * 255;
+            img.data[i + 3] = 255;
+          }
+        }
+        ctx.putImageData(img, 0, 0);
+        return canvas;
+      },
+      1,
+      true,
+      { data: true, sizeScale: 0.5 }
     );
   }
 

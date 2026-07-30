@@ -1,8 +1,8 @@
-import { BufferAttribute, type Material, Mesh, type Texture } from 'three';
+import { BufferAttribute, Color, type Material, Mesh, type Texture } from 'three';
 import type { BiomeKit } from '../biomes/BiomeKit.js';
 import { LAYER } from '../engine/Palette.js';
 import { RampMaterial } from '../engine/RampMaterial.js';
-import type { TextureFactory } from '../engine/TextureGen.js';
+import { GRASS_METRES, type TextureFactory } from '../engine/TextureGen.js';
 import type { FlatMesh, Polyline, WorldTile } from '../map/types.js';
 import { MeshBuilder } from './MeshBuilder.js';
 import { WaterMaterial } from './WaterMaterial.js';
@@ -220,17 +220,63 @@ export function buildTileSurfaces(
     }
   }
 
-  const groundTex: Texture = textures.grass(kit.id, kit.textures.ground);
+  /**
+   * Three grass sheets plus two control maps, blended in the shader by world position.
+   *
+   * `uvScale` on the ground quad no longer decides anything for these two materials: the blend reads
+   * `vWorldPosRF.xz` directly, so terrain and parks agree exactly where they meet and the tile size
+   * is set here, in metres, next to the sheet that was authored for it. `mottle` is switched off for
+   * both — the macro map does that job properly, with real noise instead of three summed sines, and
+   * running the two together only double-counts the drift.
+   */
+  const swardTex: Texture = textures.grass(kit.id, kit.textures.ground, 1, 'sward');
+  const meadowTex: Texture = textures.grass(kit.id, kit.textures.ground, 1, 'meadow');
+  const mownTex: Texture = textures.grass(kit.id, kit.textures.ground, 1, 'mown');
+  const macroTex: Texture = textures.groundMacro(kit.id);
+  const detailTex: Texture = textures.groundDetail(kit.id);
   const roadTex: Texture = textures.cobble(kit.id, kit.textures.road);
   const stoneTex: Texture = textures.ashlar(kit.id, kit.textures.stone);
   const waterTex: Texture = textures.water(kit.id, kit.textures.water);
 
   const materials = {
-    ground: new RampMaterial({ mottle: 1, map: groundTex, vertexAO: true, rim: 0 }),
-    // Parks read as mown ground purely through a tighter texture tile and a very light tint.
-    // Tinting with a mid-tone palette colour multiplies an already dark grass texture into near
-    // black — a park must never be darker than the rough ground around it.
-    park: new RampMaterial({ mottle: 0.8, map: groundTex, vertexAO: true, rim: 0, color: 0xd8e0c4 }),
+    ground: new RampMaterial({
+      groundBlend: {
+        a: swardTex,
+        b: meadowTex,
+        macro: macroTex,
+        detail: detailTex,
+        tileMetres: GRASS_METRES,
+        macroMetres: 240,
+        detailMetres: 3.4,
+        hexMetres: 5.5,
+        macroStrength: 0.3,
+        detailStrength: 0.2,
+      },
+      vertexAO: true,
+      rim: 0,
+    }),
+    // Parks read as mown ground: the sheet pair swaps the meadow for the mower-striped one and the
+    // tile is tighter, so kept turf resolves finer than the rough ground it sits in. Tinting with a
+    // mid-tone palette colour would multiply an already dark grass texture into near black — a park
+    // must never be darker than the rough ground around it.
+    park: new RampMaterial({
+      groundBlend: {
+        a: mownTex,
+        b: swardTex,
+        macro: macroTex,
+        detail: detailTex,
+        tileMetres: GRASS_METRES * 0.72,
+        macroMetres: 240,
+        detailMetres: 2.6,
+        hexMetres: 4.2,
+        macroStrength: 0.2,
+        detailStrength: 0.16,
+        bias: -0.12,
+        tint: new Color(0xf0f4e2),
+      },
+      vertexAO: true,
+      rim: 0,
+    }),
     road: new RampMaterial({ map: roadTex, vertexAO: true, rim: 0 }),
     kerb: new RampMaterial({ map: stoneTex, vertexAO: true, rim: 0.6 }),
     water: new RampMaterial({ map: waterTex, vertexAO: true, rim: 0.4 }),

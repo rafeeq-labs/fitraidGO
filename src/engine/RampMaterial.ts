@@ -159,6 +159,46 @@ export interface RampMaterialOptions extends MeshLambertMaterialParameters {
    * the texture underneath still reads. 0 disables it.
    */
   mottle?: number;
+  /**
+   * Multi-sheet stochastic ground blending. See `GROUND_BLEND` for what it does and why.
+   *
+   * When set, the material stops sampling `map` through three's `map_fragment` chunk and builds its
+   * albedo from world position instead, so the ground no longer depends on the UVs the mesh happens
+   * to carry and every surface that opts in agrees at the seams between them.
+   */
+  groundBlend?: GroundBlend;
+}
+
+export interface GroundBlend {
+  /** The two grass sheets to cross-fade between. `a` is also assigned as `map`. */
+  a: Texture;
+  b: Texture;
+  /** Low-frequency control map: r = sheet choice, g = value drift, b = warm/cool drift. */
+  macro: Texture;
+  /** Fine directionless nap, multiplied in. */
+  detail: Texture;
+  /** Metres of ground one sheet covers; must match the sheet's authoring scale. */
+  tileMetres: number;
+  /** Metres of ground one macro tile covers. Hundreds, not tens. */
+  macroMetres: number;
+  /** Metres of ground one detail tile covers. Two or three. */
+  detailMetres: number;
+  /**
+   * Metres across one stochastic cell.
+   *
+   * Well under `tileMetres`, so each cell shows a small random window of the sheet rather than the
+   * whole thing, but not so small that three taps are being cross-faded inside every square metre —
+   * that is where blending starts to read as a swirl rather than as ground.
+   */
+  hexMetres?: number;
+  /** Strength of the macro value and hue drift, 0..1. */
+  macroStrength?: number;
+  /** Strength of the fine nap, 0..1. */
+  detailStrength?: number;
+  /** Constant push toward sheet `b`, -1..1. */
+  bias?: number;
+  /** Flat multiplier on the blended albedo, for surfaces that must read lighter or darker. */
+  tint?: Color;
 }
 
 const RAMP_DECLARATIONS = /* glsl */ `
@@ -211,6 +251,148 @@ const MOTTLE = /* glsl */ `
 `;
 
 /**
+ * The ground blend: stochastic hex tiling of two grass sheets, plus macro and detail bands.
+ *
+ * The lattice is the thing being killed. One 512 px sheet at 7 m per tile put roughly 28 x 28
+ * identical copies in frame at the GPS camera, and the eye reads that grid instantly however well
+ * the sheet itself is painted. Three separate mechanisms are stacked here because each covers a
+ * different band of the frequency spectrum and no one of them is sufficient:
+ *
+ *  1. **Stochastic hex tiling** (Heitz & Neyret's triangle grid), 7-14 m. The plane is skewed into a
+ *     triangular lattice; each cell draws its own random offset AND its own random rotation, and
+ *     three overlapping cells are blended by their barycentric weights. Rotation matters as much as
+ *     offset: offsets alone leave every copy's directional nap pointing the same way, which still
+ *     reads as one printed sheet even after the grid is gone. Sampling uses explicit gradients, so
+ *     the per-cell coordinate jump never selects a wrong mip.
+ *
+ *  2. **Variance-preserving reconstruction.** Averaging three taps of the same sheet drives the
+ *     result toward the sheet's own mean and costs it most of its contrast — trading a visible
+ *     lattice for flat felt, which is the same complaint. So the mean is subtracted, the weighted
+ *     sum is divided by the weight vector's norm, and the mean is added back. The weights are cubed
+ *     first, which keeps one tap dominant across most of each cell and holds the sheet's own
+ *     painting sharp instead of permanently showing three of them at once.
+ *
+ *  3. **Macro and detail bands**, 250 m and 2 m. The macro map chooses between the two sheets, drifts
+ *     the value and swings the hue warm or cool; the detail map puts grain back into the near field.
+ *     Between them the ground carries structure from 0.1 m to 250 m with nothing periodic in it.
+ */
+const GROUND_BLEND_PARS = /* glsl */ `
+#ifdef USE_GROUND_BLEND
+uniform sampler2D uGrassB;
+uniform sampler2D uGrassMacro;
+uniform sampler2D uGrassDetail;
+uniform vec3 uGrassMeanA;
+uniform vec3 uGrassMeanB;
+uniform vec3 uGrassTint;
+// x = 1/tileMetres, y = 1/macroMetres, z = 1/detailMetres, w = hex cells per tile
+uniform vec4 uGrassScale;
+// x = macroStrength, y = detailStrength, z = sheet bias
+uniform vec3 uGrassParams;
+
+// Hoskins' hash22: stable at the cell indices a city-sized ground plane reaches, where the usual
+// sin-based hash has already lost its low bits and starts repeating.
+vec2 rfHash2( vec2 p ) {
+	vec3 q = fract( vec3( p.xyx ) * vec3( 0.1031, 0.1030, 0.0973 ) );
+	q += dot( q, q.yzx + 33.33 );
+	return fract( ( q.xx + q.yz ) * q.zy );
+}
+
+void rfTriangleGrid( in vec2 uv, out vec2 c1, out vec2 c2, out vec2 c3, out vec3 w ) {
+	vec2 skew = vec2( uv.x - uv.y * 0.57735027, uv.y * 1.15470054 );
+	vec2 base = floor( skew );
+	vec3 t = vec3( fract( skew ), 0.0 );
+	t.z = 1.0 - t.x - t.y;
+	if ( t.z > 0.0 ) {
+		w = vec3( t.z, t.y, t.x );
+		c1 = base;
+		c2 = base + vec2( 0.0, 1.0 );
+		c3 = base + vec2( 1.0, 0.0 );
+	} else {
+		w = vec3( -t.z, 1.0 - t.y, 1.0 - t.x );
+		c1 = base + vec2( 1.0, 1.0 );
+		c2 = base + vec2( 1.0, 0.0 );
+		c3 = base + vec2( 0.0, 1.0 );
+	}
+}
+
+/**
+ * One tap, returned as a DEVIATION from a mean the caller shares across all three taps.
+ *
+ * Sharing the reference matters more than it looks. The first pass had each tap subtract the mean of
+ * whichever sheet that cell happened to choose; the difference between those means is then a
+ * constant per-cell colour offset, and the variance term below multiplies it by anything from 1.0 at
+ * a cell vertex to 1.73 at a centroid. The result was a dark triangular web printed across every
+ * field — the lattice this whole chunk exists to remove, drawn back in by the fix for it.
+ */
+vec3 rfGrassTap( vec2 cell, vec2 uv, vec2 dx, vec2 dy, float sheet, vec3 mean ) {
+	vec2 h = rfHash2( cell );
+	float a = h.x * 6.2831853;
+	float ca = cos( a );
+	float sa = sin( a );
+	mat2 rot = mat2( ca, sa, -sa, ca );
+	vec2 tuv = rot * uv + h * 37.13 + cell * 0.317;
+	vec2 tdx = rot * dx;
+	vec2 tdy = rot * dy;
+	// Per-cell sheet choice around the macro field: neighbouring cells differ even inside one macro
+	// lobe, so the two sheets interleave at the tile scale as well as drifting at the field scale.
+	float s = clamp( sheet + ( h.y - 0.5 ) * 0.7, 0.0, 1.0 );
+	vec3 ta = texture2DGradEXT( map, tuv, tdx, tdy ).rgb;
+	vec3 tb = texture2DGradEXT( uGrassB, tuv, tdx, tdy ).rgb;
+	return mix( ta, tb, s ) - mean;
+}
+#endif
+`;
+
+const GROUND_BLEND = /* glsl */ `
+#ifdef USE_GROUND_BLEND
+{
+	vec2 gp = vWorldPosRF.xz;
+	vec3 macro = texture2D( uGrassMacro, gp * uGrassScale.y ).rgb;
+	float sheet = clamp( ( macro.r - 0.5 ) * 2.2 + 0.5 + uGrassParams.z, 0.0, 1.0 );
+
+	vec2 uv = gp * uGrassScale.x;
+	vec2 dx = dFdx( uv );
+	vec2 dy = dFdy( uv );
+
+	vec2 c1, c2, c3;
+	vec3 w;
+	rfTriangleGrid( uv * uGrassScale.w, c1, c2, c3, w );
+	// Fourth power, not linear: over most of each triangle one tap then carries almost the whole
+	// weight, so the sheet's own painting stays as sharp as it was authored and only the last sliver
+	// near an edge is a genuine cross-fade. Blending everywhere is what makes stochastic tiling look
+	// like wet felt.
+	w = w * w;
+	w = w * w;
+	w /= max( w.x + w.y + w.z, 1e-5 );
+
+	vec3 mean = mix( uGrassMeanA, uGrassMeanB, sheet );
+	vec3 sum = rfGrassTap( c1, uv, dx, dy, sheet, mean ) * w.x
+		+ rfGrassTap( c2, uv, dx, dy, sheet, mean ) * w.y
+		+ rfGrassTap( c3, uv, dx, dy, sheet, mean ) * w.z;
+	// Variance restoration, at 70%. Averaging taps drives the result toward the mean; the full
+	// correction assumes the taps are uncorrelated, which near a cell vertex they are not, so it is
+	// eased in rather than applied flat.
+	float amp = mix( 1.0, inversesqrt( max( dot( w, w ), 1e-5 ) ), 0.7 );
+	vec3 base = max( mean + sum * amp, vec3( 0.0 ) );
+
+	// Fine nap, then the slow drifts. The hue swing is asymmetric on purpose: ground catching sun
+	// goes yellow-green, ground in the lee goes blue-green, and a symmetric tint would only wash.
+	float det = texture2D( uGrassDetail, gp * uGrassScale.z ).r;
+	base *= 1.0 + ( det - 0.5 ) * uGrassParams.y;
+	float drift = ( macro.g - 0.5 ) * 2.0;
+	float warm = ( macro.b - 0.5 ) * 2.0;
+	base *= 1.0 + drift * uGrassParams.x;
+	base *= mix( vec3( 1.0 ), vec3( 1.18, 1.06, 0.66 ), max( warm, 0.0 ) * uGrassParams.x );
+	base *= mix( vec3( 1.0 ), vec3( 0.80, 0.96, 1.10 ), max( -warm, 0.0 ) * uGrassParams.x );
+
+	diffuseColor.rgb *= base * uGrassTint;
+}
+#else
+	#include <map_fragment>
+#endif
+`;
+
+/**
  * Applied to the final colour. Unexplored ground is darkened and desaturated toward navy rather
  * than hidden, with a violet frontier band where the explored area ends, so the real street network
  * stays faintly legible ahead of the player.
@@ -241,11 +423,18 @@ const RAMPED_IRRADIANCE = /* glsl */ `
 	vec3 irradiance = rampLevel * rampTint * directLight.color;
 `;
 
+/** Mean linear colour a grass sheet recorded at generation time; grey if it never did. */
+function meanOf(tex: Texture): Color {
+  const m = (tex.userData as { meanLinear?: Color }).meanLinear;
+  return m instanceof Color ? m.clone() : new Color(0.1, 0.13, 0.05);
+}
+
 export class RampMaterial extends MeshLambertMaterial {
   private readonly vertexAO: boolean;
   private readonly sway: boolean;
   private readonly mottle: number;
   private readonly rimScale: number;
+  private readonly groundBlend: GroundBlend | undefined;
 
   constructor(options: RampMaterialOptions = {}) {
     const {
@@ -254,13 +443,16 @@ export class RampMaterial extends MeshLambertMaterial {
       rim = 1,
       unlit = false,
       mottle = 0,
+      groundBlend,
       ...params
     } = options;
-    super(params);
+    super(groundBlend ? { ...params, map: groundBlend.a } : params);
     this.vertexAO = vertexAO;
     this.sway = sway;
     this.mottle = mottle;
+    this.groundBlend = groundBlend;
     this.rimScale = unlit ? 0 : rim;
+    if (groundBlend) this.defines = { ...this.defines, USE_GROUND_BLEND: '' };
     if (unlit) {
       // Emissive-only surfaces: kill the diffuse response so they read as light sources.
       // Intensity is a real dial, not a formality: at 1.0 a warm emissive clips through the ACES
@@ -278,6 +470,29 @@ export class RampMaterial extends MeshLambertMaterial {
       uRimScale: { value: this.rimScale },
       uMottle: { value: this.mottle },
     });
+
+    const g = this.groundBlend;
+    if (g) {
+      Object.assign(shader.uniforms, {
+        uGrassB: { value: g.b },
+        uGrassMacro: { value: g.macro },
+        uGrassDetail: { value: g.detail },
+        uGrassMeanA: { value: meanOf(g.a) },
+        uGrassMeanB: { value: meanOf(g.b) },
+        uGrassTint: { value: g.tint ? g.tint.clone() : new Color(1, 1, 1) },
+        uGrassScale: {
+          value: new Vector4(
+            1 / g.tileMetres,
+            1 / g.macroMetres,
+            1 / g.detailMetres,
+            g.tileMetres / (g.hexMetres ?? 5.5)
+          ),
+        },
+        uGrassParams: {
+          value: new Vector3(g.macroStrength ?? 0.22, g.detailStrength ?? 0.3, g.bias ?? 0),
+        },
+      });
+    }
 
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -345,6 +560,14 @@ varying vec3 vWorldPosRF;
 varying float vAO;
 #endif`
       )
+      // Declarations must land after three's own `map_pars_fragment`, which is where `map` itself is
+      // declared; the tap function reads it directly rather than taking a second copy of the sheet.
+      .replace(
+        '#include <map_pars_fragment>',
+        `#include <map_pars_fragment>
+${GROUND_BLEND_PARS}`
+      )
+      .replace('#include <map_fragment>', GROUND_BLEND)
       // three declares vColor in the vertex stage for instanced colours but never applies it here.
       .replace(
         '#include <color_pars_fragment>',
@@ -407,6 +630,6 @@ ${FOG_OF_WAR}`
 
   /** Programs must not be shared between AO and non-AO or differing rim scales. */
   override customProgramCacheKey(): string {
-    return `ramp:${this.vertexAO ? 1 : 0}:${this.sway ? 1 : 0}:${this.rimScale.toFixed(2)}:${this.mottle > 0 ? 1 : 0}`;
+    return `ramp:${this.vertexAO ? 1 : 0}:${this.sway ? 1 : 0}:${this.rimScale.toFixed(2)}:${this.mottle > 0 ? 1 : 0}:${this.groundBlend ? 1 : 0}`;
   }
 }
