@@ -137,7 +137,18 @@ export const RAMP = {
    * the cast-shadow floor — so every shaded face in the kit was the floor's flat colour rather than
    * its own shaded material.
    */
-  shadowTint: hex('#c2cee0'),
+  // Warm-neutral, not cool.
+  //
+  // At #c2cee0 this tint was pulling every shaded surface toward blue: measured on a capture,
+  // shaded plaster rendered rgb(62,68,92) — blue exceeding red by 30 — where REFERENCE-SPEC's
+  // shade for the same material is #94836A, red exceeding blue by 42. The hue was inverted, so
+  // warm cream stone went cold the moment it turned away from the sun, and in the GPS view, which
+  // looks mostly at north elevations, that turned nearly every building into a navy slab.
+  //
+  // The spec's own lit/shade pair #D3BE9A -> #94836A is a near-neutral 0.69 multiply carrying a
+  // slight warm bias, which is what this now is. Cast shadows stay blue-violet: that colour comes
+  // from `castFloorColor` below, which is a different term and is measured as correct.
+  shadowTint: hex('#e8ded0'),
   /** Colour multiplied into the mid band. */
   midTint: hex('#ded8c8'),
   /** Colour multiplied into fully lit surfaces. */

@@ -37,6 +37,11 @@ const report = await page.evaluate(async () => {
     [7.8, 14],  // the median real Bath terrace
     [7.8, 16],
     [7.8, 12],
+    [8, 8],     // the smallest rung of PlotBuilder's size ladder
+    [8, 10],
+    [12, 8],
+    [14, 10],
+    [16, 10],
     [9, 14],
     [10, 14],
     [11, 11],   // spec size class S

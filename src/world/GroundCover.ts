@@ -47,6 +47,64 @@ export interface GroundCoverResult {
   stats: { instances: number; triangles: number };
 }
 
+/**
+ * A `RampMaterial` that does not flip its normal on back faces.
+ *
+ * A grass blade has no back. It is one face standing in for a two-sided leaf, and three's
+ * `DOUBLE_SIDED` path negates the normal on whichever side is turned away from the camera — so
+ * exactly the blades whose backs the camera happens to see get a normal pointing at the ground,
+ * land in the ramp's shadow band, and come out as near-black ticks scattered through the tuft.
+ * Undoing that flip (a second negation is the identity) shades both faces as the same leaf, which
+ * is what the single-sided-under-DoubleSide construction is for in the first place.
+ *
+ * This is a shading fix, not a lighting one: nothing else in the scene changes, and the material
+ * still gets the whole ramp, rim, bounce and cast-shadow response from its base class.
+ */
+class BladeMaterial extends RampMaterial {
+  override onBeforeCompile(shader: { vertexShader: string; fragmentShader: string }): void {
+    super.onBeforeCompile(shader as Parameters<RampMaterial['onBeforeCompile']>[0]);
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <normal_fragment_begin>',
+      `#include <normal_fragment_begin>
+#ifdef DOUBLE_SIDED
+	normal *= faceDirection;
+	nonPerturbedNormal = normal;
+#endif`
+    );
+  }
+
+  override customProgramCacheKey(): string {
+    return `blade:${super.customProgramCacheKey()}`;
+  }
+}
+
+/**
+ * Rotates every normal toward world up by `k`.
+ *
+ * A blade is a flat, near-VERTICAL face, and the key light sits 61 degrees up: geometrically, the
+ * best NdotL any vertical face can reach is cos(61) = 0.485, and a face turned across the sun
+ * reaches zero. So under true face normals most of a tuft's area lands in the ramp's shadow band —
+ * which is multiplied by the cool `RAMP.shadowTint` — and the tuft comes out both darker than the
+ * lawn it stands in and bluer than its own albedo. That is the whole "blue and spiky" read, and no
+ * amount of tinting fixes it, because the tint is a multiply on a term that is already collapsed.
+ *
+ * Shading the blades as if they were part of one soft dome, which is what every painted reference
+ * canopy and lawn does, costs nothing and fixes it at the source. The residual horizontal component
+ * keeps a little side-to-side modelling so a tuft is not a flat sticker.
+ */
+function softenNormals(g: BufferGeometry, k: number): BufferGeometry {
+  const n = g.getAttribute('normal');
+  for (let i = 0; i < n.count; i++) {
+    const x = n.getX(i) * (1 - k);
+    const y = n.getY(i) * (1 - k) + k;
+    const z = n.getZ(i) * (1 - k);
+    const len = Math.hypot(x, y, z) || 1;
+    n.setXYZ(i, x / len, y / len, z / len);
+  }
+  n.needsUpdate = true;
+  return g;
+}
+
 /** Writes the 0-at-the-base, 1-at-the-tip wind weight the RampMaterial `sway` option reads. */
 function withSway(g: BufferGeometry, power = 1): BufferGeometry {
   const pos = g.getAttribute('position');
@@ -142,7 +200,7 @@ function tuftGeometry(shape: TuftShape, seedValue: number): BufferGeometry {
       );
     }
   }
-  return withSway(b.toGeometry('grass-tuft'));
+  return withSway(softenNormals(b.toGeometry('grass-tuft'), 0.7));
 }
 
 /**
@@ -204,7 +262,7 @@ function flowerGeometry(seedValue: number): { leaves: BufferGeometry; heads: Buf
     });
   }
   return {
-    leaves: withSway(b.toGeometry('flower-leaves'), 1.4),
+    leaves: withSway(softenNormals(b.toGeometry('flower-leaves'), 0.6), 1.4),
     heads: withSway(heads.toGeometry('flower-heads'), 1.4),
   };
 }
@@ -387,15 +445,12 @@ export function buildGroundCover(
    * The lit end now lifts `groundLit` toward the kit's own wildflower gold, which lands temperate
    * grass on REFERENCE-SPEC 3.1's `#66794A` lit stop and above rather than below it.
    */
-  const tuftDark = new Color(kit.palette.groundMid).lerp(new Color(kit.palette.groundLit), 0.55);
-  const tuftLit = new Color(kit.palette.groundLit)
-    .lerp(new Color(PALETTE.flowerGold), 0.46)
-    .multiplyScalar(1.18);
-  // A blade is a near-vertical face under a key 61 degrees up, so most of its area sits in the
-  // ramp's SHADOW band — and that band is multiplied by the cool `RAMP.shadowTint`. Warming the
-  // albedo pre-emptively is the only lever this module has over it, and it is exactly the
-  // correction needed: without it the grass renders bluer than its own colour says it is.
-  for (const c of [tuftDark, tuftLit]) c.setRGB(c.r * 1.06, c.g * 1.0, c.b * 0.84);
+  const tuftDark = new Color(kit.palette.groundMid).lerp(new Color(kit.palette.groundLit), 0.3);
+  const tuftLit = new Color(kit.palette.groundLit).lerp(new Color(PALETTE.flowerGold), 0.15);
+  // A last warm bias on top: REFERENCE-SPEC 3.1's lit grass `#66794A` is a yellow-green, and the
+  // cool sky fill is 35% of key and albedo-modulated, so a neutral green albedo comes back out of
+  // the renderer with more blue in it than went in.
+  for (const c of [tuftDark, tuftLit]) c.setRGB(c.r * 1.04, c.g * 1.03, c.b * 0.9);
 
   const tuftMatrices: Matrix4[][] = TIERS.map(() => []);
   const tuftTints: Color[][] = TIERS.map(() => []);
@@ -434,7 +489,7 @@ export function buildGroundCover(
       } else {
         const tier = tierOf(dSq);
         tuftMatrices[tier]!.push(m.clone());
-        tuftTints[tier]!.push(new Color(4,0.2,0.2)); if(false) tuftTints[tier]!.push(
+        tuftTints[tier]!.push(
           tuftDark
             .clone()
             .lerp(tuftLit, Math.min(1, 0.28 + lushness * 0.62 + rng.range(-0.16, 0.16)))
@@ -446,7 +501,7 @@ export function buildGroundCover(
   const meshes: Object3D[] = [];
   let triangles = 0;
 
-  const bladeMaterial = new RampMaterial({
+  const bladeMaterial = new BladeMaterial({
     color: 0xffffff,
     vertexAO: true,
     sway: true,
@@ -500,7 +555,7 @@ export function buildGroundCover(
     const { leaves, heads: headGeo } = flowerGeometry(mix(seed, 9));
     // Single-quad parts need the double-sided material a blade already uses, and the same restraint
     // on the rim: at 1.2 and 1.8 these were the two bluest things on the lawn.
-    const leafMaterial = new RampMaterial({
+    const leafMaterial = new BladeMaterial({
       // The lawn's own greens, not the CONIFER greens `foliageLit` holds in every temperate kit.
       color: new Color(kit.palette.groundLit).lerp(new Color(kit.palette.groundMid), 0.3).getHex(),
       vertexAO: true,
@@ -508,7 +563,7 @@ export function buildGroundCover(
       rim: 0.4,
       side: DoubleSide,
     });
-    const headMaterial = new RampMaterial({
+    const headMaterial = new BladeMaterial({
       color: 0xffffff,
       vertexAO: true,
       sway: true,
@@ -545,7 +600,6 @@ export function buildGroundCover(
     }
   }
 
-  console.error('[STAT cover]', tuftInstances, 'tufts', flowerMatrices.length, 'flowers', triangles, 'tris');
   return {
     meshes,
     stats: { instances: tuftInstances + flowerMatrices.length, triangles },

@@ -48,15 +48,29 @@ export const temperate: BiomeKit = {
   textures: {
     road: {
       // Measured against reference 13: the avenue's setts are 0.30-0.45 m, i.e. 8-14 per square
-      // metre, and the carriageway is DARKER than the grass beside it. At rows 7 over the 4.5 m
-      // road tile the stones came out 0.64 m and the surface rendered at luma 150 against the
-      // reference's 111 — the brightest thing in the frame, which is why the eye landed on empty
-      // street instead of on the town. These colours are the palette's cobble darkened to render
-      // near the reference value once the warm key and ACES shoulder are applied.
-      stone: 0x6f6254,
-      stoneLit: 0x877a6a,
-      stoneShade: PALETTE.stoneShade,
-      grout: PALETTE.cobbleGrout,
+      // metre, and the carriageway is DARKER than the grass beside it.
+      //
+      // These albedos look far too dark read as hex, and they have to be. The key sits 61 degrees
+      // up, so a horizontal surface takes NdotL 0.87 and lands solidly in the lit band, while a
+      // vertical wall can never exceed cos(61) = 0.485 and sits in the transition. Measured on a
+      // capture, that amplifies road albedo by about 1.65x: the palette's own #8B7A69 rendered at
+      // luma 165 against the reference avenue's 111, making the carriageway the brightest surface
+      // in the frame. Scaling the albedo by 111/165 is what puts the rendered street where the
+      // reference has it. Lowering the sun instead would fix the ratio but break shadow length,
+      // which REFERENCE-SPEC pins at 0.45-0.70 of object height, i.e. an elevation of 55-66.
+      // All FOUR colours move together. A sett is a radial gradient running lit -> stone ->
+      // stoneShade over a grout base, and the outer stop plus the grout between the setts cover
+      // most of the tile — so darkening only `stone` and `stoneLit` changes the rendered average by
+      // almost nothing. Verified: with those two forced to magenta the tile still generated tan at
+      // rgb(129,117,99); with all four forced red it generates pure red. The generator is fine, the
+      // shade and grout simply dominate.
+      // Landed empirically, because the albedo-to-render relationship is not the simple 1.65x gain
+      // a single lit surface suggests: the palette's own values rendered at luma 165, and scaling
+      // all four by 0.67 overshot to 57. These are the midpoint, measured back at the target.
+      stone: 0x746458,
+      stoneLit: 0x887a69,
+      stoneShade: 0x554d42,
+      grout: 0x3f392f,
       rows: 13,
       jitter: 0.55,
       creep: 0.25,

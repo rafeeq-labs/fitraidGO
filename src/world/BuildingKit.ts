@@ -157,7 +157,7 @@ const HALO_REACH = 1.7;
  * ground than level 2 was backwards. Width is gated separately, because the failure mode of a
  * narrow parcel is a squeezed mass, not a shallow one.
  */
-const LEVEL_MIN_DEPTH: readonly number[] = [0, 4.6, 6.6, 6.6];
+const LEVEL_MIN_DEPTH: readonly number[] = [0, 4.4, 5.6, 5.6];
 const LEVEL_MIN_WIDTH: readonly number[] = [0, 3.2, 4.2, 4.6];
 
 /**
@@ -691,10 +691,17 @@ function crystalPair(ctx: KitContext, site: Site, x: number, z: number): void {
  */
 function formalForecourt(ctx: KitContext, site: Site, frontZ: number): void {
   const y = LAYER.plotSlab;
-  const zBand = Math.min(frontZ - 1.4, site.frontLimit + 1.2);
+  // The clipped cypresses are the deepest-rooted thing in the forecourt and the only planting with
+  // a canopy: on a 10 m parcel a band solved off the frontage setback alone put a metre and a half
+  // of foliage out over the pavement.
+  const zBand = clamp(
+    Math.min(frontZ - 1.4, site.frontLimit + 1.2),
+    -site.plotD / 2 + KERB_THICKNESS + 1.75,
+    frontZ - 0.9
+  );
   const flank = Math.min(site.halfX - 1.1, site.plotW / 2 - KERB_THICKNESS - PROP_REACH);
   const gateX = Math.min(1.9, site.halfX - 0.6);
-  if (flank > 0.8) {
+  if (flank > 0.8 && zBand < frontZ - 0.9) {
     for (const sx of [-1, 1]) {
       placePiece(ctx, 'planter', { x: sx * flank, y, z: zBand }, { w: 1, d: 1, h: 0.55 });
       placePiece(ctx, 'planter', { x: sx * flank, y, z: zBand + 2.4 }, { w: 1, d: 1, h: 0.55 });
@@ -1103,7 +1110,10 @@ function residentialL3(ctx: KitContext, site: Site, v: number): void {
   withTransform(ctx, () => crystalPair(ctx, site, Math.min(2.4, site.halfX - 0.4), doorZ - 0.6), {
     y: LAYER.plotSlab,
   });
-  const poleX = Math.min(site.halfX - 1.2, site.plotW / 2 - KERB_THICKNESS - 1.1);
+  // The poles stand OUTSIDE the lamps, at the frontage corners. Solved off the buildable half-width
+  // they landed inboard of the crystal pair on a terrace and the two read as one cluttered clump in
+  // front of the portal, hiding the elevation the tier exists to show.
+  const poleX = Math.min(site.halfX + 0.6, site.plotW / 2 - KERB_THICKNESS - 0.8);
   if (poleX > 0.7) {
     for (const sx of [-1, 1]) {
       withTransform(ctx, () => bannerPole(ctx, { height: 4.6, clothW: 1.2, clothH: 3 }), {
@@ -1843,7 +1853,10 @@ function workshopL2(ctx: KitContext, site: Site, v: number): void {
  */
 function workshopL3(ctx: KitContext, site: Site, v: number): void {
   const stackSide = v === 1 ? -1 : 1;
-  const stackR = clamp(site.hardX * 0.2, 0.75, 1.15);
+  // The stack's height follows its girth. Clamped thin to fit a terrace and left at its full 15 m
+  // it came out a 10:1 needle — a flagpole, not a foundry chimney.
+  const stackR = clamp(site.hardX * 0.28, 0.9, 1.15);
+  const stackH = 11 + stackR * 3.5;
   // The furnace stack is the level-3 silhouette, so the room for it is reserved BEFORE the hall is
   // sized. Previously the mass grew to the full plot width and swallowed the stack, which then
   // peeked a metre over the ridge instead of towering 12.5 m clear of it.
@@ -1868,7 +1881,7 @@ function workshopL3(ctx: KitContext, site: Site, v: number): void {
 
       // Free-standing, forward of the ridge and clear of the roof, with the fire at its foot —
       // exactly the read of reference 09's bottom-right tile.
-      withTransform(ctx, () => furnaceStack(ctx, { w: stackR * 2, height: 15 }), {
+      withTransform(ctx, () => furnaceStack(ctx, { w: stackR * 2, height: stackH }), {
         x: stackX,
         z: -mass.d / 2 + stackR * 0.5,
       });

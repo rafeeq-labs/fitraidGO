@@ -440,7 +440,6 @@ export function buildWorldVegetation(
   emit(farSets, farInstances, 'vegetation-far', true);
   emit(shrubSets, shrubInstances, 'vegetation-shrub', true);
 
-  console.error('[STAT veg]', treeInstances.length, 'near', farInstances.length, 'far', shrubInstances.length, 'shrub', triangles, 'tris');
   return {
     meshes,
     stats: {
