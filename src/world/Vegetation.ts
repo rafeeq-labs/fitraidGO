@@ -75,7 +75,7 @@ export interface TreeOptions {
    */
   detail?: 'full' | 'distant';
   /**
-   * Emit the grass tufts, stones and fallen litter that ring the trunk.
+   * Emit the surface roots, grass tufts and half-sunk stones that ring the trunk.
    *
    * On by default because every tree in the reference carries them and they are what stops a trunk
    * looking pushed into the turf; the world turns them off past the LOD swap, where a 0.4 m tuft is
@@ -83,9 +83,10 @@ export interface TreeOptions {
    */
   base?: boolean;
   /**
-   * Multiplier on leaf-cluster counts. 1 is the authored density; the world's mid-field trees run
-   * lower. Never scale it below ~0.5 — under that the dark interior shell starts showing through as
-   * a hole rather than as shade.
+   * Multiplier on leaf-cluster coverage. 1 is the authored density — right for a 300 px asset
+   * shot, and 70k triangles for a shade tree. The world's near tier runs at about a third of it,
+   * which is where a crown still reads as continuous foliage from the GPS camera; much under that
+   * and the dark interior shell starts showing through as holes rather than as shade.
    */
   leafDensity?: number;
 }
@@ -113,6 +114,24 @@ export const DEFAULT_HEIGHT: Record<TreeArchetype, number> = {
 
 // --- shared parts ------------------------------------------------------------
 
+/**
+ * A copy of `skin` whose UVs start at a random place in the leaf sheet.
+ *
+ * `MeshBuilder.quad` generates UVs along the quad's OWN edges, starting at zero. A leaf spray is
+ * 0.17 m across, so without this every one of the several hundred clusters on a tree samples the
+ * same 10 % corner of the leaf texture — the canopy gets no albedo variation from its map at all,
+ * and the shadow-pass dapple mask, which is sampled through the same UVs, resolves to one texel and
+ * punches either all of the cluster or none of it.
+ *
+ * The offset stays under 8 texture repeats so it cannot disturb the tag `tagOf` reads out of v,
+ * which is a whole multiple of 64.
+ */
+function jitterUV(skin: FaceOptions, rng: Rng): FaceOptions {
+  const off = skin.uvOffset ?? [0, 0];
+  return { ...skin, uvOffset: [off[0] + rng.range(0, 8), off[1] + rng.range(0, 8)] };
+}
+
+
 /** A point in the tree's own space, with the direction the limb carrying it was heading. */
 interface Tip {
   x: number;
@@ -120,7 +139,7 @@ interface Tip {
   z: number;
   /** Azimuth of the limb that ends here. */
   az: number;
-  /** How far out from the axis, as a fraction of the crown radius the caller asked for. */
+  /** Horizontal distance from the trunk's axis, in metres. */
   out: number;
 }
 
@@ -309,7 +328,7 @@ function leafClump(
     rand: () => rng.next(),
     emit: (b, rad, ao) =>
       leafRosette(b, rad, {
-        ...o.skin,
+        ...jitterUV(o.skin, rng),
         points: o.points ?? 6,
         notch: 0.42,
         dome: 0.26,
@@ -464,7 +483,7 @@ function conifer(ctx: KitContext, h: number, rng: Rng, density: number): void {
       rand: () => rng.next(),
       emit: (b, rad, ao) =>
         needleSpray(b, rad * 1.9, rad * 0.9, {
-          ...NEEDLE,
+          ...jitterUV(NEEDLE, rng),
           ribs: 4,
           taper: 0.12,
           sweep: 0.6,
@@ -487,7 +506,7 @@ function conifer(ctx: KitContext, h: number, rng: Rng, density: number): void {
     rand: () => rng.next(),
     emit: (b, rad, ao) =>
       needleSpray(b, rad * 1.8, rad * 0.9, {
-        ...NEEDLE,
+        ...jitterUV(NEEDLE, rng),
         ribs: 3,
         aoBase: ao * 0.65,
         aoTip: ao,
@@ -698,7 +717,7 @@ function cypress(ctx: KitContext, h: number, rng: Rng, density: number): void {
     rand: () => rng.next(),
     emit: (b, rad, ao) =>
       needleSpray(b, rad * 1.5, rad * 0.95, {
-        ...NEEDLE,
+        ...jitterUV(NEEDLE, rng),
         ribs: 5,
         taper: 0.15,
         sweep: 0.72,
@@ -937,7 +956,7 @@ function willow(ctx: KitContext, h: number, rng: Rng, density: number): void {
       // was a metre across and the archetype came back wearing eighty giant fern fronds; measured
       // off the reference, a strand there is about 2 % of the tree's height wide.
       needleSpray(f, len, h * rng.range(0.026, 0.042), {
-        ...WILLOW,
+        ...jitterUV(WILLOW, rng),
         ribs: 10,
         taper: 0.34,
         sweep: 0.7,
@@ -999,7 +1018,7 @@ function distantTree(ctx: KitContext, archetype: TreeArchetype, h: number, rng: 
         rand: () => rng.next(),
         emit: (b, rad, ao) =>
           needleSpray(b, rad * 1.9, rad * 0.9, {
-            ...skin,
+            ...jitterUV(skin, rng),
             ribs: 3,
             aoBase: ao * 0.62,
             aoTip: ao,

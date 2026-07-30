@@ -24,6 +24,7 @@ import {
   splitTags,
 } from '../world/PlotBuilder.js';
 import { PROP_NAMES } from '../world/Props.js';
+import { dappledDepth, makeDappleMask } from '../world/WorldVegetation.js';
 import { buildTree, buildUnderstory } from '../world/Vegetation.js';
 
 /**
@@ -148,6 +149,18 @@ function emit(ctx: KitContext, label: string, x: number, z: number, yaw: number)
       mesh.rotation.y = yaw;
       mesh.castShadow = !isEmissiveSlot(slot);
       mesh.receiveShadow = !isEmissiveSlot(slot);
+      /**
+       * Canopies cast through the dapple mask, exactly as they do in the world.
+       *
+       * A canopy is not an opaque solid, and casting it as one is why every tree on this sheet sat
+       * in a hard bean-shaped puddle with its own trunk inside it — measured against the reference,
+       * whose trees stand in broken light with a plainly lit warm bole. The mask is the same one
+       * `buildWorldVegetation` uses, so the sheet and the game agree about what a tree's shade
+       * looks like.
+       */
+      if (CANOPY_SLOTS.has(slot)) {
+        mesh.customDepthMaterial = slot === 'conifer' ? coniferShade : canopyShade;
+      }
       mesh.renderOrder = isEmissiveSlot(slot) ? 1 : 0;
       mesh.matrixAutoUpdate = false;
       mesh.updateMatrix();
@@ -156,6 +169,12 @@ function emit(ctx: KitContext, label: string, x: number, z: number, yaw: number)
     }
   }
 }
+
+/** Foliage slots whose shadow is cast through the dapple mask rather than solid. */
+const CANOPY_SLOTS = new Set(['canopy', 'conifer', 'willowLeaf', 'foliageAccent']);
+const dapple = makeDappleMask();
+const canopyShade = dappledDepth(dapple);
+const coniferShade = dappledDepth(dapple, 0.64);
 
 const only = params.get('only');
 

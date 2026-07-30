@@ -444,7 +444,7 @@ export function createKitMaterials(kit: BiomeKit, textures: TextureFactory): Kit
       rim: 0.08,
     }),
     /**
-     * Tree bark and birch bark, split off `timber`.
+     * Tree bark, split off `timber`.
      *
      * The building kit's timber is a dark stained frame member and a trunk wearing it measured a
      * flat maroon pole at luma 44, against the reference sheet's warm bark at rgb(154,118,74) with
@@ -458,16 +458,6 @@ export function createKitMaterials(kit: BiomeKit, textures: TextureFactory): Kit
         mid: 0x7d5f42,
         shade: 0x4a3728,
         planks: 11,
-      }),
-      vertexAO: true,
-      rim: 0.5,
-    }),
-    birch: new RampMaterial({
-      map: textures.timber(`${kit.id}:birch`, {
-        lit: 0xefe9dc,
-        mid: 0xd2cbba,
-        shade: 0x6f6a5c,
-        planks: 7,
       }),
       vertexAO: true,
       rim: 0.5,

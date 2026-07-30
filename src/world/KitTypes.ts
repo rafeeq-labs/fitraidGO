@@ -79,7 +79,7 @@ export const CHANNEL_SLOTS: Record<KitChannel, readonly string[]> = {
   stone: ['stone', 'paving'],
   wall: ['wall'],
   roof: ['roof', 'shingle', 'water'],
-  timber: ['timber', 'bark', 'birch'],
+  timber: ['timber', 'bark'],
   metal: ['metal'],
   glow: ['glow', 'glowCrystal', 'glowFire', 'haloWarm', 'haloCool', 'haloFire'],
   foliage: ['foliage', 'foliageAccent', 'canopy', 'conifer', 'willowLeaf'],
@@ -106,10 +106,9 @@ export const TAG = {
    * They cannot share a material. The kit's timber is a dark stained frame member — `#42301F` to
    * `#7A5C3F` — and a trunk wearing it came back a flat maroon pole, against the reference sheet's
    * warm tan bark at rgb(154,118,74) with a plainly visible ridge and a lit/shade split. Bark also
-   * wants a much finer uv scale than a plank does, and birch needs a white one outright.
+   * wants a much finer uv scale than a plank does.
    */
   bark: 1,
-  birch: 2,
 } as const;
 
 /** Where a caller wants a piece to stand, in the caller's own space. */

@@ -60,7 +60,7 @@ interface Prototype {
    * Which material this part takes. `canopy` is a stand-in resolved per prototype set to whichever
    * of the four leaf materials that archetype uses; everything else is absolute.
    */
-  slot: 'canopy' | 'lawn' | 'bark' | 'birch' | 'stone';
+  slot: 'canopy' | 'lawn' | 'bark' | 'stone';
 }
 
 /** Which of the canopy materials a prototype's foliage takes. */
@@ -108,8 +108,8 @@ function prototype(
       continue;
     }
     if (name === 'timber') {
-      for (const [tagName, part] of splitTags(geometry, CHANNEL_SLOTS.timber)) {
-        out.push({ geometry: part, slot: tagName === 'birch' ? 'birch' : 'bark' });
+      for (const [, part] of splitTags(geometry, CHANNEL_SLOTS.timber)) {
+        out.push({ geometry: part, slot: 'bark' });
       }
       continue;
     }
@@ -233,7 +233,7 @@ function foliageSlotFor(archetype: TreeArchetype, blossom: boolean): FoliageSlot
  *
  * Cheap and self-contained: 64x64 R8, one upload, shared by every canopy material.
  */
-function makeDappleMask(): Texture {
+export function makeDappleMask(): Texture {
   const size = 64;
   const data = new Uint8Array(size * size);
   for (let y = 0; y < size; y++) {
@@ -268,7 +268,7 @@ function makeDappleMask(): Texture {
  * threshold as a broadleaf's single-layer crown the holes in one tier are plugged by the tier under
  * it and the archetype went on casting a solid navy spike while everything around it had softened.
  */
-function dappledDepth(mask: Texture, threshold = 0.5): MeshDepthMaterial {
+export function dappledDepth(mask: Texture, threshold = 0.5): MeshDepthMaterial {
   const depth = new MeshDepthMaterial({ depthPacking: RGBADepthPacking });
   depth.alphaMap = mask;
   depth.alphaTest = threshold;
@@ -802,16 +802,6 @@ export function buildWorldVegetation(
     vertexAO: true,
     rim: 0.5,
   });
-  const birchMaterial = new RampMaterial({
-    map: textures.timber(`${kit.id}:birch`, {
-      lit: 0xefe9dc,
-      mid: 0xd2cbba,
-      shade: 0x6f6a5c,
-      planks: 7,
-    }),
-    vertexAO: true,
-    rim: 0.5,
-  });
   const lawnMaterial = new RampMaterial({
     map: textures.grass(kit.id, kit.textures.ground),
     vertexAO: true,
@@ -848,9 +838,7 @@ export function buildWorldVegetation(
               ? lawnMaterial
               : proto.slot === 'stone'
                 ? stoneMaterial
-                : proto.slot === 'birch'
-                  ? birchMaterial
-                  : barkMaterial;
+                : barkMaterial;
         const mesh = new InstancedMesh(proto.geometry, material, instances.length);
         mesh.name = `${name}-${proto.slot}`;
         for (let k = 0; k < instances.length; k++) {
