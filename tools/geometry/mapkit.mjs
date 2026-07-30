@@ -29,15 +29,17 @@ function newestMtime(dir, ext) {
 
 function stale() {
   for (const f of NEEDED) if (!existsSync(join(OUT, f))) return true;
-  return newestMtime(join(ROOT, 'src'), '.ts') > newestMtime(join(ROOT, 'dist', 'js'), '.js');
+  return newestMtime(join(ROOT, 'src', 'map'), '.ts') > newestMtime(OUT, '.js');
 }
 
+// Only src/map is compiled here: the rest of src/ is renderer code the tools never touch, and
+// building it would make the tile compiler fail on unrelated in-progress TypeScript.
 if (stale()) {
   try {
-    execFileSync('tsc', ['-p', join(ROOT, 'tsconfig.json')], { cwd: ROOT, stdio: 'pipe' });
+    execFileSync('tsc', ['-p', join(ROOT, 'tsconfig.map.json')], { cwd: ROOT, stdio: 'pipe' });
   } catch (err) {
     const out = `${err.stdout ?? ''}${err.stderr ?? ''}`.trim();
-    throw new Error(`tsc failed while building dist/js for the map tools:\n${out || err.message}`);
+    throw new Error(`tsc failed while building dist/js/map for the map tools:\n${out || err.message}`);
   }
 }
 

@@ -537,6 +537,7 @@ function compilePlots(ctx, roads, warn) {
     }
   }
 
+  setBackFromCarriageway(candidates, roads);
   const { kept, dropped } = rejectOverlaps(candidates, carriagewayQuads(roads));
   for (const d of dropped) warn.add(`plot ${d.plot.osmId}: dropped (${d.reason})`);
   kept.forEach((p, i) => {

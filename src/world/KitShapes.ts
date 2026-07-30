@@ -3,11 +3,12 @@ import type { FaceOptions, MeshBuilder } from './MeshBuilder.js';
 /**
  * Low-poly round and pointed forms used by the props and the vegetation.
  *
- * Winding convention for everything in this file: rings run in DECREASING angle, which is
- * counter-clockwise seen from above in three's XZ plane and is what MeshBuilder.polygonFlat and
- * MeshBuilder.ringWall already expect. MeshBuilder.cylinder and MeshBuilder.cone wind their side
- * quads the other way and so face inward; `drum` and `mound` are the outward-facing equivalents,
- * and they additionally take the top/bottom AO split that canopies and barrels need.
+ * Winding convention throughout: rings run in DECREASING angle, which is counter-clockwise seen
+ * from above in three's XZ plane and is what every MeshBuilder ring primitive expects.
+ *
+ * `drum` and `mound` overlap MeshBuilder.cylinder and MeshBuilder.cone, and exist because those two
+ * fix their vertical AO ramp and their ring count: a canopy needs its underside crushed to 0.25 and
+ * a conifer tier is one ring of triangles, not four.
  */
 
 const TAU = Math.PI * 2;

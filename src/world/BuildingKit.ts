@@ -8,13 +8,11 @@ import {
   balcony,
   bannerPole,
   baseCourse,
-  capstone,
   coneSpire,
   cornerPost,
   crossGable,
   doorway,
   dormer,
-  finial,
   furnaceStack,
   gableRoof,
   hangingSign,
@@ -516,7 +514,6 @@ function residentialL3(ctx: KitContext, site: Site, v: number): void {
   const mass = placeMass(site, 9.6, 7, 1.6);
   const base = 0.9;
   const eaves = 6.6;
-  const rise = (ctx.kit.roof.pitch * mass.d) / 2;
   const towerR = 1.9;
   const towerH = 9.5;
 
@@ -664,7 +661,11 @@ function merchantL1(ctx: KitContext, site: Site, v: number): void {
       }
       // Rear boarding, so the stall has one solid side to read against.
       if (v !== 1) {
-        wallBox(ctx, { w: mass.w, d: 0.16, h: postH, timber: true, taper: 0, z: 0 } as never);
+        withTransform(
+          ctx,
+          () => wallBox(ctx, { w: mass.w, d: 0.16, h: postH, timber: true, taper: 0 }),
+          { z: mass.d / 2 - 0.08 }
+        );
       }
       ctx.channel.glow.box(mass.w / 2 - 0.5, postH - 0.55, -0.15, mass.w / 2 - 0.2, postH - 0.2, 0.15, {
         uvScale: UV.glow,
@@ -875,7 +876,6 @@ function workshopL2(ctx: KitContext, site: Site, v: number): void {
   const mass = placeMass(site, 8.2, 6, 0.4);
   const base = 0.7;
   const eaves = 4.6;
-  const rise = (ctx.kit.roof.pitch * mass.d) / 2;
 
   withTransform(
     ctx,
@@ -1047,9 +1047,7 @@ function civic(ctx: KitContext, site: Site, v: number): void {
       for (const face of ['left', 'right'] as const) {
         windowRow(ctx, mass, face, 3, { w: 1.2, h: 3, y: 2.4 }, 0.62);
       }
-      onWallFace(ctx, 'front', towerW, towerW, 0, 0, () => {
-        // Portal sits on the tower's own front face, one bay wide.
-      });
+      // The portal sits on the tower's own front face, so it has to be placed in tower space.
       withTransform(
         ctx,
         () => {
