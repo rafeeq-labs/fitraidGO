@@ -158,7 +158,17 @@ function conifer(ctx: KitContext, h: number, rng: Rng): void {
     const t = i / (tiers - 1);
     const y = bottom + (top - bottom) * t * 0.86;
     const r = maxR * (1 - t * 0.84) * rng.range(0.9, 1.1);
-    const th = (top - y) * 0.42 + h * 0.06;
+    /**
+     * Shallow skirts, not tall cones.
+     *
+     * At 0.42 of the remaining height a tier's flank stood 28 degrees off vertical, and a surface
+     * that steep can never catch much of a 61-degree sun: measured on a capture the whole archetype
+     * came back at luma 54 with B exceeding R by 37 — a navy silhouette, because what little light
+     * it got was the cool hemisphere fill rather than the key. Flattening the skirts to 40 degrees
+     * puts their upper faces into the key light, which is also what makes the STACK read: eight
+     * shallow overlapping layers instead of eight tall cones fused into one smooth spire.
+     */
+    const th = (top - y) * 0.2 + h * 0.1;
     f.push();
     // Alternating rotation is what stops the tiers stacking into one smooth cone.
     f.rotateY(i * 0.62 + rng.range(-0.18, 0.18));
@@ -169,7 +179,7 @@ function conifer(ctx: KitContext, h: number, rng: Rng): void {
       ...NEEDLE,
       y,
       rings: 2,
-      bow: 0.34,
+      bow: 0.45,
       wobble: 0.17,
       rand: () => rng.next(),
       // The AO floor is much higher than the broadleaf's on purpose: this multiplies an albedo

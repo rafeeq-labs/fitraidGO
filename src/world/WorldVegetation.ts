@@ -98,6 +98,13 @@ function prototype(
 /**
  * The four canopy materials, keyed by archetype.
  *
+ * CACHE KEYS ARE PART OF THE INTERFACE. `TextureFactory.leaf` memoises on the key alone and ignores
+ * the parameters on every call after the first, so sharing PlotBuilder's `<kit>:conifer` key — which
+ * an earlier revision did deliberately, to save an upload — silently threw away every parameter
+ * this function passed and handed back PlotBuilder's texture. Two rounds of colour work on the
+ * world conifer measured as no change at all before that was found. The world's canopies now use
+ * `world*` keys wherever their recipe differs from the plot version's.
+ *
  * Street and park trees used to share ONE white, un-mapped, rim-1.3 material with the whole hue
  * carried by a per-instance tint interpolated between `foliageDark` and `foliageLit` — which in
  * every temperate kit are the two CONIFER greens. So a broadleaf shade tree came out the same
@@ -152,10 +159,10 @@ function foliageMaterials(
      *
      * The mid and shade stops carry a deliberate GREEN bias against the blue the fill adds back.
      */
-    map: textures.leaf(`${kit.id}:conifer`, {
-      lit: new Color(p.foliageLit).lerp(new Color(0xb4c98e), 0.72).getHex(),
-      mid: new Color(p.foliageLit).lerp(new Color(0x7f9367), 0.55).getHex(),
-      shade: new Color(p.foliageDark).lerp(new Color(p.foliageLit), 0.5).getHex(),
+    map: textures.leaf(`${kit.id}:worldconifer`, {
+      lit: new Color(p.foliageLit).lerp(new Color(0xa8c46a), 0.8).getHex(),
+      mid: new Color(p.foliageLit).lerp(new Color(0x6d8a48), 0.72).getHex(),
+      shade: new Color(p.foliageDark).lerp(new Color(0x3c5236), 0.75).getHex(),
       clump: 0.6,
     }),
     vertexAO: true,
@@ -776,7 +783,7 @@ export function buildWorldVegetation(
         mesh.instanceMatrix.needsUpdate = true;
         if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
         mesh.castShadow = true;
-        mesh.receiveShadow = !(proto.foliage && set.slot === 'conifer');
+        mesh.receiveShadow = true;
         // Canopies cast through the dapple mask; trunks cast solid.
         if (proto.foliage) {
           mesh.customDepthMaterial = set.slot === 'conifer' ? coniferDepth : canopyDepth;
