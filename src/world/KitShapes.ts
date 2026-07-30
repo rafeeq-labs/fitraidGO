@@ -13,6 +13,9 @@ import type { FaceOptions, MeshBuilder } from './MeshBuilder.js';
 
 const TAU = Math.PI * 2;
 
+/** Half the separation between the two faces of a double-sided sheet; see `blade`. */
+export const SHEET_GAP = 0.012;
+
 export interface RoundOptions extends FaceOptions {
   y?: number;
   /** Emit the top disc. */
@@ -228,6 +231,9 @@ export function canopyBlob(mb: MeshBuilder, radius: number, opts: BlobOptions = 
  * A tapering strip that curves over as it rises, emitted with both faces so it survives being
  * yawed at random: reeds, fern fronds, palm leaves, the hanging strands of a willow.
  * `4 * segments` triangles. Grows along +x as it rises.
+ *
+ * The two faces are pulled a hair apart along the surface normal. Coincident back-to-back quads
+ * shadow each other in the shadow map and the leaf comes out black.
  */
 export function blade(
   mb: MeshBuilder,
@@ -259,12 +265,12 @@ export function blade(
     const ny = y + Math.cos(ang) * step;
     const a0 = 0.5 + (i / segs) * 0.4;
     const a1 = 0.5 + ((i + 1) / segs) * 0.4;
-    const p0: [number, number, number] = [x, y, -w0];
-    const p1: [number, number, number] = [x, y, w0];
-    const p2: [number, number, number] = [nx, ny, w1];
-    const p3: [number, number, number] = [nx, ny, -w1];
-    mb.quad(p0, p1, p2, p3, opts, [a0, a0, a1, a1]);
-    mb.quad(p1, p0, p3, p2, opts, [a0, a0, a1, a1]);
+    const ex = -Math.cos(ang) * SHEET_GAP;
+    const ey = Math.sin(ang) * SHEET_GAP;
+    mb.quad([x + ex, y + ey, -w0], [x + ex, y + ey, w0], [nx + ex, ny + ey, w1], [nx + ex, ny + ey, -w1],
+      opts, [a0, a0, a1, a1]);
+    mb.quad([x - ex, y - ey, w0], [x - ex, y - ey, -w0], [nx - ex, ny - ey, -w1], [nx - ex, ny - ey, w1],
+      opts, [a0, a0, a1, a1]);
     x = nx;
     y = ny;
     ang += curve / segs;

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>RaidFit — building kit sheet</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #141c30; }
+    #app { position: fixed; inset: 0; }
+    #app canvas { display: block; }
+    #hud { position: fixed; inset: 0; pointer-events: none; font-family: system-ui, sans-serif; }
+    #stats { position: absolute; top: 8px; left: 8px; color: #cfe3ff;
+      background: rgba(20,28,48,.72); border: 1px solid rgba(77,184,255,.35);
+      border-radius: 6px; padding: 6px 9px; font-size: 12px; line-height: 1.45; white-space: pre; display: none; }
+  </style>
+  <script type="importmap">
+    { "imports": { "three": "/vendor/three/three.module.js", "earcut": "/vendor/earcut/earcut.js" } }
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="hud"><div id="stats"></div></div>
+  <script type="module" src="/dist/js/dev/kitSheet.js"></script>
+</body>
+</html>

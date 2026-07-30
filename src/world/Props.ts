@@ -1,5 +1,14 @@
 import { flag, opt } from './KitPlacement.js';
-import { canopyBlob, disc, drum, facetedCrystal, flatQuad, mound, pyramid } from './KitShapes.js';
+import {
+  canopyBlob,
+  disc,
+  drum,
+  facetedCrystal,
+  flatQuad,
+  mound,
+  pyramid,
+  SHEET_GAP,
+} from './KitShapes.js';
 import { registerPiece, type KitContext, type KitPiece } from './KitTypes.js';
 import type { FaceOptions, MeshBuilder } from './MeshBuilder.js';
 
@@ -15,8 +24,8 @@ import type { FaceOptions, MeshBuilder } from './MeshBuilder.js';
  * crystalObelisk, forge — spend most of theirs on the glowing crystal and the ember light, because
  * those are the only saturated accents the frame is allowed to contain.
  *
- * Standing water (troughs, butts, fountain basins) has no channel of its own; it goes into `metal`,
- * the darkest and coolest material available, with heavy AO doing the rest.
+ * `metal` is the gold-trim channel, so iron-coloured things (anvils, bollards) live in `stone` and
+ * only genuinely gilded fittings — lantern housings, finials, cross-arms, the scale pans — use it.
  */
 
 const STONE: FaceOptions = { uvScale: 1.1 };
@@ -26,7 +35,22 @@ const CLOTH: FaceOptions = { uvScale: 1.3 };
 const LEAF: FaceOptions = { uvScale: 0.75 };
 const GLOW: FaceOptions = { uvScale: 0.5 };
 const ROOF: FaceOptions = { uvScale: 0.5 };
-const WATER: FaceOptions = { uvScale: 1.4, ao: 0.4 };
+/**
+ * Standing water — troughs, butts, fountain basins — has no channel of its own. `roof` is the only
+ * channel whose material is blue in the biomes that have water on show, so water borrows it and
+ * leans on heavy AO to read as depth rather than as slate.
+ */
+const WATER: FaceOptions = { uvScale: 1.4, ao: 0.42 };
+
+/**
+ * The `glow` channel carries two emissives that must not be confused: warm window and lantern gold,
+ * and cold blue crystal. Crystal geometry is offset by this much in v so a glow texture authored as
+ * two horizontal bands (gold below, `landmark.crystalColor` above) separates them from one material.
+ * Without such a texture the crystals simply glow the same warm gold as the windows.
+ */
+export const GLOW_CRYSTAL_UV = 0.5;
+
+const CRYSTAL: FaceOptions = { uvScale: 0.5, uvOffset: [0, GLOW_CRYSTAL_UV] };
 const RECESS: FaceOptions = { uvScale: 0.9, ao: 0.3 };
 const NO_FLOOR = { ny: true } as const;
 
@@ -60,8 +84,9 @@ function wheel(
   ctx: KitContext,
   radius: number,
   at: { x?: number; y?: number; z?: number } = {},
-  spokes = 4
+  detail: { spokes?: number; hub?: boolean; segments?: number } = {}
 ): void {
+  const spokes = detail.spokes ?? 4;
   const t = ctx.channel.timber;
   const m = ctx.channel.metal;
   for (const b of [t, m]) {
@@ -69,8 +94,8 @@ function wheel(
     b.translate(at.x ?? 0, at.y ?? radius, at.z ?? 0);
     b.rotateX(Math.PI / 2);
   }
-  drum(m, radius, radius, 0.08, 10, { ...METAL, y: -0.04, cap: false });
-  drum(t, 0.09, 0.09, 0.14, 6, { ...TIMBER, y: -0.07, cap: false });
+  drum(m, radius, radius, 0.08, detail.segments ?? 10, { ...METAL, y: -0.04, cap: false });
+  if (detail.hub !== false) drum(t, 0.09, 0.09, 0.14, 6, { ...TIMBER, y: -0.07, cap: false });
   for (let i = 0; i < spokes; i++) {
     t.push();
     t.rotateY((i / spokes) * Math.PI);
@@ -88,17 +113,18 @@ function banner(ctx: KitContext, w: number, h: number, y: number, z = 0): void {
   const c = ctx.channel.cloth;
   const hw = w / 2;
   const fade: [number, number, number, number] = [0.62, 0.62, 1, 1];
-  c.quad([-hw, y - h, z], [hw, y - h, z], [hw, y, z], [-hw, y, z], CLOTH, fade);
-  c.quad([hw, y - h, z], [-hw, y - h, z], [-hw, y, z], [hw, y, z], CLOTH, fade);
+  const g = SHEET_GAP;
+  c.quad([-hw, y - h, z + g], [hw, y - h, z + g], [hw, y, z + g], [-hw, y, z + g], CLOTH, fade);
+  c.quad([hw, y - h, z - g], [-hw, y - h, z - g], [-hw, y, z - g], [hw, y, z - g], CLOTH, fade);
   c.tri([-hw, y - h, z], [0, y - h - h * 0.16, z], [hw, y - h, z], null, { ...CLOTH, ao: 0.55 });
   const m = ctx.channel.metal;
   const d = hw * 0.42;
   const yc = y - h * 0.42;
   m.quad(
-    [-d, yc - d, z + 0.01],
-    [d, yc - d, z + 0.01],
-    [d, yc + d, z + 0.01],
-    [-d, yc + d, z + 0.01],
+    [-d, yc - d, z + g * 2],
+    [d, yc - d, z + g * 2],
+    [d, yc + d, z + g * 2],
+    [-d, yc + d, z + g * 2],
     METAL
   );
 }
@@ -259,7 +285,7 @@ const barrel: KitPiece = (ctx, o) => {
   const r = opt(o, 'radius', 0.31);
   const h = opt(o, 'height', 0.9);
   cask(ctx, r, h);
-  if (flag(o, 'open', false)) disc(ctx.channel.metal, r * 0.8, h - 0.06, 8, WATER);
+  if (flag(o, 'open', false)) disc(ctx.channel.roof, r * 0.8, h - 0.06, 8, WATER);
   else disc(ctx.channel.timber, r * 0.84, h, 8, TIMBER);
 };
 
@@ -327,7 +353,7 @@ const waterButt: KitPiece = (ctx, o) => {
   const r = opt(o, 'radius', 0.42);
   const h = opt(o, 'height', 1.05);
   cask(ctx, r, h, 8);
-  disc(ctx.channel.metal, r * 0.82, h - 0.1, 8, WATER);
+  disc(ctx.channel.roof, r * 0.82, h - 0.1, 8, WATER);
 };
 
 /** Stone drinking trough, running along x. */
@@ -347,7 +373,7 @@ const trough: KitPiece = (ctx, o) => {
   flatQuad(s, -hw, -w, hw, -w + i, h, STONE);
   flatQuad(s, hw - i, -w, hw, w, h, STONE);
   flatQuad(s, -hw, -w, -hw + i, w, h, STONE);
-  disc(ctx.channel.metal, Math.min(hw, w) * 0.9, h - 0.1, 6, WATER);
+  disc(ctx.channel.roof, Math.min(hw, w) * 0.9, h - 0.1, 6, WATER);
 };
 
 /** Round ashlar well under a shingled canopy on two posts. */
@@ -390,16 +416,20 @@ const cartwheel: KitPiece = (ctx, o) => {
 const handcart: KitPiece = (ctx, o) => {
   const t = ctx.channel.timber;
   const r = 0.34;
+  const thin = { ...TIMBER, skip: { py: true, ny: true } };
   t.box(-0.8, 0.5, -0.45, 0.8, 0.62, 0.45, TIMBER);
   for (const sz of [-1, 1]) {
-    t.box(-0.8, 0.62, sz * 0.45 - 0.05, 0.8, 0.86, sz * 0.45 + 0.05, TIMBER);
-    t.box(-1.55, 0.5, sz * 0.3 - 0.05, -0.7, 0.6, sz * 0.3 + 0.05, TIMBER);
-    wheel(ctx, r, { x: 0.1, y: r, z: sz * 0.52 });
+    t.box(-0.8, 0.62, sz * 0.45 - 0.05, 0.8, 0.86, sz * 0.45 + 0.05, thin);
+    t.box(-1.55, 0.5, sz * 0.3 - 0.05, -0.7, 0.6, sz * 0.3 + 0.05, {
+      ...TIMBER,
+      skip: { px: true, nx: true, py: true, ny: true },
+    });
+    wheel(ctx, r, { x: 0.1, y: r, z: sz * 0.52 }, { spokes: 2, hub: false, segments: 8 });
   }
   if (!flag(o, 'awning', true)) return;
   ctx.channel.cloth.quad([-0.85, 1.38, 0.6], [0.85, 1.38, 0.6], [0.85, 1.5, -0.6], [-0.85, 1.5, -0.6], CLOTH);
   for (const sx of [-1, 1]) {
-    t.box(sx * 0.78 - 0.05, 0.8, -0.55, sx * 0.78 + 0.05, 1.5, -0.45, TIMBER);
+    t.box(sx * 0.78 - 0.05, 0.8, -0.55, sx * 0.78 + 0.05, 1.5, -0.45, thin);
   }
 };
 
@@ -408,12 +438,13 @@ const handcart: KitPiece = (ctx, o) => {
 const anvil: KitPiece = (ctx) => {
   const t = ctx.channel.timber;
   t.box(-0.26, 0, -0.22, 0.26, 0.42, 0.22, { ...TIMBER, taper: 0.12, skip: NO_FLOOR });
-  const m = ctx.channel.metal;
-  m.box(-0.19, 0.42, -0.15, 0.19, 0.5, 0.15, METAL);
-  m.box(-0.1, 0.5, -0.09, 0.1, 0.6, 0.09, METAL);
-  m.box(-0.3, 0.6, -0.13, 0.26, 0.72, 0.13, METAL);
-  m.tri([0.26, 0.72, -0.13], [0.26, 0.72, 0.13], [0.52, 0.68, 0], null, METAL);
-  m.tri([0.26, 0.6, 0.13], [0.26, 0.6, -0.13], [0.52, 0.68, 0], null, METAL);
+  const s = ctx.channel.stone;
+  const iron = { ...STONE, ao: 0.5, uvScale: 0.4 };
+  s.box(-0.19, 0.42, -0.15, 0.19, 0.5, 0.15, iron);
+  s.box(-0.1, 0.5, -0.09, 0.1, 0.6, 0.09, iron);
+  s.box(-0.3, 0.6, -0.13, 0.26, 0.72, 0.13, iron);
+  s.tri([0.26, 0.72, -0.13], [0.26, 0.72, 0.13], [0.52, 0.68, 0], null, iron);
+  s.tri([0.26, 0.6, 0.13], [0.26, 0.6, -0.13], [0.52, 0.68, 0], null, iron);
 };
 
 /** Stone forge with an ember glow: the workshop family's warm accent. */
@@ -534,14 +565,16 @@ const washline: KitPiece = (ctx, o) => {
     t.box(sx * hw - 0.06, 0, -0.06, sx * hw + 0.06, h, 0.06, { ...TIMBER, skip: NO_FLOOR });
   }
   t.quad([-hw, h - 0.02, -0.02], [hw, h - 0.02, -0.02], [hw, h, -0.02], [-hw, h, -0.02], TIMBER);
-  const c = ctx.channel.cloth;
+  // Linen, not heraldry: `cloth` is the biome's banner navy, so the sheets take pale plaster.
+  const c = ctx.channel.wall;
   const fade: [number, number, number, number] = [0.7, 0.7, 1, 1];
   for (let i = 0; i < 3; i++) {
     const x = -hw + ((i + 0.5) / 3) * len;
     const w = (len / 3) * 0.34;
     const drop = ctx.rng.range(0.5, 0.8);
-    c.quad([x - w, h - drop, 0], [x + w, h - drop, 0], [x + w, h - 0.04, 0], [x - w, h - 0.04, 0], CLOTH, fade);
-    c.quad([x + w, h - drop, 0], [x - w, h - drop, 0], [x - w, h - 0.04, 0], [x + w, h - 0.04, 0], CLOTH, fade);
+    const g = SHEET_GAP;
+    c.quad([x - w, h - drop, g], [x + w, h - drop, g], [x + w, h - 0.04, g], [x - w, h - 0.04, g], CLOTH, fade);
+    c.quad([x + w, h - drop, -g], [x - w, h - drop, -g], [x - w, h - 0.04, -g], [x + w, h - 0.04, -g], CLOTH, fade);
   }
 };
 
@@ -581,7 +614,7 @@ const crystalLamp: KitPiece = (ctx, o) => {
   s.box(-0.19, 0.26, -0.19, 0.19, 0.4, 0.19, STONE);
   const m = ctx.channel.metal;
   const shaftTop = h - 0.62;
-  drum(m, 0.11, 0.085, shaftTop - 0.4, 8, { ...METAL, y: 0.4, cap: false, aoBottom: 0.55 });
+  drum(s, 0.11, 0.085, shaftTop - 0.4, 8, { ...STONE, y: 0.4, cap: false, aoBottom: 0.55 });
   m.box(-0.13, shaftTop, -0.13, 0.13, shaftTop + 0.12, 0.13, METAL);
   for (const sx of [-1, 1]) {
     const x = sx * 0.34;
@@ -590,7 +623,7 @@ const crystalLamp: KitPiece = (ctx, o) => {
       skip: { px: true, nx: true },
     });
   }
-  facetedCrystal(ctx.channel.glow, 0.15, 0.3, 0.24, { ...GLOW, y: shaftTop + 0.26 });
+  facetedCrystal(ctx.channel.glow, 0.15, 0.3, 0.24, { ...CRYSTAL, y: shaftTop + 0.26 });
   if (flag(o, 'banner', ctx.rng.chance(0.4))) banner(ctx, 0.44, 1, shaftTop - 0.2, 0.16);
 };
 
@@ -601,7 +634,7 @@ const streetLantern: KitPiece = (ctx, o) => {
   s.box(-0.24, 0, -0.24, 0.24, 0.3, 0.24, { ...STONE, taper: 0.16, skip: NO_FLOOR });
   const m = ctx.channel.metal;
   const top = h - 0.75;
-  drum(m, 0.09, 0.07, top - 0.3, 8, { ...METAL, y: 0.3, cap: false, aoBottom: 0.55 });
+  drum(s, 0.09, 0.07, top - 0.3, 8, { ...STONE, y: 0.3, cap: false, aoBottom: 0.55 });
   m.box(-0.19, top, -0.19, 0.19, top + 0.08, 0.19, METAL);
   ctx.channel.glow.box(-0.15, top + 0.08, -0.15, 0.15, top + 0.5, 0.15, { ...GLOW, taper: -0.1 });
   m.box(-0.2, top + 0.5, -0.2, 0.2, top + 0.56, 0.2, METAL);
@@ -639,10 +672,10 @@ const crystalObelisk: KitPiece = (ctx, o) => {
       [px + az * w, 0.9, pz - ax * w],
       [px + az * w, 0.9 + pedH * 0.55, pz - ax * w],
       [px - az * w, 0.9 + pedH * 0.55, pz + ax * w],
-      GLOW
+      CRYSTAL
     );
   }
-  facetedCrystal(g, 0.4, h * 0.36, h * 0.24, { ...GLOW, y: 0.66 + pedH });
+  facetedCrystal(g, 0.34, h * 0.3, h * 0.2, { ...CRYSTAL, y: 0.66 + pedH });
 };
 
 /** L0 marker: a stake with a scrap of cloth — the "this parcel is buildable" read. */
@@ -651,8 +684,9 @@ const surveyStake: KitPiece = (ctx, o) => {
   const t = ctx.channel.timber;
   t.box(-0.05, 0, -0.05, 0.05, h, 0.05, { ...TIMBER, taper: 0.2, skip: NO_FLOOR });
   const c = ctx.channel.cloth;
-  c.quad([0.04, h - 0.34, 0], [0.4, h - 0.28, 0], [0.4, h - 0.06, 0], [0.04, h - 0.08, 0], CLOTH);
-  c.quad([0.4, h - 0.28, 0], [0.04, h - 0.34, 0], [0.04, h - 0.08, 0], [0.4, h - 0.06, 0], CLOTH);
+  const g = SHEET_GAP;
+  c.quad([0.04, h - 0.34, g], [0.4, h - 0.28, g], [0.4, h - 0.06, g], [0.04, h - 0.08, g], CLOTH);
+  c.quad([0.4, h - 0.28, -g], [0.04, h - 0.34, -g], [0.04, h - 0.08, -g], [0.4, h - 0.06, -g], CLOTH);
   ctx.channel.stone.box(-0.14, 0, -0.14, 0.14, 0.09, 0.14, { ...STONE, taper: 0.2, skip: NO_FLOOR });
 };
 
@@ -700,7 +734,7 @@ const bannerPost: KitPiece = (ctx, o) => {
   const s = ctx.channel.stone;
   s.box(-0.26, 0, -0.26, 0.26, 0.3, 0.26, { ...STONE, taper: 0.16, skip: NO_FLOOR });
   const m = ctx.channel.metal;
-  drum(m, 0.11, 0.08, h - 0.5, 8, { ...METAL, y: 0.3, cap: false, aoBottom: 0.55 });
+  drum(ctx.channel.timber, 0.11, 0.08, h - 0.5, 8, { ...TIMBER, y: 0.3, cap: false, aoBottom: 0.55 });
   m.box(-0.05, h - 0.5, -0.05, 0.9, h - 0.38, 0.05, METAL);
   pyramid(m, 0.1, 0.1, 0.3, { ...METAL, y: h - 0.2 });
   banner(ctx, 1.2, 3, h - 0.5, 0.55);
@@ -772,10 +806,10 @@ const fountain: KitPiece = (ctx, o) => {
   drum(s, r * 1.04, r, 0.44, 10, { ...STONE, cap: false, aoBottom: 0.45 });
   s.ringWall(ringOf(r * 0.88, 10), 0.28, 0.44, { ...STONE, inward: true });
   s.ringWall(ringOf(r, 10), 0.44, 0.52, STONE);
-  disc(ctx.channel.metal, r * 0.86, 0.3, 10, WATER);
+  disc(ctx.channel.roof, r * 0.86, 0.3, 10, WATER);
   drum(s, 0.26, 0.2, 0.86, 8, { ...STONE, y: 0.44, cap: false });
   drum(s, 0.52, 0.56, 0.14, 8, { ...STONE, y: 1.3, cap: false });
-  disc(ctx.channel.metal, 0.5, 1.4, 8, WATER);
+  disc(ctx.channel.roof, 0.5, 1.4, 8, WATER);
   mound(s, 0.16, 0.42, 6, { ...STONE, y: 1.44 });
 };
 

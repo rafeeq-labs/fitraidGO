@@ -91,7 +91,7 @@ export function onWallFace(
   u: number,
   y: number,
   fn: () => void,
-  taper = 0.02
+  taper = 0.015
 ): void {
   const halfX = w / 2;
   const halfZ = d / 2;
@@ -142,7 +142,16 @@ function deckQuad(
   mb.quad([x0, y, z1], [x1, y, z1], [x1, y, z0], [x0, y, z0], opts);
 }
 
-/** The four inner faces of a rectangular recess: mouth at z = 0, back at z = -depth. */
+/**
+ * The four inner faces of a reveal: back at the wall plane z = 0, mouth standing proud at z =
+ * depth, normals pointing into the opening.
+ *
+ * MeshBuilder has no CSG, so a wall is a solid box and an opening cannot be a hole. The reveal is
+ * therefore built outward from the wall face rather than cut into it: a surround that projects,
+ * with darkened returns behind it. At the GPS camera's 12 px/m the two are indistinguishable —
+ * what sells the recess is the AO on the returns, not the parallax — and it means a pane is never
+ * swallowed by the wall it belongs to.
+ */
 function reveal(
   mb: MeshBuilder,
   w: number,
@@ -153,13 +162,13 @@ function reveal(
 ): void {
   const hw = w / 2;
   const o = { ...opts, ao: AO.reveal };
-  mb.quad([-hw, y, 0], [-hw, y, -depth], [-hw, y + h, -depth], [-hw, y + h, 0], o);
-  mb.quad([hw, y, -depth], [hw, y, 0], [hw, y + h, 0], [hw, y + h, -depth], o);
-  mb.quad([-hw, y + h, 0], [-hw, y + h, -depth], [hw, y + h, -depth], [hw, y + h, 0], {
+  mb.quad([-hw, y, depth], [-hw, y, 0], [-hw, y + h, 0], [-hw, y + h, depth], o);
+  mb.quad([hw, y, 0], [hw, y, depth], [hw, y + h, depth], [hw, y + h, 0], o);
+  mb.quad([-hw, y + h, depth], [-hw, y + h, 0], [hw, y + h, 0], [hw, y + h, depth], {
     ...opts,
     ao: AO.recess,
   });
-  mb.quad([-hw, y, -depth], [-hw, y, 0], [hw, y, 0], [hw, y, -depth], { ...opts, ao: AO.reveal });
+  mb.quad([-hw, y, 0], [-hw, y, depth], [hw, y, depth], [hw, y, 0], { ...opts, ao: AO.reveal });
 }
 
 /** A picture frame of four flat quads around an opening, on the plane z. */
@@ -353,7 +362,7 @@ export function wallBox(ctx: KitContext, o: WallBoxOptions = {}): void {
   const uvScale = o.ashlar ? UV.stone : o.timber ? UV.timber : UV.wall;
   mb.box(-w / 2, y, -d / 2, w / 2, y + h, d / 2, {
     uvScale,
-    taper: o.taper ?? 0.02,
+    taper: o.taper ?? 0.015,
     skip: { ny: true, py: o.top !== true },
     groundAO: AO.contact,
   });
@@ -879,11 +888,11 @@ export function archOpening(ctx: KitContext, o: ArchOpeningOptions = {}): void {
   const r = w / 2;
   const spring = Math.max(0.2, h - r);
   const s = ctx.channel.stone;
-  const back = -depth;
+  const back = 0.01;
   const inner: Opts = { uvScale: UV.stone, ao: AO.reveal };
 
-  s.quad([-r, 0, 0], [-r, 0, back], [-r, spring, back], [-r, spring, 0], inner);
-  s.quad([r, 0, back], [r, 0, 0], [r, spring, 0], [r, spring, back], inner);
+  s.quad([-r, 0, depth], [-r, 0, back], [-r, spring, back], [-r, spring, depth], inner);
+  s.quad([r, 0, back], [r, 0, depth], [r, spring, depth], [r, spring, back], inner);
 
   const ang = (i: number): number => (Math.PI * i) / segs;
   for (let i = 0; i < segs; i++) {
@@ -894,7 +903,7 @@ export function archOpening(ctx: KitContext, o: ArchOpeningOptions = {}): void {
     const x1 = -r * Math.cos(a1);
     const y1 = spring + r * Math.sin(a1);
     // Intrados, facing into the opening.
-    s.quad([x0, y0, 0], [x0, y0, back], [x1, y1, back], [x1, y1, 0], {
+    s.quad([x0, y0, depth], [x0, y0, back], [x1, y1, back], [x1, y1, depth], {
       ...inner,
       ao: AO.recess,
     });
@@ -903,12 +912,12 @@ export function archOpening(ctx: KitContext, o: ArchOpeningOptions = {}): void {
     const oy0 = spring + (r + th) * Math.sin(a0);
     const ox1 = -(r + th) * Math.cos(a1);
     const oy1 = spring + (r + th) * Math.sin(a1);
-    s.quad([x0, y0, th * 0.45], [x1, y1, th * 0.45], [ox1, oy1, th * 0.45], [ox0, oy0, th * 0.45], {
+    s.quad([x0, y0, depth], [x1, y1, depth], [ox1, oy1, depth], [ox0, oy0, depth], {
       uvScale: UV.stone,
     });
   }
-  faceQuad(s, -r - th, 0, -r, spring, th * 0.45, { uvScale: UV.stone }, [AO.contact, AO.contact, 1, 1]);
-  faceQuad(s, r, 0, r + th, spring, th * 0.45, { uvScale: UV.stone }, [AO.contact, AO.contact, 1, 1]);
+  faceQuad(s, -r - th, 0, -r, spring, depth, { uvScale: UV.stone }, [AO.contact, AO.contact, 1, 1]);
+  faceQuad(s, r, 0, r + th, spring, depth, { uvScale: UV.stone }, [AO.contact, AO.contact, 1, 1]);
 
   const backMb = o.glow ? ctx.channel.glow : ctx.channel.wall;
   const backOpts: Opts = o.glow
@@ -946,14 +955,14 @@ export function doorway(ctx: KitContext, o: DoorwayOptions = {}): void {
   const surround = o.stone ? ctx.channel.stone : t;
   const suv = o.stone ? UV.stone : UV.timber;
   reveal(t, w, h, depth, 0, { uvScale: UV.timber });
-  faceQuad(t, -w / 2 + 0.04, 0, w / 2 - 0.04, h - 0.04, -depth + 0.05, {
+  faceQuad(t, -w / 2 + 0.04, 0, w / 2 - 0.04, h - 0.04, 0.02, {
     uvScale: UV.timber,
     uvRotate: true,
     ao: 0.72,
   });
-  frameQuads(surround, w, h, 0, 0.16, 0.05, { uvScale: suv });
+  frameQuads(surround, w, h, 0, 0.16, depth, { uvScale: suv });
   // Lintel, projecting far enough to throw a shadow line across the door head.
-  surround.box(-w / 2 - 0.24, h + 0.16, -0.02, w / 2 + 0.24, h + 0.36, 0.18, {
+  surround.box(-w / 2 - 0.24, h + 0.16, -0.02, w / 2 + 0.24, h + 0.36, depth + 0.16, {
     uvScale: suv,
     skip: { nz: true },
     groundAO: 0.8,
@@ -963,7 +972,7 @@ export function doorway(ctx: KitContext, o: DoorwayOptions = {}): void {
       uvScale: UV.glow,
       ao: 1,
     });
-    frameQuads(surround, w - 0.2, 0.32, h + 0.4, 0.1, 0.06, { uvScale: suv });
+    frameQuads(surround, w - 0.2, 0.32, h + 0.4, 0.1, 0.12, { uvScale: suv });
   }
 }
 
@@ -994,14 +1003,14 @@ export function windowBay(ctx: KitContext, o: WindowBayOptions = {}): void {
   const suv = o.timber ? UV.timber : UV.stone;
   reveal(ctx.channel.wall, w, h, depth, y, { uvScale: UV.wall });
   if (o.lit !== false) {
-    faceQuad(ctx.channel.glow, -w / 2 + 0.03, y + 0.03, w / 2 - 0.03, y + h - 0.03, -depth + 0.04, {
+    faceQuad(ctx.channel.glow, -w / 2 + 0.03, y + 0.03, w / 2 - 0.03, y + h - 0.03, 0.02, {
       uvScale: UV.glow,
       ao: 1,
     });
   }
-  frameQuads(surround, w, h, y, 0.14, 0.06, { uvScale: suv });
+  frameQuads(surround, w, h, y, 0.14, depth, { uvScale: suv });
   if (o.sill !== false) {
-    surround.box(-w / 2 - 0.2, y - 0.28, -0.02, w / 2 + 0.2, y - 0.14, 0.16, {
+    surround.box(-w / 2 - 0.2, y - 0.28, -0.02, w / 2 + 0.2, y - 0.14, depth + 0.12, {
       uvScale: suv,
       skip: { nz: true, ny: true },
       groundAO: 0.85,
@@ -1033,19 +1042,19 @@ export function mullionWindow(ctx: KitContext, o: MullionWindowOptions = {}): vo
   const opts: Opts = { uvScale: UV.stone };
   reveal(ctx.channel.wall, w, h, depth, y, { uvScale: UV.wall });
   if (o.lit !== false) {
-    faceQuad(g, -w / 2 + 0.03, y + 0.03, w / 2 - 0.03, y + h - 0.03, -depth + 0.04, {
+    faceQuad(g, -w / 2 + 0.03, y + 0.03, w / 2 - 0.03, y + h - 0.03, 0.02, {
       uvScale: UV.glow,
       ao: 1,
     });
   }
-  frameQuads(s, w, h, y, 0.16, 0.06, opts);
+  frameQuads(s, w, h, y, 0.16, depth, opts);
   for (let i = 1; i < lights; i++) {
     const x = -w / 2 + (w * i) / lights;
-    faceQuad(s, x - 0.07, y, x + 0.07, y + h, 0.05, opts);
+    faceQuad(s, x - 0.07, y, x + 0.07, y + h, depth * 0.6, opts);
   }
   for (let i = 1; i <= transoms; i++) {
     const ty = y + (h * i) / (transoms + 1);
-    faceQuad(s, -w / 2, ty - 0.07, w / 2, ty + 0.07, 0.05, opts);
+    faceQuad(s, -w / 2, ty - 0.07, w / 2, ty + 0.07, depth * 0.6, opts);
   }
   if (o.arched === true) {
     const r = w / 2;
@@ -1053,13 +1062,13 @@ export function mullionWindow(ctx: KitContext, o: MullionWindowOptions = {}): vo
     for (let i = 0; i < segs; i++) {
       const a0 = (Math.PI * i) / segs;
       const a1 = (Math.PI * (i + 1)) / segs;
-      const p0: P3 = [-r * Math.cos(a0), y + h + r * Math.sin(a0), 0.05];
-      const p1: P3 = [-r * Math.cos(a1), y + h + r * Math.sin(a1), 0.05];
-      const q0: P3 = [-(r + 0.16) * Math.cos(a0), y + h + (r + 0.16) * Math.sin(a0), 0.05];
-      const q1: P3 = [-(r + 0.16) * Math.cos(a1), y + h + (r + 0.16) * Math.sin(a1), 0.05];
+      const p0: P3 = [-r * Math.cos(a0), y + h + r * Math.sin(a0), depth];
+      const p1: P3 = [-r * Math.cos(a1), y + h + r * Math.sin(a1), depth];
+      const q0: P3 = [-(r + 0.16) * Math.cos(a0), y + h + (r + 0.16) * Math.sin(a0), depth];
+      const q1: P3 = [-(r + 0.16) * Math.cos(a1), y + h + (r + 0.16) * Math.sin(a1), depth];
       s.quad(p0, p1, q1, q0, opts);
       if (o.lit !== false) {
-        g.tri([0, y + h, -depth + 0.04], [p0[0], p0[1], -depth + 0.04], [p1[0], p1[1], -depth + 0.04], null, {
+        g.tri([0, y + h, 0.02], [p0[0], p0[1], 0.02], [p1[0], p1[1], 0.02], null, {
           uvScale: UV.glow,
           ao: 1,
         });

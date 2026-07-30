@@ -210,9 +210,9 @@ function bare(ctx: KitContext, h: number, rng: Rng): void {
     const y = h * (0.34 + (i % 3) * 0.12);
     limb(t, y, (i / 6) * Math.PI * 2 + rng.range(-0.3, 0.3), 0.5 + rng.range(0, 0.4), h * 0.3, h * 0.022);
   }
-  for (let i = 0; i < 4; i++) {
-    const y = h * (0.62 + (i % 2) * 0.1);
-    limb(t, y, (i / 4) * Math.PI * 2 + 0.7, 0.75, h * 0.2, h * 0.012, 3);
+  for (let i = 0; i < 7; i++) {
+    const y = h * (0.6 + (i % 3) * 0.09);
+    limb(t, y, (i / 7) * Math.PI * 2 + 0.7, 0.72 + rng.range(0, 0.3), h * 0.2, h * 0.012, 3);
   }
 }
 
@@ -263,14 +263,14 @@ function willow(ctx: KitContext, h: number, rng: Rng): void {
     });
     f.pop();
   }
-  for (let i = 0; i < 10; i++) {
-    const a = (i / 10) * Math.PI * 2 + rng.range(-0.2, 0.2);
-    const d = r * rng.range(0.55, 0.95);
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 12) * Math.PI * 2 + rng.range(-0.24, 0.24);
+    const d = r * rng.range(0.62, 1.02);
     f.push();
-    f.translate(Math.cos(a) * d, h * rng.range(0.6, 0.72), Math.sin(a) * d);
+    f.translate(Math.cos(a) * d, h * rng.range(0.56, 0.7), Math.sin(a) * d);
     f.rotateY(a);
-    f.rotateZ(Math.PI - rng.range(0.05, 0.3));
-    blade(f, h * rng.range(0.22, 0.34), 0.34, { ...LEAF, segments: 2, curve: 0.5, tilt: 0, taper: 0.5 });
+    f.rotateZ(Math.PI - rng.range(0.05, 0.34));
+    blade(f, h * rng.range(0.3, 0.46), 0.72, { ...LEAF, segments: 2, curve: 0.55, tilt: 0, taper: 0.45 });
     f.pop();
   }
 }

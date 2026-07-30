@@ -36,7 +36,8 @@ import {
   type WallFace,
   type WindowBayOptions,
 } from './KitPieces.js';
-import { getPiece, withTransform, type KitContext, type KitPlacement } from './KitTypes.js';
+import { placePiece } from './KitPlacement.js';
+import { withTransform, type KitContext, type KitPlacement } from './KitTypes.js';
 
 /**
  * The family recipes: what actually stands on a plot at each level.
@@ -200,6 +201,16 @@ function placeMass(site: Site, nomW: number, nomD: number, projection = 0): Mass
   return { w, d, z: site.frontLimit + projection + d / 2 };
 }
 
+/**
+ * Where an attached mass (tower, wing, shed, stack) sits beside the main mass. Clamped so its own
+ * half-width still lands inside the yard: a building that overhangs its kerb is an automatic fail
+ * on plot clarity, and the real plots this runs on are never the nominal size.
+ */
+function besideMass(site: Site, mass: Mass, side: number, gap: number, halfWidth: number): number {
+  const wanted = mass.w / 2 + gap;
+  return side * Math.min(wanted, Math.max(0, site.halfX - halfWidth));
+}
+
 /** Places `count` windows evenly along one face of a mass. */
 function windowRow(
   ctx: KitContext,
@@ -245,20 +256,6 @@ function postedFace(ctx: KitContext, mass: Mass, face: WallFace, y: number, h: n
   );
 }
 
-/** Runs a registered piece if the props half of the kit has landed; silent when it has not. */
-function tryPiece(
-  ctx: KitContext,
-  name: string,
-  options?: Record<string, number | boolean>,
-  at?: KitPlacement
-): boolean {
-  const piece = getPiece(name);
-  if (!piece) return false;
-  if (at) withTransform(ctx, () => piece(ctx, options), at);
-  else piece(ctx, options);
-  return true;
-}
-
 /**
  * Yard ground. The reference progression is grass -> half paved -> fully paved forecourt, so the
  * paved fraction is a level property, not a decoration: it is measured from the frontage inward.
@@ -277,6 +274,16 @@ function yardSurface(ctx: KitContext, plotW: number, plotD: number, paved: numbe
   if (paved <= 0) return;
   const depth = id * Math.min(1, paved);
   const z1 = -id / 2 + depth;
+  if (
+    placePiece(
+      ctx,
+      'forecourtPaving',
+      { z: (-id / 2 + z1) / 2 },
+      { w: iw, d: depth, y: LAYER.yard + 0.02, edge: paved >= 0.6 }
+    )
+  ) {
+    return;
+  }
   const s = ctx.channel.stone;
   s.quad(
     [-iw / 2, LAYER.yard + 0.02, z1],
@@ -291,7 +298,16 @@ function yardSurface(ctx: KitContext, plotW: number, plotD: number, paved: numbe
 function entryPath(ctx: KitContext, plotD: number, doorZ: number, x = 0, width = 1.4): void {
   const z0 = -plotD / 2 + KERB_THICKNESS;
   if (doorZ <= z0 + 0.2) return;
-  if (tryPiece(ctx, 'flagstonePath', { w: width, d: doorZ - z0 }, { x, z: (z0 + doorZ) / 2 })) return;
+  if (
+    placePiece(
+      ctx,
+      'flagstonePath',
+      { x, z: (z0 + doorZ) / 2 },
+      { length: doorZ - z0, width, y: LAYER.yard + 0.03 }
+    )
+  ) {
+    return;
+  }
   ctx.channel.stone.quad(
     [x - width / 2, LAYER.yard + 0.03, doorZ],
     [x + width / 2, LAYER.yard + 0.03, doorZ],
@@ -309,7 +325,7 @@ function yardProps(ctx: KitContext, site: Site, mass: Mass, count: number): void
   const zMax = site.rearLimit - 0.4;
   if (zMax - zMin < 0.6) return;
   for (let i = 0; i < count; i++) {
-    tryPiece(ctx, ctx.rng.pick(names), {}, {
+    placePiece(ctx, ctx.rng.pick(names), {
       x: ctx.rng.range(-site.halfX + 0.5, site.halfX - 0.5),
       z: ctx.rng.range(zMin, zMax),
       yaw: ctx.rng.range(0, Math.PI * 2),
@@ -320,7 +336,7 @@ function yardProps(ctx: KitContext, site: Site, mass: Mass, count: number): void
 /** Blue crystal lamps flanking an entrance: two of the three level-3 marks in the rubric. */
 function crystalPair(ctx: KitContext, x: number, z: number): void {
   for (const sx of [-1, 1]) {
-    if (!tryPiece(ctx, 'crystalLamp', {}, { x: sx * x, z })) {
+    if (!placePiece(ctx, 'crystalLamp', { x: sx * x, z })) {
       withTransform(
         ctx,
         () => {
@@ -511,7 +527,9 @@ function residentialL2(ctx: KitContext, site: Site, v: number): void {
 
 function residentialL3(ctx: KitContext, site: Site, v: number): void {
   const towerSide = v === 1 ? -1 : 1;
-  const mass = placeMass(site, 9.6, 7, 1.6);
+  // The entrance bay and its five steps project 4.5 m in front of the mass; the setback is
+  // measured to the bottom step, so the depth has to be reserved before the mass is sized.
+  const mass = placeMass(site, 9.6, 7, 4.5);
   const base = 0.9;
   const eaves = 6.6;
   const towerR = 1.9;
@@ -524,11 +542,23 @@ function residentialL3(ctx: KitContext, site: Site, v: number): void {
       wallBox(ctx, { w: mass.w, d: mass.d, h: eaves - base, y: base, ashlar: true });
       stringCourse(ctx, { w: mass.w, d: mass.d, y: 3.4 });
       gableRoof(ctx, { w: mass.w, d: mass.d, y: eaves });
+      // A low parapeted wing opposite the tower. The parapet has to stand on a mass of its own,
+      // or it reads as a rectangle floating over the roof.
       if (v !== 2) {
-        withTransform(ctx, () => parapet(ctx, { w: 3.4, d: mass.d * 0.6, height: 0.9 }), {
-          x: -towerSide * (mass.w / 2 - 1.7),
-          y: eaves,
-        });
+        const wingW = 3.4;
+        const wingD = Math.max(3, mass.d * 0.6);
+        const wingH = eaves - 2.6;
+        withTransform(
+          ctx,
+          () => {
+            wallBox(ctx, { w: wingW, d: wingD, h: wingH, ashlar: true, top: true });
+            parapet(ctx, { w: wingW, d: wingD, y: wingH, height: 0.9, thickness: 0.3 });
+            onWallFace(ctx, 'front', wingW, wingD, 0, 0, () =>
+              mullionWindow(ctx, { w: 1.2, h: 2, y: 1.1, lights: 2 })
+            );
+          },
+          { x: besideMass(site, mass, -towerSide, wingW / 2 - 0.35, wingW / 2), z: mass.d * 0.12 }
+        );
       }
 
       // The round tower with its candle-snuffer spire is the level-3 signature.
@@ -542,7 +572,7 @@ function residentialL3(ctx: KitContext, site: Site, v: number): void {
             x: 0.12,
           });
         },
-        { x: towerSide * (mass.w / 2 + towerR * 0.55), z: -mass.d / 2 + towerR * 0.7 }
+        { x: besideMass(site, mass, towerSide, towerR * 0.55, towerR * 1.3), z: -mass.d / 2 + towerR * 0.7 }
       );
 
       // Entrance bay: arched portal, five steps, a smaller spire above.
@@ -862,7 +892,7 @@ function workshopL1(ctx: KitContext, site: Site, v: number): void {
 
   yardSurface(ctx, site.plotW, site.plotD, 0.3);
   for (const name of ['anvil', 'toolRack', 'barrel', 'woodpile']) {
-    tryPiece(ctx, name, {}, {
+    placePiece(ctx, name, {
       x: ctx.rng.range(-site.halfX + 0.6, site.halfX - 0.6),
       y: LAYER.plotSlab,
       z: ctx.rng.range(mass.z + mass.d / 2 + 0.6, site.rearLimit - 0.4),
@@ -902,7 +932,7 @@ function workshopL2(ctx: KitContext, site: Site, v: number): void {
           wallBox(ctx, { w: shedW, d: shedD, h: 3, timber: true });
           monoPitchRoof(ctx, { w: shedW, d: shedD, y: 3, rise: 0.8 });
         },
-        { x: shedSide * (mass.w / 2 + shedW / 2 - 0.3), z: mass.d / 2 - shedD / 2 }
+        { x: besideMass(site, mass, shedSide, shedW / 2 - 0.3, shedW / 2), z: mass.d / 2 - shedD / 2 }
       );
 
       // Wide work opening with the forge burning behind it.
@@ -943,7 +973,7 @@ function workshopL3(ctx: KitContext, site: Site, v: number): void {
       gableRoof(ctx, { w: mass.w, d: mass.d, y: eaves });
 
       withTransform(ctx, () => furnaceStack(ctx, { w: 1.8, height: 12.5 }), {
-        x: stackSide * (mass.w / 2 + 0.6),
+        x: besideMass(site, mass, stackSide, 0.6, 1.3),
         z: mass.d * 0.1,
       });
 
@@ -994,11 +1024,11 @@ function workshopL3(ctx: KitContext, site: Site, v: number): void {
  * gyms — get, so it must read as a landmark from the GPS camera at any plot size.
  */
 function civic(ctx: KitContext, site: Site, v: number): void {
-  const mass = placeMass(site, 14, 10, 2.4);
+  const mass = placeMass(site, 14, 10, 5.4);
   const base = 1.1;
   const eaves = 11;
   const towerW = 3.6;
-  const towerH = 16 + v * 3;
+  const towerH = 16 + v * 2;
 
   withTransform(
     ctx,
@@ -1075,7 +1105,7 @@ function civic(ctx: KitContext, site: Site, v: number): void {
     });
   }
   withTransform(ctx, () => crystalPair(ctx, 3.2, mass.z - mass.d / 2 - 3.4), { y: LAYER.plotSlab });
-  if (!tryPiece(ctx, 'crystalObelisk', {}, { y: LAYER.plotSlab, z: site.rearLimit - 2.4 })) {
+  if (!placePiece(ctx, 'crystalObelisk', { y: LAYER.plotSlab, z: site.rearLimit - 2.4 })) {
     withTransform(
       ctx,
       () => {
@@ -1097,7 +1127,7 @@ function level0(ctx: KitContext, site: Site, v: number): void {
     y: LAYER.plotSlab,
     z: site.rearLimit - 1.2,
   };
-  if (!tryPiece(ctx, 'fencePanel', { length: 3 }, at)) {
+  if (!placePiece(ctx, 'fencePanel', at, { length: 3 })) {
     withTransform(ctx, () => {
       for (const sx of [-1, 1]) {
         ctx.channel.timber.box(sx * 1.4 - 0.09, 0, -0.09, sx * 1.4 + 0.09, 1.15, 0.09, {
@@ -1114,8 +1144,8 @@ function level0(ctx: KitContext, site: Site, v: number): void {
       }
     }, at);
   }
-  tryPiece(ctx, 'surveyStake', {}, { x: -at.x!, y: LAYER.plotSlab, z: site.frontLimit + 0.6 });
-  tryPiece(ctx, ctx.rng.pick(['bench', 'boulder']), {}, {
+  placePiece(ctx, 'surveyStake', { x: -at.x!, y: LAYER.plotSlab, z: site.frontLimit + 0.6 });
+  placePiece(ctx, ctx.rng.pick(['bench', 'boulder']), {
     x: ctx.rng.range(-site.halfX + 0.6, site.halfX - 0.6),
     y: LAYER.plotSlab,
     z: ctx.rng.range(site.frontLimit + 1, site.rearLimit - 1),

@@ -482,6 +482,29 @@ function levelsOf(tags) {
   return undefined;
 }
 
+/**
+ * Some real footprints sit inside the nominal carriageway, because the tagged street is narrower
+ * on the ground than its class width. Slide those plots straight back off the road rather than
+ * reject them: dropping one leaves a hole in a continuous Georgian terrace, which reads far worse.
+ * Shop plots on a bridge deck stay where they are — Pulteney Bridge really is built over.
+ */
+const PLOT_KERB_CLEARANCE = 1;
+const PLOT_MAX_SETBACK = 4;
+
+function setBackFromCarriageway(plots, roads) {
+  for (const p of plots) {
+    if (p.frontRoad === undefined || !(p.roadDistance >= 0)) continue;
+    const road = roads[p.frontRoad];
+    if (!road || road.bridge) continue;
+    const want = road.width / 2 + PLOT_KERB_CLEARANCE;
+    const delta = Math.min(want - p.roadDistance, PLOT_MAX_SETBACK);
+    if (delta <= 0.25) continue;
+    p.x += Math.sin(p.yaw) * delta;
+    p.z += Math.cos(p.yaw) * delta;
+    p.roadDistance = Number((p.roadDistance + delta).toFixed(3));
+  }
+}
+
 function compilePlots(ctx, roads, warn) {
   const roadIndex = buildRoadIndex(roads);
   const roadClassById = new Map(roads.map((r) => [r.id, r.klass]));
