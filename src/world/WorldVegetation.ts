@@ -211,7 +211,7 @@ export function buildWorldVegetation(
     const u = Math.sqrt(dSq) / maxRadius;
     if (u <= 0.29) return 1;
     const k = Math.min(1, (u - 0.29) / 0.71);
-    return 0.16 + 0.84 * (1 - k * k * (3 - 2 * k));
+    return 0.32 + 0.68 * (1 - k * k * (3 - 2 * k));
   };
 
   /**
@@ -228,7 +228,7 @@ export function buildWorldVegetation(
   // Height varies per prototype as well as per instance, so the five slots are five different
   // trees rather than five rolls of the same one. A canopy's plan diameter is a fixed fraction of
   // its height, so this widens the plan silhouette spread too, which is the read that matters.
-  const slotHeight = [1, 0.84, 1.14, 0.93, 1.05];
+  const slotHeight = [1, 0.86, 1.08, 0.92, 1];
   const protoSets: ProtoSet[] = slotArchetypes.map((archetype, i) => ({
     archetype,
     parts: prototype(kit, mix(seed, 0x100 + i), (ctx) =>
@@ -312,7 +312,10 @@ export function buildWorldVegetation(
   for (const road of nearbyRoads) {
     if (road.klass === 'footway' || road.klass === 'path' || road.bridge) continue;
     const spacing = road.klass === 'primary' || road.klass === 'secondary' ? 14 : 19;
-    const offset = road.width / 2 + 1.9;
+    // 2.5 m clear of the kerb, not 1.9. REFERENCE-SPEC 10.4 auto-fails a frame with anything
+    // intruding into a carriageway, and once the canopies stopped reading as dark specks it was
+    // obvious that a 4 m crown radius planted 1.9 m out hangs over the road surface.
+    const offset = road.width / 2 + 2.5;
     const pts = road.centerline;
     let carried = rng.range(0, spacing);
     for (let i = 0; i + 3 < pts.length; i += 2) {
@@ -333,7 +336,9 @@ export function buildWorldVegetation(
           const dSq = (x - centerX) ** 2 + (z - centerZ) ** 2;
           if (dSq > maxRadius * maxRadius) continue;
           if (blocked(x, z, 1.4)) continue;
-          if (rng.chance(0.62 * falloff(dSq))) plant(x, z, dSq, [0.8, 1.15]);
+          // Street trees are the small end of the range: a verge tree at park scale is a 14 m crown
+          // over an 11 m carriageway.
+          if (rng.chance(0.72 * falloff(dSq))) plant(x, z, dSq, [0.62, 0.86]);
         }
         t += spacing;
       }
@@ -365,7 +370,7 @@ export function buildWorldVegetation(
       // Clumping: accept far more readily where the noise field is high, so stands form.
       if (rng.next() > (0.25 + ((noise(x * 0.03, z * 0.03) + 1) / 2) * 0.9) * falloff(dSq)) continue;
       if (blocked(x, z, 2.2)) continue;
-      plant(x, z, dSq, [0.85, 1.5]);
+      plant(x, z, dSq, [0.78, 1.08]);
     }
   }
 
@@ -435,6 +440,7 @@ export function buildWorldVegetation(
   emit(farSets, farInstances, 'vegetation-far', true);
   emit(shrubSets, shrubInstances, 'vegetation-shrub', true);
 
+  console.error('[STAT veg]', treeInstances.length, 'near', farInstances.length, 'far', shrubInstances.length, 'shrub', triangles, 'tris');
   return {
     meshes,
     stats: {

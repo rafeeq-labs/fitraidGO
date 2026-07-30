@@ -47,11 +47,17 @@ export const temperate: BiomeKit = {
 
   textures: {
     road: {
-      stone: PALETTE.cobbleStone,
-      stoneLit: PALETTE.cobbleLit,
+      // Measured against reference 13: the avenue's setts are 0.30-0.45 m, i.e. 8-14 per square
+      // metre, and the carriageway is DARKER than the grass beside it. At rows 7 over the 4.5 m
+      // road tile the stones came out 0.64 m and the surface rendered at luma 150 against the
+      // reference's 111 — the brightest thing in the frame, which is why the eye landed on empty
+      // street instead of on the town. These colours are the palette's cobble darkened to render
+      // near the reference value once the warm key and ACES shoulder are applied.
+      stone: 0x6f6254,
+      stoneLit: 0x877a6a,
       stoneShade: PALETTE.stoneShade,
       grout: PALETTE.cobbleGrout,
-      rows: 7,
+      rows: 13,
       jitter: 0.55,
       creep: 0.25,
       creepColor: 0x55603a,

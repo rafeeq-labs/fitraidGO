@@ -216,7 +216,7 @@ function broadleaf(ctx: KitContext, h: number, rng: Rng, blossom: boolean): void
     f.rotateY(rng.range(0, Math.PI));
     canopyBlob(f, r * k, {
       ...skin,
-      ry: rng.range(0.6, 0.78),
+      ry: rng.range(0.72, 0.94),
       segments,
       bands: 3,
       aoTop: 1,

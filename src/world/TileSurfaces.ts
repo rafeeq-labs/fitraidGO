@@ -221,7 +221,7 @@ export function buildTileSurfaces(
   }
 
   const groundTex: Texture = textures.grass(kit.id, kit.textures.ground);
-  const roadTex: Texture = textures.flagstone(kit.id, kit.textures.road);
+  const roadTex: Texture = textures.cobble(kit.id, kit.textures.road);
   const stoneTex: Texture = textures.ashlar(kit.id, kit.textures.stone);
   const waterTex: Texture = textures.water(kit.id, kit.textures.water);
 

@@ -47,11 +47,13 @@ export interface PlayerMaterials {
 /**
  * Rendered height in metres, deliberately about 3.5 times life size.
  *
- * Measured from the references: the avatar occupies 2.5-2.8 % of frame height, which at the target
- * ground scale works out to roughly 3.6 m of world height. A realistic 1.8 m figure would be about
+ * Measured from the references: the avatar occupies 2.5-2.8 % of frame height. A vertical world
+ * segment projects to h * 10.98 px/m * cos(52 deg) = h * 6.76 px at the shipping camera, so 2.6 %
+ * of a 1600 px frame — 42 px — needs about 6.2 m. The earlier 3.6 m measured 24 px on capture,
+ * under even the 1.8 % automatic-fail floor. A realistic 1.8 m figure would be about
  * thirteen pixels tall and simply invisible. Do not "correct" this to a human height.
  */
-const DEFAULT_HEIGHT = 3.6;
+const DEFAULT_HEIGHT = 6.2;
 /** Eye-height proportions, in metres. */
 const H = {
   total: 1.78,

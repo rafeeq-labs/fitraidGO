@@ -122,7 +122,7 @@ function tuftGeometry(shape: TuftShape, seedValue: number): BufferGeometry {
         [midX + px * 0.7, midY, midZ + pz * 0.7],
         [midX - px * 0.7, midY, midZ - pz * 0.7],
         { uvScale: 0.5 },
-        [0.42, 0.42, 0.86, 0.86]
+        [0.72, 0.72, 0.94, 0.94]
       );
       b.tri(
         [midX - px * 0.7, midY, midZ - pz * 0.7],
@@ -138,7 +138,7 @@ function tuftGeometry(shape: TuftShape, seedValue: number): BufferGeometry {
         [tipX + px * 0.22, h, tipZ + pz * 0.22],
         [tipX - px * 0.22, h, tipZ - pz * 0.22],
         { uvScale: 0.5 },
-        [0.42, 0.42, 1, 1]
+        [0.72, 0.72, 1, 1]
       );
     }
   }
@@ -368,8 +368,8 @@ export function buildGroundCover(
    */
   const TIERS: readonly { readonly upTo: number; readonly shape: TuftShape }[] = [
     { upTo: 0.25, shape: { arched: 5, filler: 8, height: 0.62 } },
-    { upTo: 0.52, shape: { arched: 3, filler: 7, height: 0.58 } },
-    { upTo: 1, shape: { arched: 1, filler: 5, height: 0.5 } },
+    { upTo: 0.52, shape: { arched: 2, filler: 6, height: 0.58 } },
+    { upTo: 1, shape: { arched: 0, filler: 5, height: 0.5 } },
   ];
   const tierOf = (dSq: number): number => {
     const u = Math.sqrt(dSq) / maxRadius;
@@ -387,8 +387,15 @@ export function buildGroundCover(
    * The lit end now lifts `groundLit` toward the kit's own wildflower gold, which lands temperate
    * grass on REFERENCE-SPEC 3.1's `#66794A` lit stop and above rather than below it.
    */
-  const tuftDark = new Color(kit.palette.groundMid).lerp(new Color(kit.palette.groundShade), 0.4);
-  const tuftLit = new Color(kit.palette.groundLit).lerp(new Color(PALETTE.flowerGold), 0.22);
+  const tuftDark = new Color(kit.palette.groundMid).lerp(new Color(kit.palette.groundLit), 0.55);
+  const tuftLit = new Color(kit.palette.groundLit)
+    .lerp(new Color(PALETTE.flowerGold), 0.46)
+    .multiplyScalar(1.18);
+  // A blade is a near-vertical face under a key 61 degrees up, so most of its area sits in the
+  // ramp's SHADOW band — and that band is multiplied by the cool `RAMP.shadowTint`. Warming the
+  // albedo pre-emptively is the only lever this module has over it, and it is exactly the
+  // correction needed: without it the grass renders bluer than its own colour says it is.
+  for (const c of [tuftDark, tuftLit]) c.setRGB(c.r * 1.06, c.g * 1.0, c.b * 0.84);
 
   const tuftMatrices: Matrix4[][] = TIERS.map(() => []);
   const tuftTints: Color[][] = TIERS.map(() => []);
@@ -422,12 +429,12 @@ export function buildGroundCover(
       scl.makeScale(scale, scale * rng.range(0.85, 1.3), scale);
       m.makeTranslation(x, 0, z).multiply(rot).multiply(scl);
 
-      if (rng.chance(kit.vegetation.flowers ? 0.09 : 0.02)) {
+      if (rng.chance(kit.vegetation.flowers ? 0.045 : 0.012)) {
         flowerMatrices.push(m.clone());
       } else {
         const tier = tierOf(dSq);
         tuftMatrices[tier]!.push(m.clone());
-        tuftTints[tier]!.push(
+        tuftTints[tier]!.push(new Color(4,0.2,0.2)); if(false) tuftTints[tier]!.push(
           tuftDark
             .clone()
             .lerp(tuftLit, Math.min(1, 0.28 + lushness * 0.62 + rng.range(-0.16, 0.16)))
@@ -508,12 +515,15 @@ export function buildGroundCover(
       rim: 0.6,
       side: DoubleSide,
     });
+    // Dimmed off their literal palette values: a petal quad faces UP, so it takes the full key at
+    // AO 1 and `#F2F0E0` lands over the luma-220 ceiling REFERENCE-SPEC 8.1 reserves for the three
+    // emissive families. At 0.8 they still read as white, violet and gold specks.
     const petals = [
       PALETTE.flowerWhite,
       PALETTE.flowerViolet,
       PALETTE.flowerGold,
       kit.palette.foliageAccent,
-    ];
+    ].map((c) => new Color(c).multiplyScalar(0.8));
     for (const [geometry, material, tinted] of [
       [leaves, leafMaterial, false],
       [headGeo, headMaterial, true],
@@ -523,7 +533,7 @@ export function buildGroundCover(
       mesh.name = tinted ? 'groundcover-flower-heads' : 'groundcover-flower-leaves';
       for (let k = 0; k < flowerMatrices.length; k++) {
         mesh.setMatrixAt(k, flowerMatrices[k]!);
-        if (tinted) mesh.setColorAt(k, new Color(petals[k % petals.length]!));
+        if (tinted) mesh.setColorAt(k, petals[k % petals.length]!);
       }
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
@@ -535,6 +545,7 @@ export function buildGroundCover(
     }
   }
 
+  console.error('[STAT cover]', tuftInstances, 'tufts', flowerMatrices.length, 'flowers', triangles, 'tris');
   return {
     meshes,
     stats: { instances: tuftInstances + flowerMatrices.length, triangles },

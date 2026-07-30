@@ -1,6 +1,6 @@
 import { projectStation } from '../map/ribbon.js';
 import { GpsMapper, type GpsSample } from './GpsMapper.js';
-import { claimNextWalker, type SimWalker, type WalkerDriver } from './SimWalker.js';
+import { claimNextWalker, releaseWalkerClaim, type SimWalker, type WalkerDriver } from './SimWalker.js';
 
 /**
  * Where the player is, every frame, from whichever source can actually answer.
@@ -298,7 +298,12 @@ export class PositionSource implements WalkerDriver {
     this.onStatus?.(this.status);
   }
 
+  /**
+   * Releases the receiver and returns the player to the simulation. Safe before the world is built,
+   * in which case it also withdraws the claim so no walker is ever driven.
+   */
   stop(): void {
+    if (!this.walkerRef) releaseWalkerClaim();
     this.stopWatch();
     this.status.mode = 'sim';
     this.set('off', 'simulated walk');
