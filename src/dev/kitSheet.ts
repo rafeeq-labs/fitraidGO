@@ -212,8 +212,11 @@ function layout(
  * plot that wide the L1 cottage's ridge did not clear the plot's own far corner post, and the
  * L0 -> L1 step measured as a 7% change in the silhouette envelope.
  */
-const PLOT_W = Number(params.get('w') ?? 14);
-const PLOT_D = Number(params.get('d') ?? 14);
+// The spec's plot module is 16 m. At 14 the level-3 column silently downgrades to level 2 — the
+// buildable depth lands under the level-3 minimum — and the sheet showed three tiers for four
+// rounds of review while claiming four.
+const PLOT_W = Number(params.get('w') ?? 16);
+const PLOT_D = Number(params.get('d') ?? 16);
 const LADDER_FAMILIES: readonly BuildingFamily[] = ['residential', 'merchant', 'workshop'];
 
 function ladderCells(): Cell[] {

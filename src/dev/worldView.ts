@@ -164,7 +164,9 @@ renderer.setStatsExtra(
     `${tile.roads.length} roads  ${tile.plots.length} plots\n` +
     `surfaces ${surfaces.stats.triangles} tris  ` +
     `plots ${Math.round(plots.stats.triangles / 1000)}k tris\n` +
-    `${cover.stats.instances} cover  ${trees.stats.instances} trees`
+    `${cover.stats.instances} cover  ${trees.stats.instances} trees\n` +
+    `levels L1 ${plots.stats.delivered[1]} L2 ${plots.stats.delivered[2]} L3 ${plots.stats.delivered[3]}` +
+    ` (${plots.stats.downgraded} downgraded)`
 );
 
 renderer.start((dt, t) => {

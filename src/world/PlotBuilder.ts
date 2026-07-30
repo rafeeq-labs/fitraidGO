@@ -1,3 +1,4 @@
+import { deliverableLevel } from './BuildingKit.js';
 import {
   AdditiveBlending,
   BufferAttribute,
@@ -591,6 +592,9 @@ export interface PlotMeshStats {
   draws: number;
   /** Distinct cache keys, i.e. how many different buildings the tile actually contains. */
   keys: number;
+  /** Parcels whose assigned level exceeded what their depth can carry, per level actually built. */
+  delivered: Record<number, number>;
+  downgraded: number;
   instancedDraws: number;
   batchedDraws: number;
 }
@@ -622,6 +626,8 @@ export function buildPlotMeshes(
   const materials = createKitMaterials(kit, textures);
   const assignments = new Map<number, BuildingAssignment>();
   const groups = new Map<string, KeyGroup>();
+  const delivered: Record<number, number> = { 0: 0, 1: 0, 2: 0, 3: 0 };
+  let downgraded = 0;
   let built = 0;
 
   for (const plot of plots) {
@@ -630,6 +636,11 @@ export function buildPlotMeshes(
     if (assignment.level > 0) built++;
     const key = plotKey(plot, assignment);
     const footprint = standardFootprint(plot);
+    // A parcel too shallow for its level is downgraded. That is correct, but it has to be counted:
+    // silently capping the top tier is indistinguishable from never authoring it.
+    const got = deliverableLevel(footprint.w, footprint.d, assignment.level);
+    delivered[got] = (delivered[got] ?? 0) + 1;
+    if (got < assignment.level) downgraded++;
     let group = groups.get(key);
     if (!group) {
       group = {
@@ -731,6 +742,8 @@ export function buildPlotMeshes(
       keys: groups.size,
       instancedDraws,
       batchedDraws: meshes.length - instancedDraws,
+      delivered,
+      downgraded,
     },
   };
 }

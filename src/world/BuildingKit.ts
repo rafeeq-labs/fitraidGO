@@ -278,6 +278,24 @@ interface Site {
   hardRear: number;
 }
 
+/**
+ * The level a parcel can actually carry.
+ *
+ * A parcel too shallow for its level is downgraded rather than squeezed, and that is the right
+ * behaviour — but it must never be silent. It was: the review sheet asked for level 3 on a 14 m
+ * plot, got level 2, and showed a four-column ladder with only three tiers in it for four rounds
+ * of review. Anything that assigns a level must report what was delivered, not what was requested.
+ */
+export function deliverableLevel(plotW: number, plotD: number, requested: number): number {
+  let level = clamp(Math.round(requested), 0, 3);
+  while (level > 0) {
+    const site = siteOf(plotW, plotD, level);
+    if (site.rearLimit - site.frontLimit >= LEVEL_MIN_DEPTH[level]!) break;
+    level--;
+  }
+  return level;
+}
+
 function siteOf(plotW: number, plotD: number, level: number): Site {
   const i = clamp(Math.round(level), 0, 3);
   const margin = MARGIN[i]!;
@@ -1722,9 +1740,7 @@ export function buildBuilding(ctx: KitContext, spec: BuildingSpec): void {
   // make a level what it is are placed at fixed offsets from the mass, so on a 16 x 8 strip the
   // level-3 manor put its rear wall a metre and a half outside its own kerb. What a parcel can
   // carry is a property of the parcel; see the containment invariant in PlotBuilder.
-  let level = Math.min(3, Math.round(spec.level));
-  const buildable = site.rearLimit - site.frontLimit;
-  while (level > 0 && buildable < LEVEL_MIN_DEPTH[level]!) level--;
+  const level = deliverableLevel(plotW, plotD, spec.level);
   if (level <= 0) {
     level0(local, siteOf(plotW, plotD, 0), v);
     return;
