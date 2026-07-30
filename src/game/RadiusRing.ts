@@ -1,0 +1,150 @@
+import {
+  AdditiveBlending,
+  Color,
+  Mesh,
+  RingGeometry,
+  ShaderMaterial,
+  Vector3,
+} from 'three';
+import { LAYER, PALETTE } from '../engine/Palette.js';
+
+/**
+ * The GPS interaction radius: one very large, very thin luminous circle lying flat on the ground.
+ *
+ * The references are emphatic that this is a *drawn line*, not a glowing disc — roughly 90% of the
+ * frame width, a couple of pixels thick, with at most a whisper of interior tint. Anything heavier
+ * fights the world for attention and immediately looks like a mobile-game overlay.
+ *
+ * It is depth-tested so buildings and trees occlude it, which is what makes it sit in the world
+ * rather than on top of the image, but it does not write depth, so it never occludes anything else.
+ */
+
+export interface RadiusRingOptions {
+  /** Radius in metres. Sized so the ring spans most of the portrait frame's width. */
+  radius?: number;
+  /** Rim thickness in metres. */
+  thickness?: number;
+  color?: number;
+  /** Interior fill opacity. The references sit near 0.05; above 0.12 it reads as a mobile overlay. */
+  fill?: number;
+  /** Radius modulation amplitude as a fraction, and its period in seconds. */
+  pulse?: number;
+  pulsePeriod?: number;
+}
+
+const VERT = /* glsl */ `
+varying vec2 vLocal;
+void main() {
+  vLocal = position.xy;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+}
+`;
+
+const FRAG = /* glsl */ `
+uniform vec3 uColor;
+uniform float uRadius;
+uniform float uThickness;
+uniform float uFill;
+uniform float uTime;
+uniform float uPulse;
+uniform float uPulsePeriod;
+uniform float uOpacity;
+varying vec2 vLocal;
+
+void main() {
+  float r = length( vLocal );
+  float breathe = 1.0 + uPulse * sin( uTime * 6.2831853 / uPulsePeriod );
+  float R = uRadius * breathe;
+
+  // Crisp rim. Width is fixed in world units, then widened by the pixel derivative so the line
+  // never aliases away when the camera is far out.
+  float aa = max( fwidth( r ), 0.001 );
+  float half = max( uThickness * 0.5, aa );
+  float rim = 1.0 - smoothstep( 0.0, half, abs( r - R ) );
+
+  // A second, much fainter rim just inside gives the line depth without thickening it.
+  float inner = ( 1.0 - smoothstep( 0.0, half * 2.5, abs( r - R * 0.985 ) ) ) * 0.22;
+
+  // Interior wash, strongest at the rim and fading to nothing at the centre.
+  float fill = uFill * smoothstep( 0.0, 1.0, r / R ) * step( r, R );
+
+  float alpha = ( rim + inner + fill ) * uOpacity;
+  if ( alpha < 0.002 ) discard;
+  gl_FragColor = vec4( uColor * ( 0.55 + 0.45 * rim ), alpha );
+}
+`;
+
+export class RadiusRing {
+  readonly mesh: Mesh;
+  private readonly material: ShaderMaterial;
+  private radius: number;
+
+  constructor(options: RadiusRingOptions = {}) {
+    this.radius = options.radius ?? 42;
+    const thickness = options.thickness ?? 0.42;
+
+    // The plane is generated with a hole so the fragment shader never runs over the empty middle;
+    // the outer edge is padded so the pulse cannot clip the rim.
+    const outer = this.radius * 1.06;
+    const inner = this.radius * 0.55;
+    const geometry = new RingGeometry(inner, outer, 128, 1);
+    geometry.rotateX(-Math.PI / 2);
+
+    this.material = new ShaderMaterial({
+      uniforms: {
+        uColor: { value: new Color(options.color ?? PALETTE.ring) },
+        uRadius: { value: this.radius },
+        uThickness: { value: thickness },
+        uFill: { value: options.fill ?? 0.05 },
+        uTime: { value: 0 },
+        uPulse: { value: options.pulse ?? 0.006 },
+        uPulsePeriod: { value: options.pulsePeriod ?? 4.5 },
+        uOpacity: { value: 1 },
+      },
+      vertexShader: VERT,
+      fragmentShader: FRAG,
+      transparent: true,
+      blending: AdditiveBlending,
+      depthWrite: false,
+      depthTest: true,
+      // Lifts the decal off coplanar road surfaces without a visible height offset.
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+
+    this.mesh = new Mesh(geometry, this.material);
+    this.mesh.name = 'gps-radius-ring';
+    this.mesh.position.y = LAYER.ringDecal;
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = 5;
+  }
+
+  setRadius(radius: number): void {
+    this.radius = radius;
+    this.material.uniforms.uRadius!.value = radius;
+    const outer = radius * 1.06;
+    const inner = radius * 0.55;
+    this.mesh.geometry.dispose();
+    const g = new RingGeometry(inner, outer, 128, 1);
+    g.rotateX(-Math.PI / 2);
+    this.mesh.geometry = g;
+  }
+
+  setOpacity(opacity: number): void {
+    this.material.uniforms.uOpacity!.value = opacity;
+  }
+
+  follow(position: Vector3): void {
+    this.mesh.position.set(position.x, LAYER.ringDecal, position.z);
+  }
+
+  update(time: number): void {
+    this.material.uniforms.uTime!.value = time;
+  }
+
+  dispose(): void {
+    this.mesh.geometry.dispose();
+    this.material.dispose();
+  }
+}
