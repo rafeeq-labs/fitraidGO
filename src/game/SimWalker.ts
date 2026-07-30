@@ -140,6 +140,49 @@ export class SimWalker {
   }
 
   /**
+   * Picks the route that shows the most CITY.
+   *
+   * Choosing the longest available path instead sends the walker down whichever footpath happens to
+   * run furthest, which in a real tile means open parkland — a technically valid route through an
+   * empty frame. Scoring junctions by how many plots surround them puts the walk on the built
+   * streets, which is what the view is for.
+   */
+  denseRoute(plots: readonly { x: number; z: number }[], radius = 70): boolean {
+    const junctions = this.tile.junctions.filter((j) => j.degree >= 3);
+    if (junctions.length < 2) return this.autoRoute();
+
+    const r2 = radius * radius;
+    const scored = junctions
+      .map((j) => {
+        let near = 0;
+        for (const p of plots) {
+          const dx = p.x - j.x;
+          const dz = p.z - j.z;
+          if (dx * dx + dz * dz < r2) near++;
+        }
+        return { j, near };
+      })
+      .sort((a, b) => b.near - a.near);
+
+    // Walk down the ranking for a pair that is both busy and far enough apart to be a real walk.
+    const top = scored.slice(0, 12);
+    let best: { from: [number, number]; to: [number, number]; score: number } | null = null;
+    for (let i = 0; i < top.length; i++) {
+      for (let k = i + 1; k < top.length; k++) {
+        const a = top[i]!;
+        const c = top[k]!;
+        const dist = Math.hypot(c.j.x - a.j.x, c.j.z - a.j.z);
+        if (dist < 120) continue;
+        const score = (a.near + c.near) * Math.min(dist, 420);
+        if (best && score <= best.score) continue;
+        best = { from: [a.j.x, a.j.z], to: [c.j.x, c.j.z], score };
+      }
+    }
+    if (best && this.route(best.from, best.to)) return true;
+    return this.autoRoute();
+  }
+
+  /**
    * Picks a long, well-connected route through the tile with no scenario configured: the pair of
    * junction nodes whose A* path is longest among a bounded sample. Sampling rather than testing
    * every pair keeps this cheap on a graph with thousands of nodes, and the result is deterministic

@@ -7,6 +7,7 @@ import {
   offsetPolyline,
   extrudeRibbon,
   trimPolyline,
+  effectiveTrims,
   stationsOf,
   polylineLength,
   pointAtStation,
@@ -86,9 +87,10 @@ const turnedLine = (turn) => {
   return [0, 0, 50, 0, 50 + Math.cos(t) * 50, Math.sin(t) * 50];
 };
 
-test('mitre joins are clamped to 2*halfWidth on hairpins', () => {
+test('mitre joins are clamped to sqrt(2)*halfWidth on hairpins', () => {
   const halfWidth = 4;
-  for (const turn of [0, 1, 5, 15, 45, 90, 119, 120, 121, 150, 179, 179.9, 180]) {
+  const limit = Math.SQRT2 * halfWidth;
+  for (const turn of [0, 1, 5, 15, 45, 89, 90, 91, 120, 150, 179, 179.9, 180]) {
     const line = turnedLine(turn);
     const joins = offsetJoins(line, halfWidth);
     assert.equal(joins.length, 3);
@@ -99,8 +101,8 @@ test('mitre joins are clamped to 2*halfWidth on hairpins', () => {
         for (let k = 0; k < side.length; k += 2) {
           const d = Math.hypot(side[k] - vx, side[k + 1] - vz);
           assert.ok(
-            d <= 2 * halfWidth + 1e-9,
-            `turn=${turn} vertex=${i} offset ${d.toFixed(3)} exceeds 2*halfWidth`
+            d <= limit + 1e-9,
+            `turn=${turn} vertex=${i} offset ${d.toFixed(3)} exceeds sqrt(2)*halfWidth`
           );
         }
       }
@@ -118,16 +120,26 @@ test('a straight line mitres to exactly halfWidth on both sides', () => {
   }
 });
 
-test('the mitre survives up to a 120 degree turn and bevels beyond it', () => {
-  // mitre = halfWidth / cos(turn/2), so the 2*halfWidth clamp bites at exactly 120 degrees.
-  assert.equal(offsetJoins(turnedLine(119), 4)[1].mitred, true);
-  assert.equal(offsetJoins(turnedLine(121), 4)[1].mitred, false);
-  for (const turn of [121, 179.9, 180]) {
+test('the mitre survives up to a 90 degree turn and bevels only the outer side beyond it', () => {
+  // mitre = halfWidth / cos(turn/2), so the sqrt(2)*halfWidth clamp bites at exactly 90 degrees.
+  assert.equal(offsetJoins(turnedLine(89), 4)[1].mitred, true);
+  assert.equal(offsetJoins(turnedLine(91), 4)[1].mitred, false);
+  for (const turn of [91, 120, 179.9, 180]) {
     const jn = offsetJoins(turnedLine(turn), 4)[1];
     assert.equal(jn.mitred, false, `turn=${turn}`);
     assert.equal(jn.left.length, 4);
     assert.equal(jn.right.length, 4);
+    // Exactly one side bevels; the inner side repeats a single clipped point, so the rung stays a
+    // segment instead of pinching to zero at the centreline vertex.
+    const distinct = (side) => (Math.hypot(side[0] - side[2], side[1] - side[3]) > 1e-9 ? 2 : 1);
+    assert.equal(distinct(jn.left) + distinct(jn.right), 3, `turn=${turn} bevelled both sides`);
   }
+  // turnedLine bends towards +z, i.e. clockwise on screen, so the left side is the outer one.
+  const jn = offsetJoins(turnedLine(150), 4)[1];
+  assert.equal(Math.hypot(jn.left[0] - jn.left[2], jn.left[1] - jn.left[3]) > 1e-9, true);
+  // A mirrored turn bevels the right side instead.
+  const mirrored = offsetJoins([0, 0, 50, 0, 50 - Math.cos(0.5), -Math.sin(0.5) * 50], 4)[1];
+  assert.equal(Math.hypot(mirrored.right[0] - mirrored.right[2], mirrored.right[1] - mirrored.right[3]) > 1e-9, true);
 });
 
 test('ribbon UVs are monotonic along the road and span 0..1 across it', () => {
@@ -175,33 +187,73 @@ test('a circular ribbon has no self-intersecting quads and matches the annulus a
   );
 });
 
-test('every ribbon triangle is wound for a +y normal', () => {
-  const mesh = extrudeRibbon([0, 0, 30, 10, 55, 45], 7);
-  const p = mesh.positions;
-  for (let i = 0; i < mesh.indices.length; i += 3) {
-    const a = mesh.indices[i] * 2;
-    const b = mesh.indices[i + 1] * 2;
-    const c = mesh.indices[i + 2] * 2;
-    const uz = p[b + 1] - p[a + 1];
-    const ux = p[b] - p[a];
-    const vz = p[c + 1] - p[a + 1];
-    const vx = p[c] - p[a];
-    assert.ok(uz * vx - ux * vz > 0, `triangle ${i / 3} is back-facing`);
+test('every ribbon triangle is wound for a +y normal, hairpins included', () => {
+  // The hairpin is the case that matters: bevelling both sides of the join used to emit a crossed
+  // quad whose second triangle faced -y.
+  for (const line of [[0, 0, 30, 10, 55, 45], [0, 0, 10, 0, 0.5, 1], [0, 0, 10, 0, 0.5, -1], turnedLine(150)]) {
+    const mesh = extrudeRibbon(line, 8);
+    assert.ok(mesh.indices.length > 0, `no triangles for ${JSON.stringify(line)}`);
+    const p = mesh.positions;
+    for (let i = 0; i < mesh.indices.length; i += 3) {
+      const a = mesh.indices[i] * 2;
+      const b = mesh.indices[i + 1] * 2;
+      const c = mesh.indices[i + 2] * 2;
+      const uz = p[b + 1] - p[a + 1];
+      const ux = p[b] - p[a];
+      const vz = p[c + 1] - p[a + 1];
+      const vx = p[c] - p[a];
+      assert.ok(uz * vx - ux * vz > 0, `triangle ${i / 3} of ${JSON.stringify(line)} is back-facing`);
+    }
   }
 });
 
-test('trims shorten the ribbon at each end', () => {
+// Two segments cross properly when each strictly separates the other's endpoints.
+const crosses = (a, b, c, d) => {
+  const side = (p, q, r) => Math.sign((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]));
+  const d1 = side(a, b, c);
+  const d2 = side(a, b, d);
+  const d3 = side(c, d, a);
+  const d4 = side(c, d, b);
+  return d1 !== 0 && d2 !== 0 && d3 !== 0 && d4 !== 0 && d1 !== d2 && d3 !== d4;
+};
+
+test('a bevelled join never crosses its own rungs', () => {
+  // Bevelling BOTH sides puts both rungs through the centreline vertex, so they cross there and the
+  // quad between them is a bow-tie. Only the outer side may bevel.
+  for (const line of [[0, 0, 10, 0, 0.5, 1], [0, 0, 10, 0, 0.5, -1], turnedLine(120), turnedLine(179)]) {
+    const mesh = extrudeRibbon(line, 8);
+    const rungs = [];
+    for (let r = 0; r * 4 + 3 < mesh.positions.length; r++) {
+      rungs.push([
+        [mesh.positions[r * 4], mesh.positions[r * 4 + 1]],
+        [mesh.positions[r * 4 + 2], mesh.positions[r * 4 + 3]],
+      ]);
+    }
+    for (let r = 0; r + 1 < rungs.length; r++) {
+      assert.ok(
+        !crosses(rungs[r][0], rungs[r][1], rungs[r + 1][0], rungs[r + 1][1]),
+        `rungs ${r}/${r + 1} cross on ${JSON.stringify(line)}`
+      );
+    }
+  }
+});
+
+test('trims shorten the ribbon and leave u in the untrimmed station frame', () => {
   const line = [0, 0, 100, 0];
   const trimmed = trimPolyline(line, 12, 8);
   assert.ok(Math.abs(trimmed[0] - 12) < 1e-9);
   assert.ok(Math.abs(trimmed[trimmed.length - 2] - 92) < 1e-9);
   const mesh = extrudeRibbon(line, 10, { startTrim: 12, endTrim: 8 });
   const u = mesh.uvs;
-  assert.ok(Math.abs(u[0]) < 1e-9);
-  assert.ok(Math.abs(u[u.length - 2] - 80) < 1e-9);
-  // Over-long trims still leave a usable ribbon rather than nothing.
+  // uvs.x and Road.station share an origin, so u starts at the trim rather than at zero.
+  assert.ok(Math.abs(u[0] - 12) < 1e-9, `u[0]=${u[0]}`);
+  assert.ok(Math.abs(u[u.length - 2] - 92) < 1e-9, `u[last]=${u[u.length - 2]}`);
+  assert.deepEqual(effectiveTrims(line, 12, 8), [12, 8]);
+  // Over-long trims still leave a usable ribbon rather than nothing, and u still matches.
   const squashed = extrudeRibbon(line, 10, { startTrim: 400, endTrim: 400 });
   assert.ok(squashed.indices.length > 0);
+  const [a] = effectiveTrims(line, 400, 400);
+  assert.ok(Math.abs(squashed.uvs[0] - a) < 1e-9);
 });
 
 test('extrudeRibbon rejects unusable input instead of producing NaNs', () => {

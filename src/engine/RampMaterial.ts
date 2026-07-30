@@ -19,11 +19,15 @@ import { PALETTE, RAMP } from './Palette.js';
  * Hard bands read as cheap cel shading; soft bands read as hand-painted, which is what the
  * benchmark references do.
  *
- * Cast shadows are deliberately left to the hemisphere fill rather than being lifted by a floor,
- * so shadowed ground settles to sky-lit navy instead of black.
+ * Cast shadows need a floor of their own. `uShadowFloor` only lifts the ramp's shadow BAND, which
+ * is a function of NdotL; three zeroes `directLight.color` outright inside a shadow volume, so a
+ * sun-facing wall loses the whole ramp the moment something occludes it and settles wherever the
+ * hemisphere fill happens to land — measured at luma 1-16 against the spec's floor of 30.
+ * `uCastFloor*` therefore clamps the final diffuse from below, tinted blue-violet.
  *
- * Three additions on top of the ramp:
+ * Four additions on top of the ramp:
  *  - a sun-side rim term, which is what keeps roof ridges and the player readable;
+ *  - a warm bounce on downward-facing normals, so eave soffits are not navy holes;
  *  - optional baked per-vertex ambient occlusion via an `aAO` attribute;
  *  - per-instance tinting via InstancedMesh `instanceColor`, which three computes in the vertex
  *    stage but does not apply in the fragment stage unless USE_COLOR is also set.
@@ -41,8 +45,15 @@ export interface RampUniforms {
   uRimStrength: { value: number };
   uRimPower: { value: number };
   uRimColor: { value: Color };
+  uCastFloorColor: { value: Color };
+  uCastFloorLevel: { value: number };
+  uAbsoluteFloor: { value: Vector3 };
+  uBounceColor: { value: Color };
+  uBounceStrength: { value: number };
   /** Sun direction in view space, updated once per frame by the renderer. */
   uSunDirView: { value: Vector3 };
+  /** World up in view space; the bounce term needs to know which way is down. */
+  uUpView: { value: Vector3 };
   uAOStrength: { value: number };
   /** Fog-of-war explored mask, and the transform that maps world XZ into it. */
   uFogMask: { value: Texture | null };
@@ -54,6 +65,18 @@ export interface RampUniforms {
   uFogFrontier: { value: Color };
 }
 
+/**
+ * The absolute floor as a linear RGB triple: the cool shadow hue scaled so its LUMA is
+ * RAMP.absoluteFloor. Scaling the hue rather than each channel keeps the blue-violet bias
+ * (B exceeds R by well over the spec's 20) instead of grading every deep shadow toward grey.
+ */
+function absoluteFloorRGB(): Vector3 {
+  const c = new Color(RAMP.castFloorColor);
+  const luma = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+  const k = RAMP.absoluteFloor / Math.max(luma, 1e-4);
+  return new Vector3(c.r * k, c.g * k, c.b * k);
+}
+
 /** Shared across every ramp material so one write per frame updates the whole scene. */
 export const rampUniforms: RampUniforms = {
   uRampEdge0: { value: RAMP.edge0 },
@@ -63,11 +86,17 @@ export const rampUniforms: RampUniforms = {
   uMidTint: { value: new Color(RAMP.midTint) },
   uLitTint: { value: new Color(RAMP.litTint) },
   uShadowFloor: { value: RAMP.shadowFloor },
-  uMidLevel: { value: 0.72 },
+  uMidLevel: { value: RAMP.midLevel },
   uRimStrength: { value: RAMP.rimStrength },
   uRimPower: { value: RAMP.rimPower },
   uRimColor: { value: new Color(RAMP.rimColor) },
+  uCastFloorColor: { value: new Color(RAMP.castFloorColor) },
+  uCastFloorLevel: { value: RAMP.castFloorLevel },
+  uAbsoluteFloor: { value: absoluteFloorRGB() },
+  uBounceColor: { value: new Color(RAMP.bounceColor) },
+  uBounceStrength: { value: RAMP.bounceStrength },
   uSunDirView: { value: new Vector3(0, 1, 0) },
+  uUpView: { value: new Vector3(0, 1, 0) },
   uAOStrength: { value: 1 },
   uFogMask: { value: null },
   uFogTransform: { value: new Vector4(0, 0, 1, 1) },
@@ -112,7 +141,13 @@ uniform float uMidLevel;
 uniform float uRimStrength;
 uniform float uRimPower;
 uniform vec3 uRimColor;
+uniform vec3 uCastFloorColor;
+uniform float uCastFloorLevel;
+uniform vec3 uAbsoluteFloor;
+uniform vec3 uBounceColor;
+uniform float uBounceStrength;
 uniform vec3 uSunDirView;
+uniform vec3 uUpView;
 uniform float uAOStrength;
 uniform float uRimScale;
 uniform sampler2D uFogMask;
@@ -164,9 +199,11 @@ export class RampMaterial extends MeshLambertMaterial {
     this.rimScale = unlit ? 0 : rim;
     if (unlit) {
       // Emissive-only surfaces: kill the diffuse response so they read as light sources.
+      // Intensity is a real dial, not a formality: at 1.0 a warm emissive clips through the ACES
+      // shoulder and comes out white, which loses the one warm accent the palette is allowed.
       this.color = new Color(0x000000);
       this.emissive = new Color(params.color ?? PALETTE.crystalCore);
-      this.emissiveIntensity = 1;
+      this.emissiveIntensity = params.emissiveIntensity ?? 1;
     }
     if (vertexAO) this.defines = { ...this.defines, USE_VERTEX_AO: '' };
   }
@@ -242,6 +279,18 @@ diffuseColor.rgb *= mix( 1.0, vAO, uAOStrength );
 	float rimFacing = saturate( dot( normal, uSunDirView ) );
 	float rimEdge = pow( 1.0 - saturate( dot( normal, normalize( vViewPosition ) ) ), uRimPower );
 	reflectedLight.directDiffuse += rimEdge * rimFacing * uRimStrength * uRimScale * uRimColor;
+	float facingDown = saturate( -dot( normal, uUpView ) );
+	reflectedLight.indirectDiffuse += facingDown * uBounceStrength * uRimScale * uBounceColor * diffuseColor.rgb;
+	// The cast-shadow floor, in two parts. The albedo-relative term lifts value while keeping
+	// materials distinguishable; the absolute term guarantees the spec's luma 30 even on a
+	// near-black surface. Combined in quadrature rather than by max(), so the floor blends in
+	// smoothly instead of stamping a flat plate of one colour across every shadow.
+	vec3 rfLit = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse;
+	vec3 rfFloor = max( diffuseColor.rgb * uCastFloorColor * uCastFloorLevel, uAbsoluteFloor );
+	vec3 rfLit2 = rfLit * rfLit;
+	vec3 rfFloor2 = rfFloor * rfFloor;
+	vec3 rfOut = pow( rfLit2 * rfLit2 + rfFloor2 * rfFloor2, vec3( 0.25 ) );
+	reflectedLight.indirectDiffuse += rfOut - rfLit;
 }`
       )
       // Applied while still in linear space, before tone mapping, so the desaturation is correct.

@@ -4,7 +4,9 @@ import type { Rng } from '../engine/rng.js';
 import { MeshBuilder, type FaceOptions } from './MeshBuilder.js';
 import {
   KIT_CHANNELS,
+  TAG,
   registerPiece,
+  tag,
   withTransform,
   type KitChannel,
   type KitContext,
@@ -51,17 +53,90 @@ export const UV = {
 
 /** Shared AO stops. Anything darker than `recess` starts to read as a hole in the render. */
 export const AO = {
-  ground: 0.5,
-  contact: 0.66,
-  soffit: 0.52,
-  recess: 0.34,
-  reveal: 0.46,
-  under: 0.6,
+  ground: 0.68,
+  contact: 0.8,
+  soffit: 0.6,
+  recess: 0.44,
+  reveal: 0.56,
+  under: 0.68,
   lit: 1,
 } as const;
 
 type P3 = readonly [number, number, number];
 type Opts = FaceOptions;
+
+/** Tagged option bags for the multi-material channels. */
+export const TAGGED = {
+  paving: tag({ uvScale: UV.paving }, TAG.paving) as Opts,
+  shingle: tag({ uvScale: UV.roof }, TAG.shingle) as Opts,
+  water: tag({ uvScale: 1.4, ao: 0.7 }, TAG.water) as Opts,
+  crystal: tag({ uvScale: UV.glow }, TAG.crystal) as Opts,
+  fire: tag({ uvScale: UV.glow, ao: 1 }, TAG.fire) as Opts,
+} as const;
+
+/**
+ * A bloom: three axis-aligned quads through the light source, drawn additively with a radial
+ * falloff. Baked geometry cannot billboard, but a crossed volume reads the same from every angle
+ * the GPS camera ever uses, and it is what turns a flat pastel chip into a light source. The UV
+ * scale equals the quad size so the falloff maps exactly once across it.
+ */
+export type HaloKind = 'warm' | 'cool' | 'fire';
+
+const HALO_TAG: Record<HaloKind, number> = {
+  warm: TAG.haloWarm,
+  cool: TAG.haloCool,
+  fire: TAG.haloFire,
+};
+
+export function bloom(
+  ctx: KitContext,
+  size: number,
+  at: { x?: number; y?: number; z?: number },
+  kind: HaloKind = 'warm'
+): void {
+  const g = ctx.channel.glow;
+  const h = size / 2;
+  const x = at.x ?? 0;
+  const y = at.y ?? 0;
+  const z = at.z ?? 0;
+  const o = tag({ uvScale: size, ao: 1 }, HALO_TAG[kind]) as Opts;
+  g.quad([x - h, y - h, z], [x + h, y - h, z], [x + h, y + h, z], [x - h, y + h, z], o);
+  g.quad([x - h, y - h, z], [x - h, y + h, z], [x + h, y + h, z], [x + h, y - h, z], o);
+  g.quad([x, y - h, z - h], [x, y - h, z + h], [x, y + h, z + h], [x, y + h, z - h], o);
+  g.quad([x, y - h, z - h], [x, y + h, z - h], [x, y + h, z + h], [x, y - h, z + h], o);
+  g.quad([x - h, y, z - h], [x + h, y, z - h], [x + h, y, z + h], [x - h, y, z + h], o);
+  g.quad([x - h, y, z - h], [x - h, y, z + h], [x + h, y, z + h], [x + h, y, z - h], o);
+}
+
+/**
+ * The pool of light an emissive throws onto the surface it is mounted on: a single additive quad
+ * in PANEL space, standing a millimetre proud of the wall. Spill is what proves a window is lit
+ * rather than painted cream.
+ */
+export function spill(
+  ctx: KitContext,
+  size: number,
+  y: number,
+  z = 0.012,
+  kind: HaloKind = 'warm'
+): void {
+  const h = size / 2;
+  const o = tag({ uvScale: size, ao: 1 }, HALO_TAG[kind]) as Opts;
+  faceQuad(ctx.channel.glow, -h, y - h, h, y + h, z, o);
+}
+
+/** The same pool cast down onto the ground under a lamp or a forge mouth. */
+export function groundSpill(
+  ctx: KitContext,
+  size: number,
+  y: number,
+  z = 0,
+  kind: HaloKind = 'warm'
+): void {
+  const h = size / 2;
+  const o = tag({ uvScale: size, ao: 1 }, HALO_TAG[kind]) as Opts;
+  ctx.channel.glow.quad([-h, y, z + h], [h, y, z + h], [h, y, z - h], [-h, y, z - h], o);
+}
 
 /** Builds the eight channel accumulators a building needs. The caller owns the meshes. */
 export function createChannels(): Record<KitChannel, MeshBuilder> {
@@ -230,7 +305,8 @@ function saggingStrip(
     const z1 = reach * t1;
     const y0 = -drop * t0 * t0;
     const y1 = -drop * t1 * t1;
-    mb.quad([-hw, y0, z0], [hw, y0, z0], [hw, y1, z1], [-hw, y1, z1], opts, [1, 1, 0.9, 0.9]);
+    // Wound so the normal faces UP and outward: an awning is only ever seen from above.
+    mb.quad([-hw, y1, z1], [hw, y1, z1], [hw, y0, z0], [-hw, y0, z0], opts, [0.9, 0.9, 1, 1]);
   }
 }
 
@@ -331,7 +407,7 @@ export function thresholdSlab(ctx: KitContext, o: ThresholdSlabOptions = {}): vo
   const d = o.d ?? 1.1;
   const h = o.h ?? 0.16;
   ctx.channel.stone.box(-w / 2, 0, -d / 2, w / 2, h, d / 2, {
-    uvScale: UV.paving,
+    ...TAGGED.paving,
     skip: { ny: true },
     groundAO: 0.8,
   });
@@ -480,13 +556,15 @@ export function timberFrameBay(ctx: KitContext, o: TimberFrameBayOptions = {}): 
 
 // --- roofs -------------------------------------------------------------------
 
-/** Roof channel unless the level wants shingle; see the L1 note in BuildingKit. */
-function roofBuilder(ctx: KitContext, shingle?: boolean): MeshBuilder {
-  return shingle ? ctx.channel.timber : ctx.channel.roof;
-}
-
-function roofUV(shingle?: boolean): number {
-  return shingle ? UV.timber : UV.roof;
+/**
+ * Both roof materials come out of the roof channel, tagged apart; see the L1 note in BuildingKit.
+ *
+ * Shingle used to borrow the timber channel, whose generator paints planks rather than courses,
+ * so an L1 roof came out as boards running down the slope while its ridge cap — always emitted
+ * into the roof channel — came out blue slate on top of brown planking. One generator, two hues.
+ */
+function roofOpts(shingle?: boolean): Opts {
+  return shingle === true ? { ...TAGGED.shingle } : { uvScale: UV.roof };
 }
 
 /** Snow load on the upward faces of a pitched roof, as a fraction of each slope from the eave. */
@@ -508,17 +586,40 @@ function snowOnGable(
   s.quad([-hw, ridge + lift, 0.42], [hw, ridge + lift, 0.42], [hw, ridge + lift, -0.42], [-hw, ridge + lift, -0.42], opts);
 }
 
-/** Dark barge boards down the gable slopes and a ridge beam: the strongest roof silhouette cue. */
-function vergeAndRidge(
+/**
+ * The triangle of wall between the eaves and the ridge at each end of a gable.
+ *
+ * MeshBuilder can emit these as part of the roof, but then they are made of slate, and a slate
+ * gable end reads as a roof plane stood on end — the references always show wall material there,
+ * under the verge board. So the roof is asked for no ends and the wall channel supplies them,
+ * inset behind the overhang so the barge boards still stand proud.
+ */
+function gableEnds(
   ctx: KitContext,
-  hw: number,
-  hd: number,
+  w: number,
+  d: number,
   eave: number,
-  ridge: number
+  ridge: number,
+  channel: KitChannel = 'wall'
 ): void {
+  const mb = ctx.channel[channel];
+  const hw = w / 2 - 0.02;
+  const hd = d / 2;
+  const opts: Opts = { uvScale: channel === 'stone' ? UV.stone : UV.wall, ao: 0.88 };
+  mb.tri([hw, eave, hd], [hw, eave, -hd], [hw, ridge, 0], null, opts);
+  mb.tri([-hw, eave, -hd], [-hw, eave, hd], [-hw, ridge, 0], null, opts);
+}
+
+/**
+ * Dark barge boards down the gable slopes: the strongest roof silhouette cue, and what stops the
+ * verge reading as an unbevelled knife edge. The ridge capping course is not built here — it comes
+ * out of MeshBuilder.gableRoof so that it follows the ridge sag and carries the roof's own
+ * material rather than floating a slate box over a shingle pitch.
+ */
+function vergeBoards(ctx: KitContext, hw: number, hd: number, eave: number, ridge: number): void {
   const t = ctx.channel.timber;
   const opts: Opts = { uvScale: UV.timber };
-  const board = 0.2;
+  const board = 0.22;
   for (const sx of [-1, 1]) {
     const x = sx * hw;
     for (const sz of [-1, 1]) {
@@ -540,11 +641,6 @@ function vergeAndRidge(
       );
     }
   }
-  ctx.channel.roof.box(-hw, ridge - 0.1, -0.16, hw, ridge + 0.12, 0.16, {
-    uvScale: UV.roof,
-    skip: { ny: true },
-    groundAO: 0.9,
-  });
 }
 
 export type GableRoofOptions = {
@@ -559,6 +655,10 @@ export type GableRoofOptions = {
   ends?: boolean;
   verge?: boolean;
   shingle?: boolean;
+  /** Half-width of the ridge capping course. */
+  ridgeCap?: number;
+  /** The gable end wall is made of whatever the mass below it is; plaster is only the default. */
+  ashlar?: boolean;
 };
 
 /** Ridge along +x. Pitch, overhang, sag, eave kick and snow all come from the biome kit. */
@@ -570,20 +670,23 @@ export function gableRoof(ctx: KitContext, o: GableRoofOptions = {}): void {
   const pitch = o.pitch ?? style.pitch;
   const rise = o.rise ?? (pitch * d) / 2;
   const oh = o.overhang ?? style.overhang;
-  const mb = roofBuilder(ctx, o.shingle);
-  mb.gableRoof(w, d, rise, {
+  ctx.channel.roof.gableRoof(w, d, rise, {
+    ...roofOpts(o.shingle),
     y,
     overhang: oh,
     sag: style.sag,
     kick: style.eaveKick,
     segments: o.segments ?? 5,
-    ends: o.ends !== false,
-    uvScale: roofUV(o.shingle),
+    ends: false,
+    ridgeCap: o.ridgeCap ?? 0.15,
+    fascia: 0.2,
+    wallHalfDepth: d / 2,
   });
   const hw = w / 2 + oh;
   const hd = d / 2 + oh;
   const eave = y + rise * style.eaveKick * 0.35;
-  if (o.verge !== false) vergeAndRidge(ctx, hw, hd, eave, y + rise);
+  if (o.ends !== false) gableEnds(ctx, w, d, y - 0.06, y + rise, o.ashlar === true ? 'stone' : 'wall');
+  if (o.verge !== false) vergeBoards(ctx, hw, hd, eave, y + rise);
   if (style.snowCover > 0) snowOnGable(ctx, hw, hd, eave, y + rise, style.snowCover);
 }
 
@@ -642,17 +745,13 @@ export function hipRoof(ctx: KitContext, o: HipRoofOptions = {}): void {
   const style = ctx.kit.roof;
   const rise = o.rise ?? ((o.pitch ?? style.pitch) * d) / 2;
   const oh = o.overhang ?? style.overhang;
-  const mb = roofBuilder(ctx, o.shingle);
-  mb.hipRoof(w, d, rise, {
-    y,
-    overhang: oh,
-    ridgeFraction: o.ridgeFraction ?? 0.45,
-    uvScale: roofUV(o.shingle),
-  });
+  const ro = roofOpts(o.shingle);
+  const mb = ctx.channel.roof;
+  mb.hipRoof(w, d, rise, { ...ro, y, overhang: oh, ridgeFraction: o.ridgeFraction ?? 0.45 });
   const hw = w / 2 + oh;
   const rx = hw * (o.ridgeFraction ?? 0.45);
-  ctx.channel.roof.box(-rx, y + rise - 0.1, -0.16, rx, y + rise + 0.12, 0.16, {
-    uvScale: UV.roof,
+  mb.box(-rx, y + rise - 0.1, -0.16, rx, y + rise + 0.14, 0.16, {
+    ...ro,
     skip: { ny: true },
     groundAO: 0.9,
   });
@@ -660,8 +759,8 @@ export function hipRoof(ctx: KitContext, o: HipRoofOptions = {}): void {
   const hd = d / 2 + oh;
   const soffit: Opts = { uvScale: UV.timber, ao: AO.soffit };
   const t = ctx.channel.timber;
-  t.quad([hw, y, hd], [-hw, y, hd], [-hw, y - 0.12, hd], [hw, y - 0.12, hd], soffit);
-  t.quad([-hw, y, -hd], [hw, y, -hd], [hw, y - 0.12, -hd], [-hw, y - 0.12, -hd], soffit);
+  t.quad([hw, y, hd], [-hw, y, hd], [-hw, y - 0.18, hd], [hw, y - 0.18, hd], soffit);
+  t.quad([-hw, y, -hd], [hw, y, -hd], [hw, y - 0.18, -hd], [-hw, y - 0.18, -hd], soffit);
   if (style.snowCover > 0) snowOnGable(ctx, rx, hd, y, y + rise, style.snowCover);
 }
 
@@ -682,20 +781,22 @@ export function monoPitchRoof(ctx: KitContext, o: MonoPitchRoofOptions = {}): vo
   const y = o.y ?? 0;
   const rise = o.rise ?? 0.9;
   const oh = o.overhang ?? ctx.kit.roof.overhang;
-  const mb = roofBuilder(ctx, o.shingle);
+  const mb = ctx.channel.roof;
   const hw = w / 2 + oh;
   const z1 = d / 2 + oh;
   const z0 = -d / 2 - oh;
-  const opts: Opts = { uvScale: roofUV(o.shingle) };
+  // u across the slope's width, v up the slope, as everywhere else: the quad's own edge order
+  // already gives that, so this must NOT be rotated.
+  const opts: Opts = roofOpts(o.shingle);
   mb.quad([-hw, y, z1], [hw, y, z1], [hw, y + rise, z0], [-hw, y + rise, z0], opts, [0.9, 0.9, 1, 1]);
   mb.quad(
-    [hw, y - 0.1, z1],
-    [-hw, y - 0.1, z1],
-    [-hw, y + rise - 0.1, z0],
-    [hw, y + rise - 0.1, z0],
+    [hw, y - 0.16, z1],
+    [-hw, y - 0.16, z1],
+    [-hw, y + rise - 0.16, z0],
+    [hw, y + rise - 0.16, z0],
     { ...opts, ao: AO.soffit }
   );
-  mb.quad([hw, y, z1], [-hw, y, z1], [-hw, y - 0.1, z1], [hw, y - 0.1, z1], { ...opts, ao: AO.soffit });
+  mb.quad([hw, y, z1], [-hw, y, z1], [-hw, y - 0.16, z1], [hw, y - 0.16, z1], { ...opts, ao: 0.7 });
   if (o.ends === true) {
     const wl = ctx.channel.wall;
     const wo: Opts = { uvScale: UV.wall, ao: 0.85 };
@@ -870,8 +971,10 @@ export type ArchOpeningOptions = {
   depth?: number;
   thickness?: number;
   segments?: number;
-  /** Lights the interior: the forge mouth and the lit arcade both need it. */
+  /** Lights the interior with window gold: a lit arcade or a shopfront. */
   glow?: boolean;
+  /** Lights it with forge orange instead, plus a bloom and a pool of spill on the yard. */
+  fire?: boolean;
 };
 
 /**
@@ -919,10 +1022,13 @@ export function archOpening(ctx: KitContext, o: ArchOpeningOptions = {}): void {
   faceQuad(s, -r - th, 0, -r, spring, depth, { uvScale: UV.stone }, [AO.contact, AO.contact, 1, 1]);
   faceQuad(s, r, 0, r + th, spring, depth, { uvScale: UV.stone }, [AO.contact, AO.contact, 1, 1]);
 
-  const backMb = o.glow ? ctx.channel.glow : ctx.channel.wall;
-  const backOpts: Opts = o.glow
-    ? { uvScale: UV.glow, ao: 1 }
-    : { uvScale: UV.wall, ao: AO.recess };
+  const fire = o.fire === true;
+  const backMb = o.glow || fire ? ctx.channel.glow : ctx.channel.wall;
+  const backOpts: Opts = fire
+    ? { ...TAGGED.fire }
+    : o.glow
+      ? { uvScale: UV.glow, ao: 1 }
+      : { uvScale: UV.wall, ao: AO.recess };
   faceQuad(backMb, -r, 0, r, spring, back, backOpts);
   for (let i = 0; i < segs; i++) {
     const a0 = ang(i);
@@ -934,6 +1040,14 @@ export function archOpening(ctx: KitContext, o: ArchOpeningOptions = {}): void {
       null,
       backOpts
     );
+  }
+  // A lit opening has to spend light on what surrounds it, or it reads as a coloured decal.
+  if (fire) {
+    bloom(ctx, w * 0.85, { y: h * 0.3, z: depth + w * 0.2 }, 'fire');
+    groundSpill(ctx, w * 0.95, 0.03, depth + w * 0.25, 'fire');
+    spill(ctx, w * 1.5, h * 0.38, depth + 0.02, 'fire');
+  } else if (o.glow) {
+    spill(ctx, w * 1.25, h * 0.45, depth + 0.02);
   }
 }
 
@@ -1007,6 +1121,9 @@ export function windowBay(ctx: KitContext, o: WindowBayOptions = {}): void {
       uvScale: UV.glow,
       ao: 1,
     });
+    // The gold has to land on the stone around the opening, 1-2 m of it, or the pane reads as a
+    // cream rectangle painted on the wall — which is exactly how the kit measured in review.
+    spill(ctx, Math.max(w, h) * 1.9, y + h / 2, depth + 0.03);
   }
   frameQuads(surround, w, h, y, 0.14, depth, { uvScale: suv });
   if (o.sill !== false) {
@@ -1046,6 +1163,7 @@ export function mullionWindow(ctx: KitContext, o: MullionWindowOptions = {}): vo
       uvScale: UV.glow,
       ao: 1,
     });
+    spill(ctx, Math.max(w, h) * 1.8, y + h / 2, depth + 0.03);
   }
   frameQuads(s, w, h, y, 0.16, depth, opts);
   for (let i = 1; i < lights; i++) {
@@ -1166,8 +1284,12 @@ export type AwningOptions = {
 /**
  * A sagging canvas awning. PANEL space.
  *
- * Stripes are geometry, not a texture: there is no cloth generator in TextureGen, and a striped
- * awning is one of only two places in the frame allowed to be near-white, so the pale bands are
+ * The canvas is a six-segment curved strip, and the cloth channel now carries a fold-shaded
+ * generator, so no facet of it is a single flat RGB — the whole 9 m2 of a market canopy used to
+ * measure one saturated primary blue with a standard deviation under 2.
+ *
+ * Stripes stay geometry rather than texture: a striped awning is one of only two places in the
+ * frame allowed to be near-white, and the pale bands have to follow the sag exactly, so they are
  * emitted as separate quads in the plaster channel a millimetre above the canvas.
  */
 export function awning(ctx: KitContext, o: AwningOptions = {}): void {
@@ -1175,7 +1297,7 @@ export function awning(ctx: KitContext, o: AwningOptions = {}): void {
   const reach = o.reach ?? 1.4;
   const y = o.y ?? 2.4;
   const drop = o.drop ?? 0.35;
-  const segs = Math.max(2, Math.round(o.segments ?? 5));
+  const segs = Math.max(4, Math.round(o.segments ?? 6));
   const cloth = ctx.channel.cloth;
   cloth.push();
   cloth.translate(0, y, 0);
@@ -1197,7 +1319,19 @@ export function awning(ctx: KitContext, o: AwningOptions = {}): void {
     pale.pop();
   }
   if (o.valance !== false) {
-    faceQuad(cloth, -w / 2, y - drop - 0.24, w / 2, y - drop, reach, { uvScale: UV.cloth });
+    // A scalloped hem, in two depths, so the front edge of the canopy is not a straight cut.
+    const scallops = Math.max(3, Math.round(w / 0.42));
+    const sw = w / scallops;
+    for (let i = 0; i < scallops; i++) {
+      const x0 = -w / 2 + i * sw;
+      const dip = i % 2 === 0 ? 0.26 : 0.17;
+      faceQuad(cloth, x0, y - drop - dip, x0 + sw, y - drop, reach, { uvScale: UV.cloth }, [
+        0.72,
+        0.72,
+        1,
+        1,
+      ]);
+    }
   }
   if (o.brackets !== false) {
     const m = ctx.channel.metal;

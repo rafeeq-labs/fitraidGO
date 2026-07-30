@@ -1,4 +1,14 @@
-import type { CobbleParams, GrassParams, PlasterParams, RoofParams, TimberParams, WaterParams, AshlarParams } from '../engine/TextureGen.js';
+import type {
+  AshlarParams,
+  ClothParams,
+  CobbleParams,
+  GrassParams,
+  LeafParams,
+  PlasterParams,
+  RoofParams,
+  TimberParams,
+  WaterParams,
+} from '../engine/TextureGen.js';
 
 /**
  * A BiomeKit is PURE DATA. It re-skins the world; it never changes it.
@@ -180,12 +190,18 @@ export interface LandmarkStyle {
 
 export interface TextureRecipes {
   road: CobbleParams;
+  /** Yard and forecourt paving: a smaller module than the road, per REFERENCE-SPEC 8.2. */
+  paving: CobbleParams;
   ground: GrassParams;
   roof: RoofParams;
+  /** Level-1 roofs. Same generator as `roof` so both read as overlapping courses, warmer hue. */
+  shingle: RoofParams;
   wall: PlasterParams;
   stone: AshlarParams;
   timber: TimberParams;
   water: WaterParams;
+  cloth: ClothParams;
+  leaf: LeafParams;
 }
 
 export interface BiomeKit {

@@ -194,75 +194,119 @@ export function classifySize(areaM2) {
 
 const MAIN_CLASSES = new Set(['primary', 'secondary', 'tertiary', 'pedestrian']);
 
+/** Squared distance from (x, z) to segment ab, plus the foot of the perpendicular. */
+function pointToSegment(x, z, ax, az, bx, bz) {
+  const dx = bx - ax;
+  const dz = bz - az;
+  const len2 = dx * dx + dz * dz;
+  let t = len2 > 1e-12 ? ((x - ax) * dx + (z - az) * dz) / len2 : 0;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const fx = ax + dx * t;
+  const fz = az + dz * t;
+  return { d2: (x - fx) * (x - fx) + (z - fz) * (z - fz), x: fx, z: fz };
+}
+
 /**
- * Uniform grid over sampled road centrelines. 20 m cells: a plot frontage never needs to look
- * further than one or two rings, and the whole tile fits in a few thousand buckets.
+ * Uniform grid over road centreline SEGMENTS. 20 m cells: a plot frontage never needs to look
+ * further than one or two rings, and the whole tile fits in a few thousand buckets. Segments (not
+ * samples) are indexed so `nearest` reports a true perpendicular distance — a sampled centreline is
+ * off by most of the plot's kerb-clearance budget on a long straight.
  */
-export function buildRoadIndex(roads, { cell = 20, step = 4 } = {}) {
+export function buildRoadIndex(roads, { cell = 20 } = {}) {
   const cells = new Map();
+  const segs = [];
   const key = (ix, iz) => `${ix}|${iz}`;
-  const add = (x, z, roadId) => {
-    const ix = Math.floor(x / cell);
-    const iz = Math.floor(z / cell);
-    const k = key(ix, iz);
-    let bucket = cells.get(k);
-    if (!bucket) cells.set(k, (bucket = []));
-    bucket.push(x, z, roadId);
+  const register = (index, ax, az, bx, bz) => {
+    const minIx = Math.floor(Math.min(ax, bx) / cell);
+    const maxIx = Math.floor(Math.max(ax, bx) / cell);
+    const minIz = Math.floor(Math.min(az, bz) / cell);
+    const maxIz = Math.floor(Math.max(az, bz) / cell);
+    for (let ix = minIx; ix <= maxIx; ix++) {
+      for (let iz = minIz; iz <= maxIz; iz++) {
+        const k = key(ix, iz);
+        let bucket = cells.get(k);
+        if (!bucket) cells.set(k, (bucket = []));
+        bucket.push(index);
+      }
+    }
   };
 
   for (const road of roads ?? []) {
     const cl = road.centerline ?? road.centreline ?? [];
     for (let i = 0; i + 3 < cl.length; i += 2) {
-      const ax = cl[i];
-      const az = cl[i + 1];
-      const bx = cl[i + 2];
-      const bz = cl[i + 3];
-      const len = Math.hypot(bx - ax, bz - az);
-      const n = Math.max(1, Math.ceil(len / step));
-      for (let s = 0; s < n; s++) {
-        const t = s / n;
-        add(ax + (bx - ax) * t, az + (bz - az) * t, road.id);
-      }
+      const seg = { roadId: road.id, ax: cl[i], az: cl[i + 1], bx: cl[i + 2], bz: cl[i + 3] };
+      if (Math.hypot(seg.bx - seg.ax, seg.bz - seg.az) < 1e-9) continue;
+      segs.push(seg);
+      register(segs.length - 1, seg.ax, seg.az, seg.bx, seg.bz);
     }
-    if (cl.length >= 2) add(cl[cl.length - 2], cl[cl.length - 1], road.id);
   }
 
   return {
     cell,
     cells,
+    segs,
     nearest(x, z, maxRadius = 60) {
       const ix = Math.floor(x / cell);
       const iz = Math.floor(z / cell);
-      const maxRing = Math.max(1, Math.ceil(maxRadius / cell));
+      const maxRing = Math.max(1, Math.ceil(maxRadius / cell) + 1);
       let bestD2 = Infinity;
-      let bestRoad = -1;
-      let bestX = 0;
-      let bestZ = 0;
+      let best = null;
       for (let ring = 0; ring <= maxRing; ring++) {
         for (let dx = -ring; dx <= ring; dx++) {
           for (let dz = -ring; dz <= ring; dz++) {
             if (Math.max(Math.abs(dx), Math.abs(dz)) !== ring) continue;
             const bucket = cells.get(key(ix + dx, iz + dz));
             if (!bucket) continue;
-            for (let i = 0; i < bucket.length; i += 3) {
-              const px = bucket[i];
-              const pz = bucket[i + 1];
-              const d2 = (px - x) * (px - x) + (pz - z) * (pz - z);
-              if (d2 < bestD2) {
-                bestD2 = d2;
-                bestRoad = bucket[i + 2];
-                bestX = px;
-                bestZ = pz;
+            for (const si of bucket) {
+              const seg = segs[si];
+              const hit = pointToSegment(x, z, seg.ax, seg.az, seg.bx, seg.bz);
+              if (hit.d2 < bestD2) {
+                bestD2 = hit.d2;
+                best = { seg, hit };
               }
             }
           }
         }
-        // One extra ring after the first hit: a nearer sample can sit just across a cell border.
-        if (bestRoad >= 0 && Math.sqrt(bestD2) <= ring * cell) break;
+        // One extra ring after the first hit: a nearer segment can sit just across a cell border.
+        if (best && Math.sqrt(bestD2) <= ring * cell) break;
       }
-      if (bestRoad < 0) return null;
-      return { roadId: bestRoad, distance: Math.sqrt(bestD2), x: bestX, z: bestZ };
+      const distance = Math.sqrt(bestD2);
+      if (!best || distance > maxRadius) return null;
+      return {
+        roadId: best.seg.roadId,
+        distance,
+        x: best.hit.x,
+        z: best.hit.z,
+        segment: best.seg,
+      };
     },
+  };
+}
+
+/** How far a frontage yaw may be rotated to sit square against its own kerb. */
+const FRONTAGE_SNAP = Math.cos((30 * Math.PI) / 180);
+
+/** Axis-aligned extents of `points` in the frame (u, v). */
+function refit(points, ux, uz, vx, vz) {
+  let minU = Infinity;
+  let maxU = -Infinity;
+  let minV = Infinity;
+  let maxV = -Infinity;
+  for (let i = 0; i + 1 < points.length; i += 2) {
+    const pu = points[i] * ux + points[i + 1] * uz;
+    const pv = points[i] * vx + points[i + 1] * vz;
+    if (pu < minU) minU = pu;
+    if (pu > maxU) maxU = pu;
+    if (pv < minV) minV = pv;
+    if (pv > maxV) maxV = pv;
+  }
+  const cu = (minU + maxU) / 2;
+  const cv = (minV + maxV) / 2;
+  return {
+    cx: ux * cu + vx * cv,
+    cz: uz * cu + vz * cv,
+    w: maxU - minU,
+    d: maxV - minV,
   };
 }
 
@@ -271,8 +315,19 @@ export function buildRoadIndex(roads, { cell = 20, step = 4 } = {}) {
  * Tests the four edge midpoints against the road index, keeps the closest, and returns the yaw
  * that puts the plot's local -z axis through that edge, plus the frontage-aligned w/d
  * (they swap when the short edge wins).
+ *
+ * The yaw is then squared to the bearing of the nearest centreline SEGMENT of that road, so a row
+ * is laid out on its own street rather than on whatever axis its footprint happened to be drawn on.
+ * The snap is refused past 30 degrees: beyond that the footprint really is skew to the kerb and
+ * rotating it would push it through its neighbours.
+ *
+ * The box is then RE-FITTED on the snapped axes. Rotating the min-area rect without re-fitting
+ * leaves a parcel that no longer bounds its own outline, so the building the runtime raises from
+ * w/d/yaw hangs outside its plot and over its neighbours. `opts.footprint` is the real outline;
+ * without one the rect's own corners are used, which is the same thing for an unsnapped plot.
  */
-export function frontage(rect, roadIndex, maxRadius = 60) {
+export function frontage(rect, roadIndex, opts = {}) {
+  const { maxRadius = 60, footprint = null } = typeof opts === 'number' ? { maxRadius: opts } : opts;
   const { ux, uz, vx, vz } = rectAxes(rect.yaw);
   const cx = rect.cx ?? rect.x;
   const cz = rect.cz ?? rect.z;
@@ -289,17 +344,49 @@ export function frontage(rect, roadIndex, maxRadius = 60) {
   for (const c of candidates) {
     const hit = roadIndex?.nearest(c.mx, c.mz, maxRadius);
     if (!hit) continue;
-    if (!best || hit.distance < best.distance) best = { ...c, distance: hit.distance, roadId: hit.roadId };
+    if (!best || hit.distance < best.hit.distance) best = { ...c, hit };
   }
   if (!best) {
-    return { yaw: rect.yaw, roadId: -1, distance: Infinity, w: rect.w, d: rect.d };
+    return { yaw: rect.yaw, roadId: -1, distance: Infinity, w: rect.w, d: rect.d, cx, cz };
   }
+
+  let fx = best.fx;
+  let fz = best.fz;
+  const seg = best.hit.segment;
+  if (seg) {
+    const dx = seg.bx - seg.ax;
+    const dz = seg.bz - seg.az;
+    const len = Math.hypot(dx, dz) || 1;
+    // Left normal of the segment, then flipped to point from the plot centre at the kerb.
+    let nx = dz / len;
+    let nz = -dx / len;
+    if ((cx - seg.ax) * nx + (cz - seg.az) * nz > 0) {
+      nx = -nx;
+      nz = -nz;
+    }
+    if (nx * fx + nz * fz > FRONTAGE_SNAP) {
+      fx = nx;
+      fz = nz;
+    }
+  }
+
+  const yaw = normalizeAngle(Math.atan2(-fx, -fz));
+  const snapped = Math.abs(fx - best.fx) > 1e-12 || Math.abs(fz - best.fz) > 1e-12;
+  const outline = footprint && footprint.length >= 6 ? footprint : plotPolygon({ cx, cz, w: rect.w, d: rect.d, yaw: rect.yaw });
+  // u = (-f.z, f.x) is the local +x axis paired with v = f (= the local -z axis).
+  const box = refit(outline, -fz, fx, fx, fz);
+  const { vx: nvx, vz: nvz } = rectAxes(yaw);
+  const mx = box.cx + nvx * (box.d / 2);
+  const mz = box.cz + nvz * (box.d / 2);
+  const hit = (snapped ? roadIndex?.nearest(mx, mz, maxRadius) : null) ?? best.hit;
   return {
-    yaw: normalizeAngle(Math.atan2(-best.fx, -best.fz)),
-    roadId: best.roadId,
-    distance: best.distance,
-    w: best.w,
-    d: best.d,
+    yaw,
+    roadId: hit.roadId,
+    distance: hit.distance,
+    w: box.w,
+    d: box.d,
+    cx: box.cx,
+    cz: box.cz,
   };
 }
 
@@ -441,6 +528,55 @@ export function carriagewayQuads(roads) {
   return quads;
 }
 
+export function pointInPolygon(poly, x, z) {
+  const n = poly.length >> 1;
+  if (n < 3) return false;
+  let inside = false;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = poly[i * 2];
+    const zi = poly[i * 2 + 1];
+    const xj = poly[j * 2];
+    const zj = poly[j * 2 + 1];
+    if (zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * Fraction of `poly` covered by the UNION of `quads`.
+ * Summing per-quad clip areas double-counts: consecutive segment quads of one road overlap at every
+ * bend and different roads overlap at every junction, so a plot sitting in an elbow scores up to
+ * twice its true road coverage and is rejected for it. Sampled on a fixed lattice over the
+ * polygon's bounding box — deterministic, and its resolution (~0.5% at n=24) is an order of
+ * magnitude finer than the few-percent thresholds it feeds.
+ */
+export function coverageFraction(poly, quads, n = 24) {
+  if (!quads.length || poly.length < 6) return 0;
+  const b = bboxOf(poly);
+  const dx = (b.maxX - b.minX) / n;
+  const dz = (b.maxZ - b.minZ) / n;
+  if (!(dx > 0) || !(dz > 0)) return 0;
+  const near = quads.filter((q) => bboxHit(b, bboxOf(q)));
+  if (!near.length) return 0;
+  let inside = 0;
+  let covered = 0;
+  for (let i = 0; i < n; i++) {
+    const x = b.minX + (i + 0.5) * dx;
+    for (let k = 0; k < n; k++) {
+      const z = b.minZ + (k + 0.5) * dz;
+      if (!pointInPolygon(poly, x, z)) continue;
+      inside++;
+      for (const q of near) {
+        if (pointInPolygon(q, x, z)) {
+          covered++;
+          break;
+        }
+      }
+    }
+  }
+  return inside === 0 ? 0 : covered / inside;
+}
+
 function bboxOf(poly) {
   let minX = Infinity;
   let maxX = -Infinity;
@@ -491,8 +627,8 @@ export function rejectOverlaps(plots, roadRibbons = [], { roadFraction = 0.3, pl
       dropped.push({ plot: it.plot, reason: 'degenerate' });
       continue;
     }
-    let roadOverlap = 0;
     const seen = new Set();
+    const near = [];
     for (let ix = Math.floor(it.bbox.minX / CELL); ix <= Math.floor(it.bbox.maxX / CELL); ix++) {
       for (let iz = Math.floor(it.bbox.minZ / CELL); iz <= Math.floor(it.bbox.maxZ / CELL); iz++) {
         for (const ri of roadCells.get(`${ix}|${iz}`) ?? []) {
@@ -500,12 +636,11 @@ export function rejectOverlaps(plots, roadRibbons = [], { roadFraction = 0.3, pl
           seen.add(ri);
           const r = roadItems[ri];
           if (!bboxHit(it.bbox, r.bbox)) continue;
-          roadOverlap += overlapArea(it.poly, r.poly);
-          if (roadOverlap > it.area * roadFraction) break;
+          near.push(r.poly);
         }
       }
     }
-    if (roadOverlap > it.area * roadFraction) {
+    if (coverageFraction(it.poly, near) > roadFraction) {
       dropped.push({ plot: it.plot, reason: 'carriageway' });
       continue;
     }
@@ -547,4 +682,151 @@ export function rejectOverlaps(plots, roadRibbons = [], { roadFraction = 0.3, pl
 
   kept.sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
   return { kept, dropped };
+}
+
+// ---------------------------------------------------------------------------
+// Party-wall reconciliation
+
+/** Half-extent of a rect's projection onto a unit axis. */
+function radiusOn(rect, ax, az) {
+  const { ux, uz, vx, vz } = rectAxes(rect.yaw);
+  return Math.abs((ux * ax + uz * az) * (rect.w / 2)) + Math.abs((vx * ax + vz * az) * (rect.d / 2));
+}
+
+const centreOf = (r) => [r.cx ?? r.x, r.cz ?? r.z];
+
+/** Separating-axis penetration of two oriented rects, or null when they are already apart. */
+function penetration(a, b) {
+  const [ax, az] = centreOf(a);
+  const [bx, bz] = centreOf(b);
+  const dx = bx - ax;
+  const dz = bz - az;
+  const axesA = rectAxes(a.yaw);
+  const axesB = rectAxes(b.yaw);
+  const axes = [
+    [axesA.ux, axesA.uz, 'u'],
+    [axesA.vx, axesA.vz, 'v'],
+    [axesB.ux, axesB.uz, null],
+    [axesB.vx, axesB.vz, null],
+  ];
+  const out = { u: 0, v: 0, sideU: 1, sideV: 1 };
+  for (const [nx, nz, which] of axes) {
+    const gap = radiusOn(a, nx, nz) + radiusOn(b, nx, nz) - Math.abs(dx * nx + dz * nz);
+    if (gap <= 0) return null;
+    if (which === 'u') {
+      out.u = gap;
+      out.sideU = dx * nx + dz * nz >= 0 ? 1 : -1;
+    } else if (which === 'v') {
+      out.v = gap;
+      out.sideV = dx * nx + dz * nz >= 0 ? 1 : -1;
+    }
+  }
+  return out;
+}
+
+/** Shrinks `rect` by `delta` along its local `axis`, holding the far edge still. */
+function shrinkAlong(rect, axis, side, delta) {
+  const { ux, uz, vx, vz } = rectAxes(rect.yaw);
+  const [nx, nz] = axis === 'u' ? [ux, uz] : [vx, vz];
+  const size = axis === 'u' ? rect.w : rect.d;
+  const next = size - delta;
+  const shift = (delta / 2) * -side;
+  const [cx, cz] = centreOf(rect);
+  return { cx: cx + nx * shift, cz: cz + nz * shift, size: next };
+}
+
+/**
+ * Trims interpenetrating parcels instead of leaving them stacked.
+ * Two Georgian houses cannot occupy the same ground: where the compiler has produced overlapping
+ * rectangles the smaller one loses depth or frontage along its own axes — which is exactly what a
+ * real terrace does at a corner — and is deleted only when the trimmed parcel is no longer a
+ * building plot. The footprint is clipped to the trimmed box so the parcel still bounds its outline.
+ */
+export function reconcileOverlaps(plots, { minWidth = 4, minDepth = 4.5, gap = 0.08, passes = 5 } = {}) {
+  const live = (plots ?? []).map((p) => p);
+  const dropped = [];
+  const CELL = 40;
+  const key = (ix, iz) => `${ix}|${iz}`;
+
+  for (let pass = 0; pass < passes; pass++) {
+    const cells = new Map();
+    const items = live.map((p) => ({ plot: p, bbox: bboxOf(plotPolygon(p)) }));
+    items.forEach((it, i) => {
+      for (let ix = Math.floor(it.bbox.minX / CELL); ix <= Math.floor(it.bbox.maxX / CELL); ix++) {
+        for (let iz = Math.floor(it.bbox.minZ / CELL); iz <= Math.floor(it.bbox.maxZ / CELL); iz++) {
+          const k = key(ix, iz);
+          let bucket = cells.get(k);
+          if (!bucket) cells.set(k, (bucket = []));
+          bucket.push(i);
+        }
+      }
+    });
+
+    let touched = 0;
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (!it.plot) continue;
+      const seen = new Set();
+      for (let ix = Math.floor(it.bbox.minX / CELL); ix <= Math.floor(it.bbox.maxX / CELL); ix++) {
+        for (let iz = Math.floor(it.bbox.minZ / CELL); iz <= Math.floor(it.bbox.maxZ / CELL); iz++) {
+          for (const oi of cells.get(key(ix, iz)) ?? []) {
+            if (oi === i || seen.has(oi)) continue;
+            seen.add(oi);
+            const other = items[oi];
+            if (!other.plot || !it.plot) continue;
+            const pen = penetration(it.plot, other.plot);
+            if (!pen) continue;
+            // The smaller parcel always yields: a terrace end house narrows, the palace front does not.
+            const [small, large] =
+              it.plot.w * it.plot.d <= other.plot.w * other.plot.d ? [it, other] : [other, it];
+            const p = penetration(small.plot, large.plot);
+            if (!p) continue;
+            const lossU = (p.u + gap) * small.plot.d;
+            const lossV = (p.v + gap) * small.plot.w;
+            const axis = lossU <= lossV ? 'u' : 'v';
+            const delta = (axis === 'u' ? p.u : p.v) + gap;
+            const side = axis === 'u' ? p.sideU : p.sideV;
+            const next = shrinkAlong(small.plot, axis, side, delta);
+            const minSize = axis === 'u' ? minWidth : minDepth;
+            if (next.size < minSize) {
+              dropped.push({ plot: small.plot, reason: 'overlaps-neighbour' });
+              small.plot = null;
+              continue;
+            }
+            const target = small.plot;
+            const before = [target.x ?? target.cx, target.z ?? target.cz];
+            if (axis === 'u') target.w = next.size;
+            else target.d = next.size;
+            if (target.x !== undefined) {
+              target.x = next.cx;
+              target.z = next.cz;
+            } else {
+              target.cx = next.cx;
+              target.cz = next.cz;
+            }
+            if (Array.isArray(target.footprint)) {
+              const clipped = convexClip(target.footprint, plotPolygon(target));
+              if (clipped.length >= 6) target.footprint = clipped;
+              else {
+                const dx = next.cx - before[0];
+                const dz = next.cz - before[1];
+                for (let k2 = 0; k2 + 1 < target.footprint.length; k2 += 2) {
+                  target.footprint[k2] += dx;
+                  target.footprint[k2 + 1] += dz;
+                }
+              }
+            }
+            small.bbox = bboxOf(plotPolygon(target));
+            touched++;
+          }
+        }
+      }
+    }
+    for (let i = live.length - 1; i >= 0; i--) {
+      if (!items[i].plot) live.splice(i, 1);
+    }
+    if (touched === 0) break;
+  }
+
+  return { kept: live, dropped };
 }

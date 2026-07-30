@@ -77,7 +77,11 @@ export interface Road {
   centerline: Polyline;
   /** Cumulative length along the centreline, one entry per centreline vertex. */
   station: number[];
-  /** Pre-extruded ribbon surface. uvs.x = metres along the road, uvs.y = 0..1 across. */
+  /**
+   * Pre-extruded ribbon surface, pulled back at each junction so the pad covers the corner.
+   * uvs.x is a station on the FULL centreline (so it shares an origin with `station` and starts at
+   * the junction trim, not at 0); uvs.y is 0..1 across.
+   */
   ribbon: FlatMesh;
   /** Kerb strips flanking the carriageway (left, right), same UV convention. */
   kerbs: FlatMesh[];
@@ -121,7 +125,11 @@ export interface Plot {
   roadDistance: number;
   /** Road id this plot fronts onto, if any. */
   frontRoad?: number;
-  /** Real footprint outline, kept for reference/debug (metres). */
+  /**
+   * Real footprint outline, kept for reference/debug (metres). Translated with the parcel whenever
+   * the compiler sets it back off a carriageway, and clipped to `w` x `d` when a party-wall
+   * reconciliation trims the parcel, so it always stays inside the box around `x`/`z`.
+   */
   footprint: Polyline;
   /** Optional real-world name (shops, pubs, civic buildings). */
   name?: string;

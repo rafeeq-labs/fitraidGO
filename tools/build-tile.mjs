@@ -17,7 +17,6 @@ import {
   simplify,
   extrudeRibbon,
   offsetPolyline,
-  trimPolyline,
   stationsOf,
   polylineLength,
   cleanPolyline,
@@ -30,9 +29,14 @@ import {
   frontage,
   inferUse,
   rejectOverlaps,
+  reconcileOverlaps,
   carriagewayQuads,
   hashSeed,
+  plotPolygon,
+  overlapArea,
   polygonArea,
+  pointInPolygon,
+  rectAxes,
 } from './geometry/plots.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -274,7 +278,48 @@ function roadWidthOf(el, klass) {
   return ROAD_WIDTH[klass];
 }
 
-function compileRoads(ctx, warn) {
+/**
+ * Closed `area=yes` ways that are paved public places rather than carriageways: Laura Place is one
+ * medallion, not four kerb lines round a hole. Each becomes the pad of whichever graph node it
+ * contains, and the streets radiating from that node are trimmed back to its inscribed circle.
+ */
+function compilePlaces(ctx) {
+  const places = [];
+  for (const way of ctx.ways) {
+    const isArea = tagOf(way, 'area') === 'yes';
+    if (!isArea && tagOf(way, 'place') !== 'square') continue;
+    if (!tagOf(way, 'highway') && tagOf(way, 'place') !== 'square') continue;
+    const { pts } = wayGeometry(way, ctx);
+    const ring = normalizeRing(pts);
+    if (ring.length < 8) continue;
+    const n = ring.length >> 1;
+    let cx = 0;
+    let cz = 0;
+    for (let i = 0; i < n; i++) {
+      cx += ring[i * 2];
+      cz += ring[i * 2 + 1];
+    }
+    cx /= n;
+    cz /= n;
+    // The pad is the authored ring; the trim radius is the inscribed circle, so every ribbon corner
+    // lands inside the medallion instead of poking out through one of its edges.
+    let inscribed = Infinity;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const ax = ring[j * 2];
+      const az = ring[j * 2 + 1];
+      const bx = ring[i * 2];
+      const bz = ring[i * 2 + 1];
+      const len = Math.hypot(bx - ax, bz - az);
+      if (len < 1e-6) continue;
+      inscribed = Math.min(inscribed, Math.abs((bx - ax) * (az - cz) - (bz - az) * (ax - cx)) / len);
+    }
+    if (!Number.isFinite(inscribed) || inscribed <= 0) continue;
+    places.push({ osmId: way.id, name: tagOf(way, 'name'), cx, cz, ring, radius: inscribed });
+  }
+  return places;
+}
+
+function compileRoads(ctx, warn, places = []) {
   const sources = [];
   for (const way of ctx.ways) {
     const klass = roadClassOf(way);
@@ -299,17 +344,13 @@ function compileRoads(ctx, warn) {
     }
   }
 
-  // A node shared by two or more ways becomes a graph node; way ends always do.
+  // A node shared by two or more ways becomes a graph node; way ends always do. A node a single way
+  // visits twice (a lasso or a roundabout closing on itself) counts twice on purpose, so the way
+  // splits there as well.
   const usage = new Map();
   for (const src of sources) {
-    const seen = new Set();
     for (const id of src.nodeIds) {
       if (id == null) continue;
-      if (seen.has(id)) {
-        usage.set(id, (usage.get(id) ?? 0) + 1);
-        continue;
-      }
-      seen.add(id);
       usage.set(id, (usage.get(id) ?? 0) + 1);
     }
   }
@@ -329,16 +370,39 @@ function compileRoads(ctx, warn) {
     }
   }
 
+  if (sources.length && sources.every((s) => s.nodeIds.every((id) => id == null))) {
+    warn.add('no highway carries node ids: junctions can only be inferred from positions');
+  }
+
   const nodeIndex = new Map();
   const nodePositions = [];
+  // Positional fallback for downloads without node ids (a bare `out geom`). Quantising to 0.25 m
+  // and then probing the neighbouring buckets keeps two ways that end a millimetre apart in the
+  // same graph node instead of silently disconnecting the network.
+  const SNAP = 0.25;
+  const posKey = (x, z) => `p${Math.round(x / SNAP)},${Math.round(z / SNAP)}`;
   const nodeIdFor = (osmId, x, z) => {
-    const key = osmId != null ? `n${osmId}` : `p${x.toFixed(2)},${z.toFixed(2)}`;
-    let idx = nodeIndex.get(key);
-    if (idx === undefined) {
-      idx = nodePositions.length >> 1;
-      nodeIndex.set(key, idx);
-      nodePositions.push(x, z);
+    if (osmId != null) {
+      const key = `n${osmId}`;
+      let idx = nodeIndex.get(key);
+      if (idx === undefined) {
+        idx = nodePositions.length >> 1;
+        nodeIndex.set(key, idx);
+        nodePositions.push(x, z);
+      }
+      return idx;
     }
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const idx = nodeIndex.get(posKey(x + dx * SNAP, z + dz * SNAP));
+        if (idx !== undefined && Math.hypot(nodePositions[idx * 2] - x, nodePositions[idx * 2 + 1] - z) <= 0.5) {
+          return idx;
+        }
+      }
+    }
+    const idx = nodePositions.length >> 1;
+    nodeIndex.set(posKey(x, z), idx);
+    nodePositions.push(x, z);
     return idx;
   };
 
@@ -389,16 +453,44 @@ function compileRoads(ctx, warn) {
     }
   }
 
+  // Pad radius first, then trim each incident road back by sqrt(radius^2 - halfWidth^2). That puts
+  // both outer corners of every trimmed ribbon exactly on the pad circle. Trimming by the pad
+  // RADIUS instead leaves the corners at hypot(radius, halfWidth) — always outside the pad — which
+  // is a bare triangular notch of carriageway at every junction corner.
+  const placeAt = new Array(nodeCount).fill(null);
+  for (const place of places) {
+    let best = -1;
+    let bestD = Infinity;
+    for (let n = 0; n < nodeCount; n++) {
+      const d = Math.hypot(nodePositions[n * 2] - place.cx, nodePositions[n * 2 + 1] - place.cz);
+      if (d < bestD && d <= place.radius) {
+        bestD = d;
+        best = n;
+      }
+    }
+    if (best >= 0 && place.radius > widestHalf[best] + JUNCTION_MARGIN) placeAt[best] = place;
+  }
+
+  const padRadius = (n) => (placeAt[n] ? placeAt[n].radius : widestHalf[n] + JUNCTION_MARGIN);
+  const trimFor = (n, halfWidth) => {
+    if (degree[n] < 3) return 0;
+    const r = padRadius(n);
+    return Math.sqrt(Math.max(0, r * r - halfWidth * halfWidth));
+  };
+
   for (const r of roads) {
     try {
-      const startTrim = degree[r.from] >= 3 ? widestHalf[r.from] : 0;
-      const endTrim = degree[r.to] >= 3 ? widestHalf[r.to] : 0;
-      const deck = trimPolyline(r.centerline, startTrim, endTrim);
-      r.ribbon = extrudeRibbon(deck, r.width);
+      const startTrim = trimFor(r.from, r.width / 2);
+      const endTrim = trimFor(r.to, r.width / 2);
+      r.ribbon = extrudeRibbon(r.centerline, r.width, { startTrim, endTrim });
       const off = r.width / 2 + KERB_WIDTH / 2;
+      // uLine: the kerb runs on an offset of the centreline, which is longer round the outside of
+      // every bend. types.ts requires its uvs.x to be a station on the centreline, not on the
+      // offset, so the extruder is given the centreline to station against.
+      const kerb = { startTrim, endTrim, uLine: r.centerline };
       r.kerbs = [
-        extrudeRibbon(offsetPolyline(deck, off), KERB_WIDTH),
-        extrudeRibbon(offsetPolyline(deck, -off), KERB_WIDTH),
+        extrudeRibbon(offsetPolyline(r.centerline, off), KERB_WIDTH, kerb),
+        extrudeRibbon(offsetPolyline(r.centerline, -off), KERB_WIDTH, kerb),
       ];
     } catch (err) {
       warn.add(`road ${r.id} (way ${r.osmId}): ribbon failed (${err.message})`);
@@ -412,7 +504,8 @@ function compileRoads(ctx, warn) {
     if (degree[n] < 3) continue;
     const x = nodePositions[n * 2];
     const z = nodePositions[n * 2 + 1];
-    const radius = widestHalf[n] + JUNCTION_MARGIN;
+    const radius = padRadius(n);
+    const place = placeAt[n];
     junctions.push({
       id: junctions.length,
       node: n,
@@ -421,7 +514,11 @@ function compileRoads(ctx, warn) {
       radius,
       klass: dominant[n] ?? 'residential',
       degree: degree[n],
-      pad: fanMesh(x, z, discRing(x, z, radius, JUNCTION_SEGMENTS)),
+      // Circumscribed so the polygon contains the circle the ribbon corners land on. A paved place
+      // keeps its authored outline instead, which is what makes Laura Place read as a diamond.
+      pad: place
+        ? fanMesh(place.cx, place.cz, place.ring)
+        : fanMesh(x, z, discRing(x, z, radius / Math.cos(Math.PI / JUNCTION_SEGMENTS), JUNCTION_SEGMENTS)),
     });
   }
 
@@ -489,7 +586,18 @@ function levelsOf(tags) {
  * Shop plots on a bridge deck stay where they are — Pulteney Bridge really is built over.
  */
 const PLOT_KERB_CLEARANCE = 1;
-const PLOT_MAX_SETBACK = 4;
+const PLOT_MAX_SETBACK = 5;
+const PLOT_PUSH_STEP = 0.5;
+
+/** Moves a plot and the source outline together, so `footprint` never drifts from `x`/`z`. */
+function movePlot(p, dx, dz) {
+  p.x += dx;
+  p.z += dz;
+  for (let i = 0; i + 1 < p.footprint.length; i += 2) {
+    p.footprint[i] += dx;
+    p.footprint[i + 1] += dz;
+  }
+}
 
 function setBackFromCarriageway(plots, roads) {
   for (const p of plots) {
@@ -499,13 +607,113 @@ function setBackFromCarriageway(plots, roads) {
     const want = road.width / 2 + PLOT_KERB_CLEARANCE;
     const delta = Math.min(want - p.roadDistance, PLOT_MAX_SETBACK);
     if (delta <= 0.25) continue;
-    p.x += Math.sin(p.yaw) * delta;
-    p.z += Math.cos(p.yaw) * delta;
+    movePlot(p, Math.sin(p.yaw) * delta, Math.cos(p.yaw) * delta);
     p.roadDistance = Number((p.roadDistance + delta).toFixed(3));
   }
 }
 
-function compilePlots(ctx, roads, warn) {
+/**
+ * Hard post-pass: the frontage setback only clears the plot's OWN street, so a corner house can
+ * still have a rear or flank corner inside a different carriageway. Push each offender straight
+ * back along its frontage axis until its oriented rectangle is clear of every road ribbon; whatever
+ * cannot be cleared within PLOT_MAX_SETBACK is left for rejectOverlaps to drop.
+ */
+function pushOutOfCarriageway(plots, roads) {
+  const quads = carriagewayQuads(roads.filter((r) => !r.bridge));
+  const CELL = 40;
+  const cells = new Map();
+  const bounds = (poly) => {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (let i = 0; i + 1 < poly.length; i += 2) {
+      minX = Math.min(minX, poly[i]);
+      maxX = Math.max(maxX, poly[i]);
+      minZ = Math.min(minZ, poly[i + 1]);
+      maxZ = Math.max(maxZ, poly[i + 1]);
+    }
+    return { minX, maxX, minZ, maxZ };
+  };
+  quads.forEach((q, i) => {
+    const b = bounds(q);
+    for (let ix = Math.floor(b.minX / CELL); ix <= Math.floor(b.maxX / CELL); ix++) {
+      for (let iz = Math.floor(b.minZ / CELL); iz <= Math.floor(b.maxZ / CELL); iz++) {
+        const k = `${ix}|${iz}`;
+        let bucket = cells.get(k);
+        if (!bucket) cells.set(k, (bucket = []));
+        bucket.push(i);
+      }
+    }
+  });
+
+  const overlapOf = (poly) => {
+    const b = bounds(poly);
+    const seen = new Set();
+    let total = 0;
+    for (let ix = Math.floor(b.minX / CELL); ix <= Math.floor(b.maxX / CELL); ix++) {
+      for (let iz = Math.floor(b.minZ / CELL); iz <= Math.floor(b.maxZ / CELL); iz++) {
+        for (const qi of cells.get(`${ix}|${iz}`) ?? []) {
+          if (seen.has(qi)) continue;
+          seen.add(qi);
+          total += overlapArea(poly, quads[qi]);
+        }
+      }
+    }
+    return total;
+  };
+
+  let pushed = 0;
+  for (const p of plots) {
+    const road = p.frontRoad !== undefined ? roads[p.frontRoad] : undefined;
+    if (road?.bridge) continue;
+    // Straight back for its own street; along the frontage for a corner house clipped by the cross
+    // street, which shortens the terrace at the corner instead of deleting the house.
+    const back = [Math.sin(p.yaw), Math.cos(p.yaw)];
+    const along = [Math.cos(p.yaw), -Math.sin(p.yaw)];
+    const dirs = [back, along, [-along[0], -along[1]]];
+    let moved = 0;
+    let overlap = overlapOf(plotPolygon(p));
+    while (moved < PLOT_MAX_SETBACK && overlap > 1e-6) {
+      let best = null;
+      for (const d of dirs) {
+        const dx = d[0] * PLOT_PUSH_STEP;
+        const dz = d[1] * PLOT_PUSH_STEP;
+        movePlot(p, dx, dz);
+        const after = overlapOf(plotPolygon(p));
+        movePlot(p, -dx, -dz);
+        if (!best || after < best.after) best = { dx, dz, after, back: d === back };
+      }
+      if (best.after >= overlap - 1e-9) break;
+      movePlot(p, best.dx, best.dz);
+      overlap = best.after;
+      moved += PLOT_PUSH_STEP;
+      if (best.back) p.roadDistance = Number((p.roadDistance + PLOT_PUSH_STEP).toFixed(3));
+    }
+    if (moved > 0) pushed++;
+  }
+  return pushed;
+}
+
+/**
+ * Recomputes `roadDistance` from the geometry that survived every move.
+ * Book-keeping it incrementally cannot be right: the sideways pushes never touched it, the frontage
+ * snap turns "back" away from the road normal, and a plot that slides past the end of its front
+ * road's nearest segment changes which segment it is measured against. types.ts defines the field as
+ * a measured distance, so it is measured once, last.
+ */
+function remeasureRoadDistance(plots, roadIndex) {
+  for (const p of plots) {
+    const { vx, vz } = rectAxes(p.yaw);
+    const mx = p.x + vx * (p.d / 2);
+    const mz = p.z + vz * (p.d / 2);
+    const hit = roadIndex.nearest(mx, mz, 120);
+    p.roadDistance = hit ? Number(hit.distance.toFixed(3)) : -1;
+    if (hit && p.frontRoad === undefined) p.frontRoad = hit.roadId;
+  }
+}
+
+function compilePlots(ctx, roads, parks, warn) {
   const roadIndex = buildRoadIndex(roads);
   const roadClassById = new Map(roads.map((r) => [r.id, r.klass]));
   const candidates = [];
@@ -519,15 +727,15 @@ function compilePlots(ctx, roads, warn) {
     if (realArea < 8) return;
     const rect = minAreaRect(footprint);
     if (!(rect.w > 0.5) || !(rect.d > 0.5)) return;
-    const fr = frontage(rect, roadIndex);
+    const fr = frontage(rect, roadIndex, { footprint });
     const klass = roadClassById.get(fr.roadId) ?? 'residential';
     const obbArea = fr.w * fr.d;
     candidates.push({
       id: candidates.length,
       osmId: el.id,
       seed: hashSeed(el.id),
-      x: rect.cx,
-      z: rect.cz,
+      x: fr.cx,
+      z: fr.cz,
       w: fr.w,
       d: fr.d,
       yaw: fr.yaw,
@@ -561,12 +769,33 @@ function compilePlots(ctx, roads, warn) {
   }
 
   setBackFromCarriageway(candidates, roads);
-  const { kept, dropped } = rejectOverlaps(candidates, carriagewayQuads(roads));
+  pushOutOfCarriageway(candidates, roads);
+
+  // A park is a parcel, not a texture laid over the block: nothing is built on the lawn. This is
+  // the plot-placement mask the park rings define, applied after the pushes have finished moving.
+  const parkRings = parks.flatMap((p) => p.rings);
+  const onGrass = [];
+  const offGrass = [];
+  for (const p of candidates) {
+    (parkRings.some((r) => pointInRing(r, p.x, p.z)) ? onGrass : offGrass).push(p);
+  }
+  for (const p of onGrass) warn.add(`plot ${p.osmId}: dropped (inside a park)`);
+
+  // Trim before deleting: a corner house that loses 2 m of frontage keeps the terrace unbroken,
+  // where dropping it leaves a hole in a Georgian row that reads far worse than a short end house.
+  const reconciled = reconcileOverlaps(offGrass);
+  for (const d of reconciled.dropped) warn.add(`plot ${d.plot.osmId}: dropped (${d.reason})`);
+
+  // 5%: after the push pass, anything still sitting in a carriageway is genuinely in the road.
+  const { kept, dropped } = rejectOverlaps(reconciled.kept, carriagewayQuads(roads), { roadFraction: 0.05 });
   for (const d of dropped) warn.add(`plot ${d.plot.osmId}: dropped (${d.reason})`);
-  kept.forEach((p, i) => {
+  const out = kept;
+  remeasureRoadDistance(out, roadIndex);
+  out.forEach((p, i) => {
     p.id = i;
+    p.size = classifySize(p.w * p.d);
   });
-  return kept;
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -771,9 +1000,14 @@ function compileLandmarks(ctx, roads, plots, warn) {
     }
     const name = tagOf(el, 'name') || KIND_FALLBACK_NAME[kind];
     // The same real landmark is usually tagged twice: once as a POI node and once on the
-    // building way around it. Merge them so the world gets one marker, not two stacked.
+    // building way around it. Merge them so the world gets one marker, not two stacked. Proximity
+    // alone is not enough — two differently named monuments can share a square, and only an
+    // untitled one may be absorbed by its neighbour.
+    const generic = (n) => n === KIND_FALLBACK_NAME[kind];
     const twin = out.find(
-      (o) => o.kind === kind && (o.name === name || Math.hypot(o.x - x, o.z - z) < 20)
+      (o) =>
+        o.kind === kind &&
+        (o.name === name || (Math.hypot(o.x - x, o.z - z) < 20 && (generic(o.name) || generic(name))))
     );
     if (twin) {
       if (twin.plot === undefined && plot !== undefined) twin.plot = plot;
@@ -839,6 +1073,24 @@ function boundsOf(raw, place, ctx) {
   return { minLat, minLon, maxLat, maxLon };
 }
 
+/**
+ * Provenance from the download itself. Overpass stamps `osm3s.copyright` with the ODbL notice;
+ * anything else (including this repo's hand-authored reconstruction, which says so in its own
+ * copyright field) must not be published as OpenStreetMap-derived.
+ */
+export function provenanceOf(raw, stamp) {
+  const str = (v) => (typeof v === 'string' ? v.trim() : '');
+  const copyright = str(raw?.osm3s?.copyright);
+  const generator = str(raw?.generator);
+  const fromOsm = /openstreetmap/i.test(copyright) && !/not derived from openstreetmap/i.test(copyright);
+  let base;
+  if (fromOsm) base = 'OpenStreetMap via Overpass';
+  else if (generator) base = generator;
+  else if (copyright) base = copyright.split(/(?<=\.)\s/)[0];
+  else base = 'unknown source';
+  return stamp ? `${base}, ${stamp}` : base;
+}
+
 function roundDeep(value, dp) {
   const f = 10 ** dp;
   const walk = (v) => {
@@ -855,6 +1107,155 @@ function roundDeep(value, dp) {
     return v;
   };
   return walk(value);
+}
+
+// ---------------------------------------------------------------------------
+// Integrity
+
+const VEHICLE_CLASSES = new Set(['primary', 'secondary', 'tertiary', 'residential', 'living_street', 'service']);
+
+function segmentsCross(ax, az, bx, bz, cx, cz, dx, dz) {
+  const s = (px, pz, qx, qz, rx, rz) => (qx - px) * (rz - pz) - (qz - pz) * (rx - px);
+  const d1 = s(ax, az, bx, bz, cx, cz);
+  const d2 = s(ax, az, bx, bz, dx, dz);
+  const d3 = s(cx, cz, dx, dz, ax, az);
+  const d4 = s(cx, cz, dx, dz, bx, bz);
+  return ((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0));
+}
+
+function polylinesCross(a, b) {
+  for (let i = 0; i + 3 < a.length; i += 2) {
+    for (let k = 0; k + 3 < b.length; k += 2) {
+      if (segmentsCross(a[i], a[i + 1], a[i + 2], a[i + 3], b[k], b[k + 1], b[k + 2], b[k + 3])) return true;
+    }
+  }
+  return false;
+}
+
+function ringsOverlapLine(ring, line) {
+  for (let i = 0; i + 1 < line.length; i += 2) {
+    if (pointInRing(ring, line[i], line[i + 1])) return true;
+  }
+  const closed = ring.length >= 6 ? [...ring, ring[0], ring[1]] : ring;
+  return polylinesCross(closed, line);
+}
+
+/**
+ * Everything the three feature layers must agree on before a tile is publishable.
+ * These were warnings, and warnings are not enforcement: the build now fails on any of them.
+ */
+export function validateTile(tile) {
+  const problems = [];
+  const waterLines = tile.water.map((w) => w.centerline).filter((c) => Array.isArray(c) && c.length >= 4);
+
+  for (const road of tile.roads) {
+    if (road.bridge) continue;
+    for (const line of waterLines) {
+      if (polylinesCross(road.centerline, line)) {
+        problems.push(`road ${road.id} "${road.name ?? road.klass}" crosses water with no bridge`);
+        break;
+      }
+    }
+  }
+  for (const b of tile.bridges) {
+    if (!waterLines.some((line) => polylinesCross(b.centerline, line))) {
+      problems.push(`bridge ${b.id} "${b.name ?? '(unnamed)'}" spans no watercourse`);
+    }
+  }
+
+  for (const park of tile.parks) {
+    for (const ring of park.rings) {
+      for (const road of tile.roads) {
+        if (!VEHICLE_CLASSES.has(road.klass)) continue;
+        if (ringsOverlapLine(ring, road.centerline)) {
+          problems.push(`park "${park.name ?? park.id}" is driven through by ${road.name ?? road.klass} (road ${road.id})`);
+        }
+      }
+    }
+  }
+
+  const parkRings = tile.parks.flatMap((p) => p.rings);
+  let inPark = 0;
+  for (const p of tile.plots) {
+    if (parkRings.some((r) => pointInRing(r, p.x, p.z))) inPark++;
+  }
+  if (inPark) problems.push(`${inPark} plot centres stand inside a park polygon`);
+
+  const CELL = 40;
+  const cells = new Map();
+  const polys = tile.plots.map((p) => plotPolygon(p));
+  polys.forEach((poly, i) => {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (let k = 0; k + 1 < poly.length; k += 2) {
+      minX = Math.min(minX, poly[k]);
+      maxX = Math.max(maxX, poly[k]);
+      minZ = Math.min(minZ, poly[k + 1]);
+      maxZ = Math.max(maxZ, poly[k + 1]);
+    }
+    for (let ix = Math.floor(minX / CELL); ix <= Math.floor(maxX / CELL); ix++) {
+      for (let iz = Math.floor(minZ / CELL); iz <= Math.floor(maxZ / CELL); iz++) {
+        const k = `${ix}|${iz}`;
+        let bucket = cells.get(k);
+        if (!bucket) cells.set(k, (bucket = []));
+        bucket.push(i);
+      }
+    }
+  });
+  let worst = 0;
+  let worstPair = null;
+  const seenPair = new Set();
+  for (const bucket of cells.values()) {
+    for (let a = 0; a < bucket.length; a++) {
+      for (let b = a + 1; b < bucket.length; b++) {
+        const key = bucket[a] < bucket[b] ? `${bucket[a]}|${bucket[b]}` : `${bucket[b]}|${bucket[a]}`;
+        if (seenPair.has(key)) continue;
+        seenPair.add(key);
+        const area = overlapArea(polys[bucket[a]], polys[bucket[b]]);
+        if (area > worst) {
+          worst = area;
+          worstPair = [bucket[a], bucket[b]];
+        }
+      }
+    }
+  }
+  if (worst > 0.05) {
+    problems.push(
+      `plots ${worstPair[0]} and ${worstPair[1]} interpenetrate by ${worst.toFixed(2)} m² (limit 0.05)`
+    );
+  }
+
+  for (const p of tile.plots) {
+    const { ux, uz, vx, vz } = rectAxes(p.yaw);
+    for (let i = 0; i + 1 < p.footprint.length; i += 2) {
+      const du = (p.footprint[i] - p.x) * ux + (p.footprint[i + 1] - p.z) * uz;
+      const dv = (p.footprint[i] - p.x) * vx + (p.footprint[i + 1] - p.z) * vz;
+      if (Math.abs(du) > p.w / 2 + 0.05 || Math.abs(dv) > p.d / 2 + 0.05) {
+        problems.push(`plot ${p.id} (way ${p.osmId}) has footprint vertices outside its own parcel`);
+        break;
+      }
+    }
+  }
+
+  const [minX, minZ, maxX, maxZ] = tile.header.extent;
+  const outside = [];
+  const check = (name, xs) => {
+    for (let i = 0; i + 1 < xs.length; i += 2) {
+      if (xs[i] < minX - 1e-6 || xs[i] > maxX + 1e-6 || xs[i + 1] < minZ - 1e-6 || xs[i + 1] > maxZ + 1e-6) {
+        outside.push(name);
+        return;
+      }
+    }
+  };
+  for (const r of tile.roads) check('road', r.centerline);
+  for (const p of tile.parks) for (const ring of p.rings) check('park', ring);
+  for (const w of tile.water) for (const ring of w.rings) check('water', ring);
+  for (const p of tile.plots) check('plot', plotPolygon(p));
+  if (outside.length) problems.push(`${outside.length} features fall outside header.extent`);
+
+  return problems;
 }
 
 function triangleCount(tile) {
@@ -874,7 +1275,7 @@ function triangleCount(tile) {
 }
 
 /** Compiles parsed Overpass JSON into a WorldTile. Pure: no file IO. */
-export function buildTile(raw, { place = 'bathwick', source, quiet = true } = {}) {
+export function buildTile(raw, { place = 'bathwick', source, stamp, quiet = true } = {}) {
   const warn = new Warnings(quiet);
   const meta = PLACES[place] ?? { place, bbox: null };
   const parsed = indexElements(raw, warn);
@@ -890,24 +1291,60 @@ export function buildTile(raw, { place = 'bathwick', source, quiet = true } = {}
     wayById: new Map(parsed.ways.map((w) => [w.id, w])),
   };
 
-  const { roads, junctions, graph } = compileRoads(ctx, warn);
+  const places = compilePlaces(ctx);
+  const { roads, junctions, graph } = compileRoads(ctx, warn, places);
   const bridges = compileBridges(ctx, warn);
-  const plots = compilePlots(ctx, roads, warn);
   const { parks, water } = compileGreens(ctx, warn);
+  const plots = compilePlots(ctx, roads, parks, warn);
   const landmarks = compileLandmarks(ctx, roads, plots, warn);
 
   for (const r of roads) delete r.length;
 
   const nw = proj.toWorld(bounds.maxLat, bounds.minLon);
   const se = proj.toWorld(bounds.minLat, bounds.maxLon);
+  // header.extent is advertised as the extent of the TILE, not of the query window: a renderer
+  // sizes its ground plane, fog volume and cull box from it. Grow it to whatever was compiled,
+  // since source nodes routinely sit a little outside the requested bbox.
+  const extent = [
+    Math.min(nw.x, se.x),
+    Math.min(nw.z, se.z),
+    Math.max(nw.x, se.x),
+    Math.max(nw.z, se.z),
+  ];
+  const grow = (xs) => {
+    for (let i = 0; i + 1 < xs.length; i += 2) {
+      if (xs[i] < extent[0]) extent[0] = xs[i];
+      if (xs[i + 1] < extent[1]) extent[1] = xs[i + 1];
+      if (xs[i] > extent[2]) extent[2] = xs[i];
+      if (xs[i + 1] > extent[3]) extent[3] = xs[i + 1];
+    }
+  };
+  for (const r of roads) {
+    grow(r.centerline);
+    grow(r.ribbon.positions);
+    for (const k of r.kerbs) grow(k.positions);
+  }
+  for (const j of junctions) grow(j.pad.positions);
+  for (const p of plots) grow(plotPolygon(p));
+  for (const p of parks) for (const ring of p.rings) grow(ring);
+  for (const w of water) for (const ring of w.rings) grow(ring);
+  for (const b of bridges) grow(b.deck.positions);
+  for (const l of landmarks) grow([l.x, l.z]);
+  // 1 cm of slack: the body is serialised to millimetres, so a vertex sitting exactly on the
+  // boundary can round outwards and put the advertised extent a hair inside its own contents.
+  extent[0] -= 0.01;
+  extent[1] -= 0.01;
+  extent[2] += 0.01;
+  extent[3] += 0.01;
+
   const tile = {
     header: {
       place: meta.place,
       origin,
       bbox: bounds,
-      extent: [nw.x, nw.z, se.x, se.z],
+      extent,
       version: TILE_VERSION,
-      source: source ?? 'OpenStreetMap via Overpass',
+      source: source ?? provenanceOf(raw, stamp),
       counts: {},
     },
     roads,
@@ -1013,15 +1450,18 @@ function main(argv) {
   }
 
   const stamp = statSync(rawPath).mtime.toISOString().slice(0, 10);
-  const { tile, warnings } = buildTile(raw, {
-    place,
-    quiet,
-    source: `OpenStreetMap via Overpass, ${stamp}`,
-  });
+  const { tile, warnings } = buildTile(raw, { place, quiet, stamp });
+  const problems = validateTile(tile);
   const json = serializeTile(tile);
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, json);
   summarize(tile, Buffer.byteLength(json), warnings);
+  if (problems.length) {
+    console.error(`build-tile: ${problems.length} integrity failures — the tile is not publishable:`);
+    for (const p of problems.slice(0, 40)) console.error(`  x ${p}`);
+    if (problems.length > 40) console.error(`  x (${problems.length - 40} more)`);
+    process.exit(1);
+  }
 }
 
 if (process.argv[1] && process.argv[1].endsWith('build-tile.mjs')) main(process.argv);

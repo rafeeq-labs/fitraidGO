@@ -3,7 +3,7 @@
 // src/map/{types,mercator,ribbon,roadGraph}.ts is the single source of truth for the tile format,
 // the width/cost tables and the ribbon extruder. Node cannot import .ts, so the tools consume the
 // tsc output in dist/js. This module compiles it on demand (dist/ is gitignored) so that
-// `node --test tools/tests/` and `node tools/build-tile.mjs` work from a clean checkout.
+// `npm test` and `node tools/build-tile.mjs` work from a clean checkout.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, statSync, readdirSync } from 'node:fs';
@@ -61,9 +61,11 @@ export const offsetJoins = ribbon.offsetJoins;
 export const offsetPolyline = ribbon.offsetPolyline;
 export const extrudeRibbon = ribbon.extrudeRibbon;
 export const trimPolyline = ribbon.trimPolyline;
+export const effectiveTrims = ribbon.effectiveTrims;
 export const stationsOf = ribbon.stationsOf;
 export const polylineLength = ribbon.polylineLength;
 export const pointAtStation = ribbon.pointAtStation;
+export const projectStation = ribbon.projectStation;
 export const cleanPolyline = ribbon.cleanPolyline;
 export const meshArea = ribbon.meshArea;
 

@@ -1,39 +1,75 @@
-import { Mesh, Vector3 } from 'three';
-import { temperate } from '../biomes/kits/temperate.js';
+import { MathUtils, Mesh, Vector3, type BufferGeometry } from 'three';
+import '../biomes/kits/index.js';
+import { getBiome, hasBiome, type BiomeId, type TreeArchetype, type VegetationKit } from '../biomes/BiomeKit.js';
 import { CAMERA_PRESETS } from '../engine/IsoCamera.js';
 import { Lighting } from '../engine/Lighting.js';
-import { PALETTE } from '../engine/Palette.js';
 import { RampMaterial } from '../engine/RampMaterial.js';
 import { Renderer } from '../engine/Renderer.js';
 import { TextureFactory } from '../engine/TextureGen.js';
-import { makeRng } from '../engine/rng.js';
+import { makeRng, mix } from '../engine/rng.js';
+import { variantCount, type BuildingFamily } from '../world/BuildingKit.js';
+import { createKitContext } from '../world/KitPieces.js';
+import { placePiece } from '../world/KitPlacement.js';
+import { CHANNEL_SLOTS, KIT_CHANNELS, withTransform, type KitContext } from '../world/KitTypes.js';
 import { MeshBuilder } from '../world/MeshBuilder.js';
-import { buildBuilding, buildPlotFoundation, type BuildingFamily } from '../world/BuildingKit.js';
-import { createChannels } from '../world/KitPieces.js';
-import '../world/Props.js';
-import { KIT_CHANNELS, type KitChannel, type KitContext } from '../world/KitTypes.js';
+import type { WorldTile } from '../map/types.js';
+import {
+  buildPlotChannels,
+  buildPlotMeshes,
+  createKitMaterials,
+  isEmissiveSlot,
+  splitTags,
+} from '../world/PlotBuilder.js';
+import { PROP_NAMES } from '../world/Props.js';
+import { buildTree, buildUnderstory } from '../world/Vegetation.js';
 
 /**
- * Building-kit review sheet: the 3 x 4 matrix of families x levels on identical plots, framed like
- * shots/reference/09-temperate-building-tiers.png. Not part of the game. Reachable at /dev/kit.html
- * with ?family=, ?level=, ?cam= and ?stats=1.
+ * The kit review sheet — the page the building kit is judged on.
+ *
+ * `?view=ladder` is the primary artefact and a deliberate copy of the framing of
+ * shots/reference/09-temperate-building-tiers.png: rows are families, columns are levels, every
+ * cell stands on the same plot, and the backdrop is a neutral dark ground so that silhouette and
+ * material are the only things being compared. `?view=props` and `?view=trees` are the equivalent
+ * sheets for 05-modular-asset-kit.png.
+ *
+ * Cells are laid out in the CAMERA's ground basis, not the world's, so rows read across the screen
+ * and columns read up it whatever azimuth the camera preset uses — the same reason the reference
+ * sheets are axis-aligned. Each plot is then yawed to face the viewer, since the plot's frontage is
+ * -z by the map contract.
+ *
+ * Reading order for every view is row-major: left to right, then top to bottom. Nothing is labelled
+ * on screen; the order is printed to the console and the counts land in the stats overlay.
+ *
+ * URL parameters: view (ladder | props | trees | plots), biome, seed, cam, freeze, stats,
+ * cols, only, tile.
  */
 
 const params = new URLSearchParams(location.search);
-const kit = temperate;
-const plotW = Number(params.get('w') ?? 15);
-const plotD = Number(params.get('d') ?? 14);
-const pitch = Math.max(plotW, plotD) + 6;
+const view = params.get('view') ?? 'ladder';
+const biomeParam = params.get('biome') ?? 'temperate';
+const biomeId: BiomeId = hasBiome(biomeParam) ? biomeParam : 'temperate';
+const kit = getBiome(biomeId);
+const seed = Number(params.get('seed') ?? 7);
+const freezeAt = params.get('freeze') === '1' ? Number(params.get('t') ?? 2) : null;
 
 const renderer = new Renderer({
   container: document.getElementById('app')!,
   showStats: params.get('stats') === '1',
   exposure: kit.atmosphere.exposure,
-  freezeAt: 2,
+  freezeAt,
 });
 const scene = renderer.scene;
+
+const preset = CAMERA_PRESETS[params.get('cam') ?? 'plot'] ?? CAMERA_PRESETS.plot!;
+
+/**
+ * The sheet is laid out in the camera's ground basis, so the key has to be rotated into it too.
+ * The biome's azimuth is authored against the game camera (azimuth 0); adding the preset's azimuth
+ * keeps shadows falling screen-left and slightly toward the viewer whatever the sheet is shot from,
+ * which is the direction REFERENCE-SPEC 8.1 measures.
+ */
 const lighting = new Lighting(scene, {
-  sunAzimuth: kit.atmosphere.sunAzimuth,
+  sunAzimuth: kit.atmosphere.sunAzimuth + preset.azimuth,
   sunElevation: kit.atmosphere.sunElevation,
   sunColor: kit.atmosphere.sunColor,
   sunIntensity: kit.atmosphere.sunIntensity,
@@ -43,82 +79,246 @@ const lighting = new Lighting(scene, {
   fogColor: kit.atmosphere.fogColor,
 });
 renderer.setSunDirection(lighting.sunDirection);
-renderer.isoCamera.setPreset(CAMERA_PRESETS[params.get('cam') ?? 'plot'] ?? CAMERA_PRESETS.plot!);
 
-const tex = new TextureFactory(11);
-const materials: Record<KitChannel, RampMaterial> = {
-  stone: new RampMaterial({ map: tex.ashlar('t', kit.textures.stone), vertexAO: true }),
-  wall: new RampMaterial({ map: tex.plaster('t', kit.textures.wall), vertexAO: true }),
-  roof: new RampMaterial({ map: tex.roof('t', kit.textures.roof), vertexAO: true }),
-  timber: new RampMaterial({ map: tex.timber('t', kit.textures.timber), vertexAO: true }),
-  metal: new RampMaterial({ color: PALETTE.emblemGold, vertexAO: true, rim: 1.6 }),
-  glow: new RampMaterial({ color: PALETTE.windowGold, unlit: true }),
-  foliage: new RampMaterial({ map: tex.grass('t', kit.textures.ground), vertexAO: true, rim: 0 }),
-  cloth: new RampMaterial({ color: kit.landmark.bannerColor, vertexAO: true }),
-};
+const textures = new TextureFactory(seed);
+const materials = createKitMaterials(kit, textures);
 
-const ground = new MeshBuilder();
-ground.quad([-400, -0.02, 400], [400, -0.02, 400], [400, -0.02, -400], [-400, -0.02, -400], {
-  uvScale: 7,
-});
-const groundMesh = new Mesh(ground.toGeometry('ground'), materials.foliage);
-groundMesh.receiveShadow = true;
-scene.add(groundMesh);
+/**
+ * The asset-sheet backdrop: a flat, unlit-looking dark ground that takes cast shadows. The
+ * reference sheets are shot on one, and it is the only honest way to judge a silhouette — grass
+ * would put a second green next to every canopy and hide the plot kerb entirely.
+ */
+const backdrop = new Mesh(
+  (() => {
+    const b = new MeshBuilder();
+    b.quad([-600, -0.02, 600], [600, -0.02, 600], [600, -0.02, -600], [-600, -0.02, -600], {
+      uvScale: 40,
+    });
+    return b.toGeometry('sheet-backdrop');
+  })(),
+  new RampMaterial({ color: 0x39404f, vertexAO: true, rim: 0 })
+);
+backdrop.receiveShadow = true;
+scene.add(backdrop);
+
+/** Where the camera and the shadow frustum are centred; the plots view moves it onto the tile. */
+const focus = new Vector3();
+let extra = '';
+
+// --- cell layout in the camera's ground basis --------------------------------
+
+const az = MathUtils.degToRad(preset.azimuth);
+/** Ground vectors that point right across the screen and up it, for this camera azimuth. */
+const RIGHT = new Vector3(Math.cos(az), 0, -Math.sin(az));
+const UP = new Vector3(-Math.sin(az), 0, -Math.cos(az));
+/**
+ * Turns a plot's -z frontage toward the viewer and then a further eighth turn, so that both the
+ * entrance facade and one flank are visible and the square plot reads as a diamond. That is the
+ * framing every reference asset sheet uses, and a facade seen dead-on hides half the silhouette.
+ */
+const FACE_VIEWER = az + Math.PI + Math.PI / 4;
+
+interface Cell {
+  label: string;
+  build: (ctx: KitContext) => void;
+  /** Plots are yawed to face the viewer; loose props are not, they are authored upright. */
+  faceViewer?: boolean;
+}
 
 let triangles = 0;
 
-function place(family: BuildingFamily, level: number, x: number, z: number): void {
-  const seed = 0x1234 + level * 31 + x * 7;
-  const ctx: KitContext = { channel: createChannels(), kit, rng: makeRng(seed) };
-  buildPlotFoundation(ctx, { w: plotW, d: plotD });
-  buildBuilding(ctx, { family, level, plotW, plotD, seed });
+function emit(ctx: KitContext, label: string, x: number, z: number, yaw: number): void {
   for (const name of KIT_CHANNELS) {
-    const b = ctx.channel[name];
-    if (b.isEmpty) continue;
-    triangles += b.triangleCount;
-    const mesh = new Mesh(b.toGeometry(`${family}-${level}-${name}`), materials[name]);
-    mesh.position.set(x, 0, z);
-    mesh.castShadow = name !== 'foliage';
-    mesh.receiveShadow = true;
-    scene.add(mesh);
-  }
-}
-
-const families: BuildingFamily[] = ['residential', 'merchant', 'workshop'];
-const one = params.get('family') as BuildingFamily | null;
-const oneLevel = params.get('level');
-
-if (one) {
-  place(one, Number(oneLevel ?? 1), 0, 0);
-  renderer.isoCamera.snapTo(0, 0, 0);
-} else if (params.get('civic') === '1') {
-  place('civic', 1, 0, 0);
-  renderer.isoCamera.snapTo(0, 0, 0);
-} else {
-  for (let r = 0; r < families.length; r++) {
-    for (let level = 0; level <= 3; level++) {
-      place(families[r]!, level, (level - 1.5) * pitch, (r - 1) * pitch);
+    const builder = ctx.channel[name];
+    if (builder.isEmpty) continue;
+    const parts: Array<[string, BufferGeometry]> = splitTags(
+      builder.toGeometry(`${label}:${name}`),
+      CHANNEL_SLOTS[name]
+    );
+    for (const [slot, geometry] of parts) {
+      const mesh = new Mesh(geometry, materials.slot[slot]!);
+      mesh.position.set(x, 0, z);
+      mesh.rotation.y = yaw;
+      mesh.castShadow = !isEmissiveSlot(slot);
+      mesh.receiveShadow = !isEmissiveSlot(slot);
+      mesh.renderOrder = isEmissiveSlot(slot) ? 1 : 0;
+      mesh.matrixAutoUpdate = false;
+      mesh.updateMatrix();
+      scene.add(mesh);
+      triangles += (geometry.getIndex()?.count ?? 0) / 3;
     }
   }
-  renderer.isoCamera.setPreset({
-    ...(CAMERA_PRESETS[params.get('cam') ?? 'plot'] ?? CAMERA_PRESETS.plot!),
-    viewSpan: pitch * 4.4,
-    anchorY: 0.5,
-  });
-  renderer.isoCamera.snapTo(0, 0, 0);
 }
 
-lighting.setShadowExtent(renderer.isoCamera.visibleGroundRadius() * 0.9);
+const only = params.get('only');
+
+function layout(
+  all: readonly Cell[],
+  wanted: number,
+  pitchX: number,
+  pitchZ: number,
+  anchorY = 0.53
+): void {
+  // `?only=` narrows the sheet to the cells whose label contains it, for inspecting one piece.
+  const cells = only ? all.filter((c) => c.label.includes(only)) : all;
+  if (cells.length === 0) throw new Error(`kitSheet: no cell matches "${only}"`);
+  const cols = Math.min(wanted, cells.length);
+  const rows = Math.ceil(cells.length / cols);
+  for (let i = 0; i < cells.length; i++) {
+    const cell = cells[i]!;
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const u = (col - (cols - 1) / 2) * pitchX;
+    const v = ((rows - 1) / 2 - row) * pitchZ;
+    const ctx = createKitContext(kit, makeRng(mix(seed, 0x40 + i)));
+    cell.build(ctx);
+    emit(
+      ctx,
+      cell.label,
+      RIGHT.x * u + UP.x * v,
+      RIGHT.z * u + UP.z * v,
+      cell.faceViewer === false ? 0 : FACE_VIEWER
+    );
+  }
+  const spanX = cols * pitchX;
+  // A narrower lens than the game's: an asset sheet is judged on silhouette, and 22 degrees over
+  // three rows shrinks the back row by a fifth. 10 keeps the row-to-row scale drift near 4%, so
+  // the plot module reads as one identical square in every cell. The extra span is margin: at
+  // 1.05 the nearest row ran off both frame edges.
+  renderer.isoCamera.setPreset({ ...preset, fov: 10, viewSpan: spanX * 1.2, anchorY });
+  renderer.isoCamera.snapTo(0, 0, 0);
+  console.log(
+    `kit sheet [${view}] ${cells.length} cells, ${cols} columns, row-major:\n` +
+      cells.map((c, i) => `${i}: ${c.label}`).join('\n')
+  );
+}
+
+// --- views -------------------------------------------------------------------
+
+/** The M standard plot, so every cell in the ladder stands on exactly the same base. */
+const PLOT_W = Number(params.get('w') ?? 15);
+const PLOT_D = Number(params.get('d') ?? 14);
+const LADDER_FAMILIES: readonly BuildingFamily[] = ['residential', 'merchant', 'workshop'];
+
+function ladderCells(): Cell[] {
+  const cells: Cell[] = [];
+  for (const family of LADDER_FAMILIES) {
+    for (let level = 0; level <= 3; level++) {
+      const key = `${family}:${level}`;
+      cells.push({
+        label: key,
+        build: (ctx) => {
+          const channels = buildPlotChannels(kit, {
+            family,
+            level,
+            plotW: PLOT_W,
+            plotD: PLOT_D,
+            seed: mix(seed, level * 17 + family.length),
+            variant: mix(seed, level * 5) % variantCount(family, level),
+          });
+          for (const name of KIT_CHANNELS) ctx.channel[name].merge(channels[name]);
+        },
+      });
+    }
+  }
+  return cells;
+}
+
+function propCells(): Cell[] {
+  return PROP_NAMES.map((name) => ({
+    label: name,
+    faceViewer: false,
+    build: (ctx: KitContext) => {
+      placePiece(ctx, name);
+    },
+  }));
+}
+
+function treeCells(): Cell[] {
+  const archetypes: readonly TreeArchetype[] = [
+    'conifer',
+    'broadleaf',
+    'palm',
+    'cypress',
+    'bare',
+    'olive',
+    'willow',
+  ];
+  const understory: readonly VegetationKit['understory'][] = ['bush', 'reeds', 'cactus', 'tussock', 'fern'];
+  const cells: Cell[] = archetypes.map((archetype) => ({
+    label: archetype,
+    faceViewer: false,
+    build: (ctx: KitContext) => buildTree(ctx, { archetype, seed: mix(seed, archetype.length) }),
+  }));
+  cells.push({
+    label: 'broadleaf+blossom',
+    faceViewer: false,
+    build: (ctx) => buildTree(ctx, { archetype: 'broadleaf', seed: mix(seed, 3), blossom: true }),
+  });
+  for (const kind of understory) {
+    cells.push({
+      label: kind,
+      faceViewer: false,
+      // Understory is under a metre tall; on a tree sheet it needs help to be visible at all.
+      build: (ctx) =>
+        withTransform(ctx, () => buildUnderstory(ctx, { kind, seed: mix(seed, kind.length), scale: 2.4 })),
+    });
+  }
+  return cells;
+}
+
+/**
+ * `?view=plots` is a diagnostic rather than an art sheet: it runs the real compiled tile through
+ * buildPlotMeshes, so the assignment distribution, the geometry cache and the draw-call accounting
+ * are exercised against a few hundred real parcels instead of twelve hand-made cells.
+ */
+async function plotsView(): Promise<void> {
+  const tile = (await fetch(`/public/tiles/${params.get('tile') ?? 'bathwick'}.tile.json`).then((r) => {
+    if (!r.ok) throw new Error(`kitSheet: tile fetch failed (${r.status})`);
+    return r.json();
+  })) as WorldTile;
+  const result = buildPlotMeshes(tile.plots, kit, textures);
+  for (const mesh of result.meshes) scene.add(mesh);
+  triangles = result.stats.triangles;
+  const s = result.stats;
+  extra =
+    `${s.plots} plots  ${s.built} built  ${(s.emptyFraction * 100).toFixed(0)}% empty\n` +
+    `${s.keys} keys  ${s.instancedDraws} instanced + ${s.batchedDraws} batched`;
+  console.log('plot meshes', s);
+  const [minX, minZ, maxX, maxZ] = tile.header.extent;
+  focus.set((minX + maxX) / 2, 0, (minZ + maxZ) / 2);
+  renderer.isoCamera.setPreset({
+    ...preset,
+    fov: 13,
+    viewSpan: Math.max(maxX - minX, maxZ - minZ) * 0.62,
+    anchorY: 0.5,
+  });
+  renderer.isoCamera.snapTo(focus.x, 0, focus.z);
+}
+
+if (view === 'plots') {
+  await plotsView();
+} else if (view === 'props') {
+  layout(propCells(), Number(params.get('cols') ?? 8), 5, 8, 0.55);
+} else if (view === 'trees') {
+  layout(treeCells(), Number(params.get('cols') ?? 5), 9, 14, 0.6);
+} else {
+  layout(ladderCells(), 4, Math.hypot(PLOT_W, PLOT_D) + 3.5, Math.hypot(PLOT_W, PLOT_D) + 5.5);
+}
+
+lighting.setShadowExtent(renderer.isoCamera.preset.viewSpan * 0.75);
 lighting.fitFogToCamera(
   renderer.isoCamera.focusDistance,
-  kit.atmosphere.fogNearOffset,
-  kit.atmosphere.fogFarOffset * 4,
+  kit.atmosphere.fogNearOffset * 6,
+  kit.atmosphere.fogFarOffset * 6,
   scene
 );
+// Without this the directional light never leaves the origin and the whole sheet is lit by the
+// hemisphere fill alone: no key, no cast shadows, every vertical face crushed to near black.
+lighting.follow(focus.x, focus.z);
 
-const focus = new Vector3();
+renderer.setStatsExtra(`${view}  ${kit.label}\n${triangles} kit tris${extra ? `\n${extra}` : ''}`);
+
 renderer.start((dt) => {
   renderer.isoCamera.update(focus.x, focus.y, focus.z, dt);
 });
-
-console.log(`kit sheet: ${triangles} triangles`);

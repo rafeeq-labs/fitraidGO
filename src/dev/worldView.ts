@@ -13,6 +13,7 @@ import { RadiusRing } from '../game/RadiusRing.js';
 import { RouteLine } from '../game/RouteLine.js';
 import { SimWalker } from '../game/SimWalker.js';
 import type { WorldTile } from '../map/types.js';
+import { buildPlotMeshes } from '../world/PlotBuilder.js';
 import { buildTileSurfaces } from '../world/TileSurfaces.js';
 
 /**
@@ -74,9 +75,13 @@ const textures = new TextureFactory(seed);
 const surfaces = buildTileSurfaces(tile, kit, textures);
 for (const mesh of surfaces.meshes) scene.add(mesh);
 
+// Every real building footprint becomes a persistent plot with its assigned family and level.
+const plots = buildPlotMeshes(tile.plots, kit, textures);
+for (const mesh of plots.meshes) scene.add(mesh);
+
 // --- movement along real streets
 const walker = new SimWalker(tile, { speed: 1.5, loop: true });
-if (!walker.autoRoute()) {
+if (!walker.denseRoute(tile.plots)) {
   throw new Error('worldView: the tile graph yielded no walkable route');
 }
 walker.seek(scrub);
@@ -120,7 +125,8 @@ others.freeze(scrub);
 renderer.setStatsExtra(
   `${kit.label}\n${tile.header.place}\n` +
     `${tile.roads.length} roads  ${tile.plots.length} plots\n` +
-    `surfaces ${surfaces.stats.triangles} tris`
+    `surfaces ${surfaces.stats.triangles} tris  ` +
+    `plots ${Math.round(plots.stats.triangles / 1000)}k tris`
 );
 
 renderer.start((dt, t) => {

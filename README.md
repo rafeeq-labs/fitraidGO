@@ -34,6 +34,13 @@ Node 22+. No npm install is needed: `three` and `earcut` are vendored in `vendor
 `data/raw/<place>.osm.json`. `tools/build-tile.mjs` compiles that into a compact world
 tile in `public/tiles/`. The browser never touches the network — tiles are static.
 
+Overpass is unreachable from this environment, so the committed
+`data/raw/bathwick.osm.json` is **not** OpenStreetMap data: it is a hand-authored
+reconstruction of the Bathwick / Great Pulteney Street district produced by
+`tools/author-bath.mjs` (`npm run author`), in the same `out:json` schema, so a live
+download drops straight in. The file says so in its own `generator`/`osm3s.copyright`, and
+the compiler copies that provenance into `header.source` rather than claiming OSM origin.
+
 ## Layout
 
     src/engine   renderer, isometric camera, lighting, palette, procedural textures

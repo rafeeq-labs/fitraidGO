@@ -1,7 +1,7 @@
 import type { TreeArchetype, VegetationKit } from '../biomes/BiomeKit.js';
 import { makeRng, mix, type Rng } from '../engine/rng.js';
-import { blade, canopyBlob, disc, drum, mound } from './KitShapes.js';
-import type { KitContext } from './KitTypes.js';
+import { blade, canopyBlob, drum, mound } from './KitShapes.js';
+import { TAG, tag, type KitContext } from './KitTypes.js';
 import type { FaceOptions, MeshBuilder } from './MeshBuilder.js';
 
 /**
@@ -16,18 +16,17 @@ import type { FaceOptions, MeshBuilder } from './MeshBuilder.js';
  * narrow, stacked skirts. Broadleaves are rounder and lighter. Blossom is discussed below.
  */
 
-const LEAF: FaceOptions = { uvScale: 0.9 };
-const BARK: FaceOptions = { uvScale: 0.7 };
-
 /**
- * Blossom has no channel of its own — the contract's eight channels carry one foliage material.
- * Blossom clusters are emitted into `foliage` shifted by this much in v, so a foliage texture
- * authored as two horizontal bands (leaf green below, `palette.foliageAccent` above) skins both
- * from one material. Without such a texture a blossom tree simply reads as a leafy one.
+ * The foliage channel carries four materials, tagged apart: the lawn, deciduous canopy, dark
+ * conifer needle and blossom. They must stay separable — at the GPS camera a tree's whole read is
+ * its canopy plan shape and its hue, and when every archetype shared the lawn's yellow-green they
+ * all came out as the same mid-green oval. REFERENCE-SPEC 3.1 gives conifer #22302C as the darkest
+ * large mass allowed, deciduous #5A7038 and blossom #C9A0B4 as three distinct hues.
  */
-export const FOLIAGE_ACCENT_UV = 0.5;
-
-const ACCENT: FaceOptions = { uvScale: 0.9, uvOffset: [0, FOLIAGE_ACCENT_UV] };
+const LEAF: FaceOptions = tag({ uvScale: 1.6 }, TAG.canopy) as FaceOptions;
+const NEEDLE: FaceOptions = tag({ uvScale: 1.1 }, TAG.conifer) as FaceOptions;
+const ACCENT: FaceOptions = tag({ uvScale: 1.2 }, TAG.blossom) as FaceOptions;
+const BARK: FaceOptions = { uvScale: 0.7 };
 
 export interface TreeOptions {
   archetype: TreeArchetype;
@@ -44,6 +43,11 @@ export interface UnderstoryOptions {
   scale?: number;
 }
 
+/**
+ * Height, and canopy diameter as a fraction of it. The ratio is the archetype's signature: at 40 px
+ * the plan silhouette is all a viewer gets, so a narrow spike, a broad dome and a wide flat
+ * pendulous mass have to be different numbers, not different textures.
+ */
 const DEFAULT_HEIGHT: Record<TreeArchetype, number> = {
   conifer: 8.5,
   broadleaf: 9,
@@ -103,57 +107,65 @@ function limb(
   mb.pop();
 }
 
+/**
+ * One continuous tapered cone of overlapping skirts, in the kit's darkest green.
+ *
+ * Each skirt starts BELOW the base of the one under it, so the silhouette is unbroken: as a stack
+ * of separated flat-topped cones with air between the tiers it read as a pile of lampshades, and
+ * the black gaps put the darkest value in the frame inside the tree rather than under it.
+ * Canopy diameter 0.4 x height — narrow, against the broadleaf's 0.9.
+ */
 function conifer(ctx: KitContext, h: number, rng: Rng): void {
   const f = ctx.channel.foliage;
-  trunk(ctx.channel.timber, h * 0.045, h * 0.3, 1, 5);
-  const tiers = 7;
-  const maxR = h * 0.21;
+  trunk(ctx.channel.timber, h * 0.05, h * 0.24, 1, 5);
+  const tiers = 8;
+  const maxR = h * 0.2;
+  const top = h * 0.97;
+  const bottom = h * 0.12;
   for (let i = 0; i < tiers; i++) {
     const t = i / (tiers - 1);
-    const y = h * (0.14 + 0.68 * t);
-    const r = maxR * (1 - t * 0.82) * rng.range(0.9, 1.08);
-    const th = h * (0.2 - t * 0.07);
+    const y = bottom + (top - bottom) * t * 0.86;
+    const r = maxR * (1 - t * 0.88) * rng.range(0.94, 1.06);
+    // Every skirt is deep enough to reach past the base of the skirt above it.
+    const th = (top - y) * 0.42 + h * 0.06;
     f.push();
     f.rotateY(rng.range(0, Math.PI));
-    mound(f, r, th, 10, { ...LEAF, y, ao: 0.6 + t * 0.35 });
-    disc(f, r, y, 10, { ...LEAF, ao: 0.24 }, true);
+    mound(f, r, th, 9, { ...NEEDLE, y, ao: 0.52 + t * 0.44 });
     f.pop();
   }
-  mound(f, maxR * 0.24, h * 0.16, 6, { ...LEAF, y: h * 0.84 });
+  mound(f, maxR * 0.16, h * 0.1, 6, { ...NEEDLE, y: top - h * 0.02 });
 }
 
 function broadleaf(ctx: KitContext, h: number, rng: Rng, blossom: boolean): void {
   const t = ctx.channel.timber;
   const f = ctx.channel.foliage;
-  trunk(t, h * 0.055, h * 0.46, 2, 6);
+  // The trunk stops well inside the crown. Run past it and it pokes out of the top of the canopy.
+  trunk(t, h * 0.055, h * 0.4, 2, 6);
   for (let i = 0; i < 2; i++) {
-    limb(t, h * 0.34, rng.range(0, Math.PI * 2), 0.6 + i * 0.12, h * 0.24, h * 0.03);
+    limb(t, h * 0.32, rng.range(0, Math.PI * 2), 0.6 + i * 0.12, h * 0.2, h * 0.03);
   }
-  const r = h * 0.42;
+  // Blossom takes over the WHOLE canopy rather than sitting on it as a separate cluster: at
+  // thumbnail size a pink cap on a green ball is 85% green, and the accent is lost.
+  const skin = blossom ? ACCENT : LEAF;
+  const r = h * 0.45;
   const lobes: readonly (readonly [number, number, number, number])[] = [
-    [0, 0.72, 0, 1],
-    [-0.42, 0.6, 0.3, 0.72],
-    [0.4, 0.58, -0.34, 0.68],
+    [0, 0.7, 0, 1],
+    [-0.4, 0.62, 0.28, 0.76],
+    [0.38, 0.6, -0.32, 0.72],
+    [0.1, 0.82, 0.18, 0.6],
   ];
   for (const [dx, dy, dz, k] of lobes) {
     f.push();
     f.translate(dx * r, h * dy, dz * r);
     canopyBlob(f, r * k, {
-      ...LEAF,
-      ry: 0.78,
-      segments: 7,
+      ...skin,
+      ry: 0.76,
+      segments: 8,
       bands: 4,
-      aoBottom: 0.24,
+      aoBottom: 0.3,
       wobble: 0.16,
       rand: () => rng.next(),
     });
-    f.pop();
-  }
-  if (!blossom) return;
-  for (let i = 0; i < 2; i++) {
-    f.push();
-    f.translate(rng.range(-r * 0.5, r * 0.5), h * rng.range(0.72, 0.86), rng.range(-r * 0.5, r * 0.5));
-    canopyBlob(f, r * 0.4, { ...ACCENT, ry: 0.7, segments: 6, bands: 3, aoBottom: 0.4 });
     f.pop();
   }
 }
@@ -182,11 +194,11 @@ function palm(ctx: KitContext, h: number, rng: Rng): void {
 function cypress(ctx: KitContext, h: number, rng: Rng): void {
   const f = ctx.channel.foliage;
   trunk(ctx.channel.timber, h * 0.035, h * 0.18, 1, 5);
-  const r = h * 0.15;
+  const r = h * 0.14;
   f.push();
   f.translate(0, h * 0.52, 0);
   canopyBlob(f, r, {
-    ...LEAF,
+    ...NEEDLE,
     ry: 3.2,
     segments: 8,
     bands: 6,
@@ -198,7 +210,7 @@ function cypress(ctx: KitContext, h: number, rng: Rng): void {
   for (let i = 0; i < 3; i++) {
     f.push();
     f.translate(rng.range(-r * 0.5, r * 0.5), h * rng.range(0.3, 0.78), rng.range(-r * 0.5, r * 0.5));
-    canopyBlob(f, r * rng.range(0.55, 0.8), { ...LEAF, ry: 1.4, segments: 6, bands: 3, aoBottom: 0.3 });
+    canopyBlob(f, r * rng.range(0.55, 0.8), { ...NEEDLE, ry: 1.4, segments: 6, bands: 3, aoBottom: 0.3 });
     f.pop();
   }
 }
@@ -241,36 +253,50 @@ function olive(ctx: KitContext, h: number, rng: Rng, blossom: boolean): void {
   }
 }
 
+/**
+ * A broad low pendulous dome, canopy diameter 1.25 x height — the widest and flattest plan shape
+ * in the kit, and the whole point of the archetype. Strands hang DOWN past the crown, so from the
+ * GPS camera the read is a wide round mass with a soft skirt, not a bent stem with a spray of
+ * stiff blades on top of it.
+ */
 function willow(ctx: KitContext, h: number, rng: Rng): void {
   const t = ctx.channel.timber;
   const f = ctx.channel.foliage;
-  trunk(t, h * 0.07, h * 0.44, 2, 6, 0.1);
-  const r = h * 0.44;
-  for (const [dx, dy] of [
-    [0, 0.74],
-    [0.35, 0.62],
+  trunk(t, h * 0.075, h * 0.36, 2, 6, 0.08);
+  const r = h * 0.62;
+  for (const [dx, dy, dz, k] of [
+    [0, 0.62, 0, 1],
+    [-0.44, 0.54, 0.3, 0.66],
+    [0.42, 0.55, -0.28, 0.64],
   ] as const) {
     f.push();
-    f.translate(dx * r, h * dy, 0);
-    canopyBlob(f, r * (dx === 0 ? 1 : 0.7), {
+    f.translate(dx * r, h * dy, dz * r);
+    canopyBlob(f, r * k, {
       ...LEAF,
-      ry: 0.52,
-      segments: 8,
+      ry: 0.42,
+      segments: 9,
       bands: 4,
-      aoBottom: 0.22,
+      aoBottom: 0.26,
       wobble: 0.14,
       rand: () => rng.next(),
     });
     f.pop();
   }
-  for (let i = 0; i < 12; i++) {
-    const a = (i / 12) * Math.PI * 2 + rng.range(-0.24, 0.24);
-    const d = r * rng.range(0.62, 1.02);
+  for (let i = 0; i < 16; i++) {
+    const a = (i / 16) * Math.PI * 2 + rng.range(-0.2, 0.2);
+    const d = r * rng.range(0.62, 0.98);
     f.push();
-    f.translate(Math.cos(a) * d, h * rng.range(0.56, 0.7), Math.sin(a) * d);
-    f.rotateY(a);
-    f.rotateZ(Math.PI - rng.range(0.05, 0.34));
-    blade(f, h * rng.range(0.3, 0.46), 0.72, { ...LEAF, segments: 2, curve: 0.55, tilt: 0, taper: 0.45 });
+    f.translate(Math.cos(a) * d, h * rng.range(0.5, 0.6), Math.sin(a) * d);
+    f.rotateY(a + Math.PI / 2);
+    // Pi tips the strand over so it grows downward; the residual curve lets it swing outward.
+    f.rotateZ(Math.PI + rng.range(-0.18, 0.18));
+    blade(f, h * rng.range(0.26, 0.4), 0.9, {
+      ...LEAF,
+      segments: 3,
+      curve: -0.5,
+      tilt: 0,
+      taper: 0.4,
+    });
     f.pop();
   }
 }
@@ -315,10 +341,10 @@ export function buildUnderstory(ctx: KitContext, options: UnderstoryOptions): vo
       f.translate(rng.range(-0.3, 0.3) * s, 0, rng.range(-0.3, 0.3) * s);
       canopyBlob(f, rng.range(0.42, 0.62) * s, {
         ...LEAF,
-        ry: 0.8,
+        ry: 0.82,
         y: 0.4 * s,
-        segments: 6,
-        bands: 3,
+        segments: 9,
+        bands: 5,
         aoBottom: 0.22,
         wobble: 0.2,
         rand: () => rng.next(),

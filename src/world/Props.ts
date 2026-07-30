@@ -9,8 +9,9 @@ import {
   pyramid,
   SHEET_GAP,
 } from './KitShapes.js';
-import { registerPiece, type KitContext, type KitPiece } from './KitTypes.js';
-import type { FaceOptions, MeshBuilder } from './MeshBuilder.js';
+import { bloom, groundSpill } from './KitPieces.js';
+import { TAG, registerPiece, tag, type KitContext, type KitPiece } from './KitTypes.js';
+import type { FaceOptions } from './MeshBuilder.js';
 
 /**
  * Yard, street and market props.
@@ -29,28 +30,28 @@ import type { FaceOptions, MeshBuilder } from './MeshBuilder.js';
  */
 
 const STONE: FaceOptions = { uvScale: 1.1 };
+const PAVING: FaceOptions = tag({ uvScale: 1.4 }, TAG.paving) as FaceOptions;
 const TIMBER: FaceOptions = { uvScale: 0.8 };
 const METAL: FaceOptions = { uvScale: 0.7 };
 const CLOTH: FaceOptions = { uvScale: 1.3 };
-const LEAF: FaceOptions = { uvScale: 0.75 };
+const LEAF: FaceOptions = tag({ uvScale: 1.2 }, TAG.canopy) as FaceOptions;
+const BLOOM_PINK: FaceOptions = tag({ uvScale: 0.6 }, TAG.blossom) as FaceOptions;
 const GLOW: FaceOptions = { uvScale: 0.5 };
 const ROOF: FaceOptions = { uvScale: 0.5 };
 /**
- * Standing water — troughs, butts, fountain basins — has no channel of its own. `roof` is the only
- * channel whose material is blue in the biomes that have water on show, so water borrows it and
- * leans on heavy AO to read as depth rather than as slate.
+ * Standing water — troughs, butts, fountain basins — is its own material on the roof channel.
+ * It used to borrow the slate map outright, which put visible overlapping roof courses inside
+ * every fountain in the kit and turned the one teal in the palette neutral grey.
  */
-const WATER: FaceOptions = { uvScale: 1.4, ao: 0.42 };
+const WATER: FaceOptions = tag({ uvScale: 1.4, ao: 0.82 }, TAG.water) as FaceOptions;
 
 /**
- * The `glow` channel carries two emissives that must not be confused: warm window and lantern gold,
- * and cold blue crystal. Crystal geometry is offset by this much in v so a glow texture authored as
- * two horizontal bands (gold below, `landmark.crystalColor` above) separates them from one material.
- * Without such a texture the crystals simply glow the same warm gold as the windows.
+ * The `glow` channel carries five emissives that must not be confused: warm window and lantern
+ * gold, orange forge fire, cold blue crystal, and the two additive bloom halos. Each is tagged and
+ * the mesh assembler splits the channel on it. See TAG in KitTypes.
  */
-export const GLOW_CRYSTAL_UV = 0.5;
-
-const CRYSTAL: FaceOptions = { uvScale: 0.5, uvOffset: [0, GLOW_CRYSTAL_UV] };
+const CRYSTAL: FaceOptions = tag({ uvScale: 0.5 }, TAG.crystal) as FaceOptions;
+const FIRE: FaceOptions = tag({ uvScale: 0.5, ao: 1 }, TAG.fire) as FaceOptions;
 const RECESS: FaceOptions = { uvScale: 0.9, ao: 0.3 };
 const NO_FLOOR = { ny: true } as const;
 
@@ -94,8 +95,12 @@ function wheel(
     b.translate(at.x ?? 0, at.y ?? radius, at.z ?? 0);
     b.rotateX(Math.PI / 2);
   }
-  drum(m, radius, radius, 0.08, detail.segments ?? 10, { ...METAL, y: -0.04, cap: false });
-  if (detail.hub !== false) drum(t, 0.09, 0.09, 0.14, 6, { ...TIMBER, y: -0.07, cap: false });
+  // The felloe is TIMBER. Gold is reserved for lantern glass, finials and heraldry, and a gilded
+  // cart wheel is a fourth saturated hue the palette does not allow.
+  drum(t, radius, radius, 0.1, detail.segments ?? 10, { ...TIMBER, y: -0.05, cap: false });
+  drum(m, radius * 1.03, radius * 1.03, 0.04, detail.segments ?? 10, { ...METAL, y: -0.02, cap: false });
+  drum(t, 0.1, 0.1, 0.2, 6, { ...TIMBER, y: -0.1, cap: false });
+  if (detail.hub !== false) drum(m, 0.055, 0.055, 0.24, 6, { ...METAL, y: -0.12, cap: false });
   for (let i = 0; i < spokes; i++) {
     t.push();
     t.rotateY((i / spokes) * Math.PI);
@@ -129,20 +134,36 @@ function banner(ctx: KitContext, w: number, h: number, y: number, z = 0): void {
   );
 }
 
+/**
+ * Blooms, not green nubs. In reference 05 the flowers ARE the asset: a stone-ringed patch is a
+ * mound of white, blue and violet heads, and a bed of leaf-green lumps is indistinguishable from a
+ * plain grass pad. The heads take the blossom accent; a few pale ones come out of the plaster
+ * channel, which is the only near-white the palette allows outside the emissives.
+ */
 function flowerClumps(
-  mb: MeshBuilder,
+  ctx: KitContext,
   count: number,
   spread: number,
   y: number,
   rng: KitContext['rng']
 ): void {
+  const f = ctx.channel.foliage;
   for (let i = 0; i < count; i++) {
-    const r = rng.range(0.1, 0.19);
-    mb.push();
-    mb.translate(rng.range(-spread, spread), y, rng.range(-spread, spread));
-    mb.rotateY(rng.range(0, Math.PI));
-    canopyBlob(mb, r, { ...LEAF, ry: 0.9, y: r * 0.7, segments: 4, bands: 3, aoBottom: 0.4 });
-    mb.pop();
+    const r = rng.range(0.12, 0.2);
+    f.push();
+    f.translate(rng.range(-spread, spread), y, rng.range(-spread, spread));
+    f.rotateY(rng.range(0, Math.PI));
+    canopyBlob(f, r * 0.8, { ...LEAF, ry: 0.55, y: r * 0.4, segments: 5, bands: 3, aoBottom: 0.45 });
+    f.pop();
+  }
+  for (let i = 0; i < count; i++) {
+    const head = i % 3 === 0 ? ctx.channel.wall : f;
+    const o = i % 3 === 0 ? { uvScale: 0.5 } : BLOOM_PINK;
+    const r = rng.range(0.09, 0.15);
+    head.push();
+    head.translate(rng.range(-spread, spread), y + rng.range(0.16, 0.34), rng.range(-spread, spread));
+    canopyBlob(head, r, { ...o, ry: 0.85, segments: 5, bands: 3, aoBottom: 0.6 });
+    head.pop();
   }
 }
 
@@ -162,7 +183,7 @@ const flagstonePath: KitPiece = (ctx, o) => {
     for (let c = 0; c < cols; c++) {
       const cz = -len / 2 + (r + 0.5) * rd;
       const cx = -w / 2 + (c + 0.5) * cw + ctx.rng.range(-0.05, 0.05);
-      flatQuad(s, cx - cw * 0.44, cz - rd * 0.42, cx + cw * 0.44, cz + rd * 0.42, y, STONE);
+      flatQuad(s, cx - cw * 0.44, cz - rd * 0.42, cx + cw * 0.44, cz + rd * 0.42, y, PAVING);
     }
   }
 };
@@ -173,7 +194,9 @@ const forecourtPaving: KitPiece = (ctx, o) => {
   const hd = opt(o, 'd', 4) / 2;
   const y = opt(o, 'y', 0.05);
   const s = ctx.channel.stone;
-  flatQuad(s, -hw, -hd, hw, hd, y, { uvScale: 1.7 });
+  // Cobble, not ashlar. A forecourt laid in the building's own 0.9 m dressed blocks read as one
+  // stretcher-bond decal at roughly a block per square metre, with a visible tile repeat.
+  flatQuad(s, -hw, -hd, hw, hd, y, PAVING);
   if (!flag(o, 'edge', true)) return;
   const e = 0.34;
   const rim = { uvScale: 1.1, ao: 0.94 };
@@ -237,7 +260,7 @@ const flowerBed: KitPiece = (ctx, o) => {
   s.ringWall([cap, cap, cap, -cap, -cap, -cap, -cap, cap], h - 0.1, h, STONE);
   const f = ctx.channel.foliage;
   flatQuad(f, -size, -size, size, size, h - 0.06, { ...LEAF, ao: 0.7 });
-  if (ctx.kit.vegetation.flowers) flowerClumps(f, 5, size * 0.68, h - 0.06, ctx.rng);
+  flowerClumps(ctx, ctx.kit.vegetation.flowers ? 7 : 4, size * 0.68, h - 0.06, ctx.rng);
 };
 
 /** Timber planter box with a planted mound. */
@@ -255,7 +278,7 @@ const planter: KitPiece = (ctx, o) => {
     groundAO: 0.5,
     skip: NO_FLOOR,
   });
-  if (ctx.kit.vegetation.flowers) flowerClumps(f, 2, Math.min(w, d) * 0.6, h + 0.18, ctx.rng);
+  flowerClumps(ctx, ctx.kit.vegetation.flowers ? 4 : 2, Math.min(w, d) * 0.6, h + 0.14, ctx.rng);
 };
 
 /** Stone urn: L3 gate posts and formal forecourts. */
@@ -427,9 +450,39 @@ const handcart: KitPiece = (ctx, o) => {
     wheel(ctx, r, { x: 0.1, y: r, z: sz * 0.52 }, { spokes: 2, hub: false, segments: 8 });
   }
   if (!flag(o, 'awning', true)) return;
-  ctx.channel.cloth.quad([-0.85, 1.38, 0.6], [0.85, 1.38, 0.6], [0.85, 1.5, -0.6], [-0.85, 1.5, -0.6], CLOTH);
+  // A pitched canvas in two shaded planes with a pale stripe band, not one flat saturated card:
+  // 6 m2 of single-RGB primary blue is an outright material fail.
+  const c = ctx.channel.cloth;
+  const pale = ctx.channel.wall;
+  const ridge = 1.62;
+  const eave = 1.34;
+  for (const sz of [-1, 1]) {
+    c.quad(
+      [-0.92, eave, sz * 0.66],
+      [0.92, eave, sz * 0.66],
+      [0.92, ridge, 0],
+      [-0.92, ridge, 0],
+      CLOTH,
+      [0.72, 0.72, 1, 1]
+    );
+    const bands = 5;
+    for (let i = 0; i < bands; i += 2) {
+      const x0 = -0.92 + (1.84 * i) / bands;
+      const x1 = x0 + 1.84 / bands;
+      pale.quad(
+        [x0, eave + 0.012, sz * 0.66],
+        [x1, eave + 0.012, sz * 0.66],
+        [x1, ridge + 0.012, 0],
+        [x0, ridge + 0.012, 0],
+        { uvScale: 0.6 },
+        [0.72, 0.72, 1, 1]
+      );
+    }
+  }
   for (const sx of [-1, 1]) {
-    t.box(sx * 0.78 - 0.05, 0.8, -0.55, sx * 0.78 + 0.05, 1.5, -0.45, thin);
+    for (const sz of [-1, 1]) {
+      t.box(sx * 0.82 - 0.05, 0.72, sz * 0.62 - 0.05, sx * 0.82 + 0.05, eave + 0.02, sz * 0.62 + 0.05, thin);
+    }
   }
 };
 
@@ -456,8 +509,8 @@ const forge: KitPiece = (ctx, o) => {
   s.box(-w, 0, -d, w, h, d, { ...STONE, taper: 0.05, skip: NO_FLOOR });
   s.box(-w * 0.42, h, -d * 0.55, w * 0.42, h + 0.85, d * 0.55, { ...STONE, taper: 0.14 });
   const g = ctx.channel.glow;
-  g.box(-w * 0.6, h - 0.16, -d * 0.6, w * 0.6, h + 0.08, d * 0.6, {
-    ...GLOW,
+  g.box(-w * 0.6, h - 0.16, -d * 0.6, w * 0.6, h + 0.12, d * 0.6, {
+    ...FIRE,
     taper: 0.2,
     skip: NO_FLOOR,
   });
@@ -466,8 +519,10 @@ const forge: KitPiece = (ctx, o) => {
     [w * 0.55, 0.34, d + 0.01],
     [w * 0.55, h - 0.14, d + 0.01],
     [-w * 0.55, h - 0.14, d + 0.01],
-    GLOW
+    FIRE
   );
+  bloom(ctx, w * 2.2, { y: h + 0.1 }, 'fire');
+  groundSpill(ctx, w * 2.2, 0.05, d * 1.2, 'fire');
 };
 
 const bellows: KitPiece = (ctx) => {
@@ -623,7 +678,14 @@ const crystalLamp: KitPiece = (ctx, o) => {
       skip: { px: true, nx: true },
     });
   }
-  facetedCrystal(ctx.channel.glow, 0.15, 0.3, 0.24, { ...CRYSTAL, y: shaftTop + 0.26 });
+  // Two nested crystals: a shaded faceted body, and a small unlit core inside it. The core plus
+  // the additive bloom is what makes the tip read white-hot against a saturated blue body — a
+  // single flat chip measured the same value at tip and base and dimmer than plain daylit stone.
+  const cy = shaftTop + 0.26;
+  facetedCrystal(ctx.channel.glow, 0.17, 0.34, 0.28, { ...CRYSTAL, y: cy });
+  bloom(ctx, 1.1, { y: cy + 0.24 }, 'cool');
+  // Proof by what it touches: the plinth and the cross-arms below take a cyan wash.
+  groundSpill(ctx, 1.5, 0.42, 0, 'cool');
   if (flag(o, 'banner', ctx.rng.chance(0.4))) banner(ctx, 0.44, 1, shaftTop - 0.2, 0.16);
 };
 
@@ -639,19 +701,22 @@ const streetLantern: KitPiece = (ctx, o) => {
   ctx.channel.glow.box(-0.15, top + 0.08, -0.15, 0.15, top + 0.5, 0.15, { ...GLOW, taper: -0.1 });
   m.box(-0.2, top + 0.5, -0.2, 0.2, top + 0.56, 0.2, METAL);
   pyramid(m, 0.2, 0.2, 0.19, { ...METAL, y: top + 0.56 });
+  bloom(ctx, 1.1, { y: top + 0.29 });
+  groundSpill(ctx, 2.6, 0.04);
 };
 
 /** Blue-crystal obelisk shrine on a stepped round plinth. Reference 05, right-hand piece. */
 const crystalObelisk: KitPiece = (ctx, o) => {
   const h = opt(o, 'height', 4.5);
   const s = ctx.channel.stone;
+  // Solid stacked steps. Open-ended drums read as three thin detached rings you can see through.
   const steps: readonly (readonly [number, number])[] = [
     [1.9, 0],
     [1.55, 0.17],
     [1.22, 0.34],
   ];
   for (const [r, y] of steps) {
-    drum(s, r, r * 0.99, 0.18, 8, { ...STONE, y, cap: false, aoBottom: y === 0 ? 0.5 : 0.85 });
+    drum(s, r, r * 0.99, 0.18, 8, { ...STONE, y, cap: true, aoBottom: y === 0 ? 0.6 : 0.88 });
   }
   disc(s, 1.2, 0.52, 8, STONE);
   const pedH = h * 0.34;
@@ -675,7 +740,11 @@ const crystalObelisk: KitPiece = (ctx, o) => {
       CRYSTAL
     );
   }
-  facetedCrystal(g, 0.34, h * 0.3, h * 0.2, { ...CRYSTAL, y: 0.66 + pedH });
+  const cy = 0.66 + pedH;
+  facetedCrystal(g, 0.36, h * 0.32, h * 0.22, { ...CRYSTAL, y: cy });
+  // A halo two to three times the crystal's own width, and the whole stepped plinth washed cyan.
+  bloom(ctx, h * 0.7, { y: cy + h * 0.18 }, 'cool');
+  groundSpill(ctx, 3.4, 0.56, 0, 'cool');
 };
 
 /** L0 marker: a stake with a scrap of cloth — the "this parcel is buildable" read. */
@@ -783,34 +852,61 @@ const netRack: KitPiece = (ctx, o) => {
   const h = opt(o, 'height', 1.7);
   const t = ctx.channel.timber;
   const hw = len / 2;
+  // The legs lean in to MEET the head rail at z = 0. Leaning them about their bases left the tops
+  // 0.37 m adrift of the beam they were supposed to be carrying.
+  const splay = 0.3;
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) {
       t.push();
-      t.translate(sx * hw, 0, sz * 0.34);
-      t.rotateX(sz * 0.22);
-      t.box(-0.06, 0, -0.06, 0.06, h, 0.06, { ...TIMBER, skip: NO_FLOOR });
+      t.translate(sx * hw, 0, sz * splay);
+      t.rotateX(-sz * Math.atan2(splay, h));
+      t.box(-0.06, 0, -0.06, 0.06, Math.hypot(h, splay), 0.06, { ...TIMBER, skip: NO_FLOOR });
       t.pop();
     }
   }
-  t.box(-hw - 0.1, h - 0.1, -0.06, hw + 0.1, h, 0.06, { ...TIMBER, uvRotate: true });
+  t.box(-hw - 0.1, h - 0.12, -0.08, hw + 0.1, h + 0.02, 0.08, { ...TIMBER, uvRotate: true });
   const c = ctx.channel.cloth;
   const fade: [number, number, number, number] = [0.6, 0.6, 1, 1];
   c.quad([-hw, h * 0.3, 0.02], [hw, h * 0.3, 0.02], [hw, h - 0.1, 0.02], [-hw, h - 0.1, 0.02], CLOTH, fade);
   c.quad([hw, h * 0.3, -0.02], [-hw, h * 0.3, -0.02], [-hw, h - 0.1, -0.02], [hw, h - 0.1, -0.02], CLOTH, fade);
 };
 
-/** Small tiered fountain, 2.2 m across: park and plaza centrepiece. */
+/**
+ * Small tiered fountain, 2.2 m across: park and plaza centrepiece.
+ *
+ * Closed geometry throughout. The basin used to be an outer drum, an inward liner and a bare
+ * one-sided rim ribbon that stood proud and detached, and the upper bowl overhung the basin with
+ * nothing under it — so the whole piece read as loose parts rather than one carved stone.
+ */
 const fountain: KitPiece = (ctx, o) => {
   const r = opt(o, 'radius', 1.1);
   const s = ctx.channel.stone;
-  drum(s, r * 1.04, r, 0.44, 10, { ...STONE, cap: false, aoBottom: 0.45 });
-  s.ringWall(ringOf(r * 0.88, 10), 0.28, 0.44, { ...STONE, inward: true });
-  s.ringWall(ringOf(r, 10), 0.44, 0.52, STONE);
-  disc(ctx.channel.roof, r * 0.86, 0.3, 10, WATER);
-  drum(s, 0.26, 0.2, 0.86, 8, { ...STONE, y: 0.44, cap: false });
-  drum(s, 0.52, 0.56, 0.14, 8, { ...STONE, y: 1.3, cap: false });
-  disc(ctx.channel.roof, 0.5, 1.4, 8, WATER);
-  mound(s, 0.16, 0.42, 6, { ...STONE, y: 1.44 });
+  const w = ctx.channel.roof;
+  const segs = 12;
+  // Outer wall, inner liner, and an annular coping joining the two so the rim is a solid ring.
+  drum(s, r * 1.04, r, 0.5, segs, { ...STONE, cap: false, aoBottom: 0.5 });
+  s.ringWall(ringOf(r * 0.86, segs), 0.24, 0.5, { ...STONE, inward: true });
+  for (let i = 0; i < segs; i++) {
+    const a0 = -(i / segs) * Math.PI * 2;
+    const a1 = -((i + 1) / segs) * Math.PI * 2;
+    s.quad(
+      [Math.cos(a0) * r * 0.86, 0.5, Math.sin(a0) * r * 0.86],
+      [Math.cos(a1) * r * 0.86, 0.5, Math.sin(a1) * r * 0.86],
+      [Math.cos(a1) * r, 0.5, Math.sin(a1) * r],
+      [Math.cos(a0) * r, 0.5, Math.sin(a0) * r],
+      { ...STONE, ao: 0.96 }
+    );
+  }
+  disc(s, r * 0.86, 0.24, segs, { ...STONE, ao: 0.5 });
+  disc(w, r * 0.85, 0.36, segs, WATER);
+  // Pedestal, then the upper bowl standing ON it rather than floating over the basin.
+  drum(s, 0.3, 0.22, 0.66, 8, { ...STONE, y: 0.36, cap: false, aoBottom: 0.6 });
+  drum(s, 0.24, 0.56, 0.24, 10, { ...STONE, y: 1.02, cap: false });
+  s.ringWall(ringOf(0.46, 10), 1.26, 1.34, { ...STONE, inward: true });
+  drum(s, 0.56, 0.56, 0.12, 10, { ...STONE, y: 1.26, cap: false });
+  disc(s, 0.46, 1.2, 10, { ...STONE, ao: 0.6 });
+  disc(w, 0.45, 1.28, 10, WATER);
+  mound(s, 0.14, 0.34, 6, { ...STONE, y: 1.3 });
 };
 
 /** Guardian statue on a plinth: shield and spear, read as a silhouette. */

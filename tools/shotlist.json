@@ -43,14 +43,14 @@
   },
   {
     "name": "props",
-    "path": "/dev/props.html",
-    "query": "cam=plot&seed=7",
+    "path": "/dev/kit.html",
+    "query": "view=props&freeze=1&seed=7",
     "note": "Every registered yard, street and market prop on one sheet. Compare against 05-modular-asset-kit.png and 08-public-spaces-and-landmarks.png."
   },
   {
     "name": "trees",
-    "path": "/dev/props.html",
-    "query": "trees=1&seed=7",
+    "path": "/dev/kit.html",
+    "query": "view=trees&freeze=1&seed=7",
     "note": "Every tree archetype and understory kind. Judge canopy plan shape and the darkness underneath, not the profile."
   },
   {

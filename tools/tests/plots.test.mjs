@@ -12,6 +12,8 @@ import {
   frontage,
   inferUse,
   rejectOverlaps,
+  reconcileOverlaps,
+  coverageFraction,
   carriagewayQuads,
   hashSeed,
   overlapArea,
@@ -213,4 +215,106 @@ test('hashSeed is stable, 32-bit and spread out', () => {
   assert.ok(seen.size > 4990, `only ${seen.size} distinct seeds in 5000 ids`);
   // OSM ids above 2^32 must not collide with their low halves.
   assert.notEqual(hashSeed(2 ** 32 + 17), hashSeed(17));
+});
+
+test('buildRoadIndex measures the true perpendicular distance to a segment', () => {
+  // A single 400 m segment: a sampled centreline would report up to half the sample step too much.
+  const index = buildRoadIndex([{ id: 0, centerline: [-200, 0, 200, 0] }]);
+  for (const x of [-197.3, -61.7, 0.4, 13.9, 121.5, 198.2]) {
+    const hit = index.nearest(x, 17);
+    assert.equal(hit.roadId, 0);
+    assert.ok(Math.abs(hit.distance - 17) < 1e-9, `x=${x} distance=${hit.distance}`);
+    assert.ok(Math.abs(hit.x - x) < 1e-9 && Math.abs(hit.z) < 1e-9);
+  }
+  // Past the end of the segment the nearest point is the endpoint itself.
+  const beyond = index.nearest(230, 0);
+  assert.ok(Math.abs(beyond.distance - 30) < 1e-9);
+});
+
+test('buildRoadIndex refuses hits beyond maxRadius', () => {
+  const index = buildRoadIndex([{ id: 0, centerline: [-200, 0, 200, 0] }]);
+  assert.equal(index.nearest(0, 61, 60), null);
+  assert.ok(index.nearest(0, 59, 60));
+  // The ring walk must not smuggle back a hit from the far corner of the last ring.
+  assert.equal(index.nearest(0, 84, 60), null);
+  assert.equal(index.nearest(0, 30, 5), null);
+});
+
+test('frontage squares the plot against its own kerb', () => {
+  // Street bearing 0.35 rad off east; the footprint is drawn 8 degrees skew to it.
+  const bearing = 0.35;
+  const road = {
+    id: 0,
+    centerline: [-200 * Math.cos(bearing), -200 * Math.sin(bearing), 200 * Math.cos(bearing), 200 * Math.sin(bearing)],
+  };
+  const index = buildRoadIndex([road]);
+  const nx = Math.sin(bearing);
+  const nz = -Math.cos(bearing);
+  const centre = { cx: -nx * 30, cz: -nz * 30, w: 16, d: 10 };
+  const skewYaw = -bearing + 0.14;
+  const footprint = rotatedRect(centre.cx, centre.cz, 16, 10, skewYaw);
+  const fr = frontage({ ...centre, yaw: skewYaw }, index, { footprint });
+  const { vx, vz } = rectAxes(fr.yaw);
+  // -z must be the exact kerb normal, not the footprint's own axis.
+  assert.ok(Math.abs(vx - nx) < 1e-9 && Math.abs(vz - nz) < 1e-9, `snapped to (${vx}, ${vz}) not (${nx}, ${nz})`);
+
+  // Squaring the parcel to the kerb must RE-FIT it, not just spin it: a 16 x 10 footprint turned
+  // 0.14 rad off the street needs a 17.24 x 12.13 parcel to stay inside its own boundary.
+  assert.ok(Math.abs(fr.w - (16 * Math.cos(0.14) + 10 * Math.sin(0.14))) < 1e-9, `w=${fr.w}`);
+  assert.ok(Math.abs(fr.d - (16 * Math.sin(0.14) + 10 * Math.cos(0.14))) < 1e-9, `d=${fr.d}`);
+  const axes = rectAxes(fr.yaw);
+  for (let i = 0; i + 1 < footprint.length; i += 2) {
+    const du = (footprint[i] - fr.cx) * axes.ux + (footprint[i + 1] - fr.cz) * axes.uz;
+    const dv = (footprint[i] - fr.cx) * axes.vx + (footprint[i + 1] - fr.cz) * axes.vz;
+    assert.ok(Math.abs(du) <= fr.w / 2 + 1e-9 && Math.abs(dv) <= fr.d / 2 + 1e-9, 'footprint escaped its parcel');
+  }
+  // The frontage midpoint is the re-fitted front edge, so the setback is measured from there.
+  assert.ok(Math.abs(fr.distance - (30 - fr.d / 2)) < 1e-9, `distance=${fr.distance}`);
+
+  // A footprint genuinely skew to the street keeps its own axis rather than spinning through its
+  // neighbours: the snap is refused past 30 degrees.
+  const wildYaw = -bearing + 0.9;
+  const wild = rectAxes(
+    frontage({ ...centre, yaw: wildYaw }, index, { footprint: rotatedRect(centre.cx, centre.cz, 16, 10, wildYaw) }).yaw
+  );
+  assert.ok(Math.abs(wild.vx - nx) > 1e-3 || Math.abs(wild.vz - nz) > 1e-3);
+});
+
+test('reconcileOverlaps trims the smaller parcel instead of leaving them stacked', () => {
+  const plots = [
+    { id: 0, osmId: 1, x: 0, z: 0, w: 20, d: 14, yaw: 0, footprint: rotatedRect(0, 0, 20, 14, 0) },
+    { id: 1, osmId: 2, x: 14, z: 0, w: 10, d: 12, yaw: 0, footprint: rotatedRect(14, 0, 10, 12, 0) },
+  ];
+  const { kept, dropped } = reconcileOverlaps(plots);
+  assert.equal(dropped.length, 0);
+  assert.equal(kept.length, 2);
+  assert.ok(Math.abs(overlapArea(plotPolygon(kept[0]), plotPolygon(kept[1]))) < 1e-6, 'parcels still overlap');
+  // The big house keeps its frontage; the small one loses width off the side it shares.
+  assert.equal(kept[0].w, 20);
+  assert.ok(kept[1].w < 10 && kept[1].w > 4, `trimmed to ${kept[1].w}`);
+  assert.ok(Math.abs(kept[1].x + kept[1].w / 2 - 19) < 1e-6, 'the far edge of the trimmed parcel must not move');
+});
+
+test('reconcileOverlaps deletes a parcel it cannot trim into a building plot', () => {
+  const plots = [
+    { id: 0, osmId: 1, x: 0, z: 0, w: 30, d: 30, yaw: 0, footprint: rotatedRect(0, 0, 30, 30, 0) },
+    { id: 1, osmId: 2, x: 2, z: 1, w: 8, d: 8, yaw: 0, footprint: rotatedRect(2, 1, 8, 8, 0) },
+  ];
+  const { kept, dropped } = reconcileOverlaps(plots);
+  assert.deepEqual(kept.map((p) => p.osmId), [1]);
+  assert.equal(dropped[0].reason, 'overlaps-neighbour');
+});
+
+test('coverageFraction counts the union of overlapping quads once', () => {
+  // Two 10 x 10 quads sharing half their area, as two segment quads of one road do at a bend.
+  const plot = [0, 0, 10, 0, 10, 10, 0, 10];
+  const a = [0, 0, 10, 0, 10, 10, 0, 10];
+  const b = [0, 0, 10, 0, 10, 10, 0, 10];
+  assert.ok(Math.abs(coverageFraction(plot, [a, b]) - 1) < 1e-9, 'a doubled quad must not score 200%');
+  let summed = 0;
+  for (const q of [a, b]) summed += overlapArea(plot, q);
+  assert.ok(Math.abs(summed - 200) < 1e-6, 'the sum genuinely double-counts, which is the defect');
+  assert.equal(coverageFraction(plot, []), 0);
+  assert.ok(coverageFraction(plot, [[5, 0, 10, 0, 10, 10, 5, 10]]) > 0.45);
+  assert.ok(coverageFraction(plot, [[5, 0, 10, 0, 10, 10, 5, 10]]) < 0.55);
 });

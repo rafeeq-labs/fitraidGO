@@ -123,11 +123,11 @@ export class Renderer {
 
     this.updateFn?.(this.freezeAt === null ? dt : 0, t);
 
-    // The rim term needs the sun in view space; recompute after the camera has settled.
-    rampUniforms.uSunDirView.value
-      .copy(this.sunDirWorld)
-      .transformDirection(this.isoCamera.camera.matrixWorldInverse)
-      .normalize();
+    // The rim and bounce terms need the sun and world up in view space; recompute after the
+    // camera has settled.
+    const view = this.isoCamera.camera.matrixWorldInverse;
+    rampUniforms.uSunDirView.value.copy(this.sunDirWorld).transformDirection(view).normalize();
+    rampUniforms.uUpView.value.set(0, 1, 0).transformDirection(view).normalize();
 
     this.renderer.render(this.scene, this.isoCamera.camera);
 

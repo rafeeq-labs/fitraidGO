@@ -118,13 +118,29 @@ export class MeshBuilder {
     N.copy(E1).cross(E2).normalize();
     const aoV = opts.ao ?? 1;
     const s = opts.uvScale ?? 1;
+    const off = opts.uvOffset ?? [0, 0];
     const pts = [V0, V1, V2];
+    // Generated UVs project onto whichever world plane the face most nearly lies in. Projecting
+    // everything onto XZ collapses u or v to a constant on any vertical face, which is what left
+    // gable ends, hip triangles and cone facets sampling a single column of their texture and
+    // reading as flat untextured colour.
+    const ax = Math.abs(N.x);
+    const ay = Math.abs(N.y);
+    const az = Math.abs(N.z);
+    const axis = ay >= ax && ay >= az ? 1 : ax >= az ? 0 : 2;
     for (let i = 0; i < 3; i++) {
       const p = pts[i]!;
       this.pos.push(p.x, p.y, p.z);
       this.nrm.push(N.x, N.y, N.z);
-      if (uvs && uvs[i]) this.uv.push(uvs[i]![0] / s, uvs[i]![1] / s);
-      else this.uv.push(p.x / s, p.z / s);
+      if (uvs && uvs[i]) {
+        this.uv.push(uvs[i]![0] / s + off[0], uvs[i]![1] / s + off[1]);
+      } else if (axis === 1) {
+        this.uv.push(p.x / s + off[0], p.z / s + off[1]);
+      } else if (axis === 0) {
+        this.uv.push(p.z / s + off[0], p.y / s + off[1]);
+      } else {
+        this.uv.push(p.x / s + off[0], p.y / s + off[1]);
+      }
       this.ao.push(aoV);
     }
     this.idx.push(base, base + 1, base + 2);
@@ -246,6 +262,11 @@ export class MeshBuilder {
    * A gable roof over a w by d footprint, ridge running along x.
    * `sag` lowers the ridge mid-span and `kick` lifts the eaves, both as fractions of the height:
    * the two together are what stop a roof reading as a flat triangular prism.
+   *
+   * UV contract for every slope face: **u runs along the ridge, v runs up the slope**, and u is
+   * continuous across the longitudinal segments. Courses in the roof texture stack in v, so they
+   * come out horizontal across the pitch. Restarting u at each segment put a seam every 1.5 m
+   * down the slope, which is what made every roof in the kit read as corrugated iron.
    */
   gableRoof(
     w: number,
@@ -260,6 +281,12 @@ export class MeshBuilder {
       /** Emit the two gable end walls. */
       ends?: boolean;
       y?: number;
+      /** Half-width of the ridge capping course; 0 omits it. */
+      ridgeCap?: number;
+      /** Depth of the fascia board hanging off the eave, with a soffit behind it. */
+      fascia?: number;
+      /** Where the wall below stops, so the soffit spans wall to fascia. Defaults to d/2. */
+      wallHalfDepth?: number;
     } = {}
   ): this {
     const oh = opts.overhang ?? 0.4;
@@ -269,13 +296,18 @@ export class MeshBuilder {
     const y0 = opts.y ?? 0;
     const hw = w / 2 + oh;
     const hd = d / 2 + oh;
+    const cap = opts.ridgeCap ?? 0.15;
+    const fascia = opts.fascia ?? 0.18;
+    const wallHd = opts.wallHalfDepth ?? d / 2;
+    const s = opts.uvScale ?? 1;
+    const off = opts.uvOffset ?? [0, 0];
 
     const ridgeY = (t: number): number => {
       // t in 0..1 along the ridge; a shallow sine dip reads as settled timber.
-      const s = Math.sin(Math.PI * t);
-      return y0 + height - height * sag * s;
+      const sn = Math.sin(Math.PI * t);
+      return y0 + height - height * sag * sn;
     };
-    const eaveY = (): number => y0 + height * kick * 0.35;
+    const e = y0 + height * kick * 0.35;
 
     for (let i = 0; i < segs; i++) {
       const t0 = i / segs;
@@ -284,31 +316,51 @@ export class MeshBuilder {
       const x1 = -hw + t1 * 2 * hw;
       const r0 = ridgeY(t0);
       const r1 = ridgeY(t1);
-      const e = eaveY();
+      const run: FaceOptions = { ...opts, uvOffset: [off[0] + (x0 + hw) / s, off[1]] };
       // +z slope
-      this.quad([x0, e, hd], [x1, e, hd], [x1, r1, 0], [x0, r0, 0], opts, [0.9, 0.9, 1, 1]);
+      this.quad([x0, e, hd], [x1, e, hd], [x1, r1, 0], [x0, r0, 0], run, [0.88, 0.88, 1, 1]);
       // -z slope
-      this.quad([x1, e, -hd], [x0, e, -hd], [x0, r0, 0], [x1, r1, 0], opts, [0.9, 0.9, 1, 1]);
-      // undersides of the eaves, visible from this camera angle at the overhang
-      this.quad([x1, e, hd], [x0, e, hd], [x0, e - 0.12, hd], [x1, e - 0.12, hd], {
-        ...opts,
-        ao: 0.55,
+      this.quad([x1, e, -hd], [x0, e, -hd], [x0, r0, 0], [x1, r1, 0], run, [0.88, 0.88, 1, 1]);
+      // Fascia board standing on the eave line, and the soffit behind it. The fascia is what
+      // actually casts the shadow line down the wall that the references show under every eave.
+      this.quad([x1, e, hd], [x0, e, hd], [x0, e - fascia, hd], [x1, e - fascia, hd], {
+        ...run,
+        ao: 0.7,
       });
-      this.quad([x0, e, -hd], [x1, e, -hd], [x1, e - 0.12, -hd], [x0, e - 0.12, -hd], {
-        ...opts,
-        ao: 0.55,
+      this.quad([x0, e, -hd], [x1, e, -hd], [x1, e - fascia, -hd], [x0, e - fascia, -hd], {
+        ...run,
+        ao: 0.7,
       });
+      if (hd > wallHd + 0.02) {
+        this.quad(
+          [x0, e - fascia, hd],
+          [x1, e - fascia, hd],
+          [x1, e - fascia, wallHd],
+          [x0, e - fascia, wallHd],
+          { ...run, ao: 0.5 }
+        );
+        this.quad(
+          [x1, e - fascia, -hd],
+          [x0, e - fascia, -hd],
+          [x0, e - fascia, -wallHd],
+          [x1, e - fascia, -wallHd],
+          { ...run, ao: 0.5 }
+        );
+      }
+      if (cap > 0) {
+        // A capping course over the ridge, following the sag so it never floats above the pitch.
+        const a0 = r0 - cap * 0.55;
+        const a1 = r1 - cap * 0.55;
+        const top0 = r0 + cap * 0.62;
+        const top1 = r1 + cap * 0.62;
+        this.quad([x0, a0, cap], [x1, a1, cap], [x1, top1, 0], [x0, top0, 0], run, [0.94, 0.94, 1, 1]);
+        this.quad([x1, a1, -cap], [x0, a0, -cap], [x0, top0, 0], [x1, top1, 0], run, [0.94, 0.94, 1, 1]);
+      }
     }
 
     if (opts.ends !== false) {
-      this.tri([-hw, eaveY(), -hd], [-hw, eaveY(), hd], [-hw, ridgeY(0), 0], null, {
-        ...opts,
-        ao: 0.85,
-      });
-      this.tri([hw, eaveY(), hd], [hw, eaveY(), -hd], [hw, ridgeY(1), 0], null, {
-        ...opts,
-        ao: 0.85,
-      });
+      this.tri([-hw, e, -hd], [-hw, e, hd], [-hw, ridgeY(0), 0], null, { ...opts, ao: 0.85 });
+      this.tri([hw, e, hd], [hw, e, -hd], [hw, ridgeY(1), 0], null, { ...opts, ao: 0.85 });
     }
     return this;
   }
@@ -335,16 +387,25 @@ export class MeshBuilder {
     return this;
   }
 
-  /** A cone or spire, used for the towers that mark level-3 and civic buildings. */
+  /**
+   * A cone or spire, used for the towers that mark level-3 and civic buildings.
+   *
+   * Same UV contract as the roofs: u runs around the cone, v runs up it, both continuous across
+   * rings and segments, so slate courses wrap the spire horizontally instead of running down it.
+   */
   cone(
     radius: number,
     height: number,
     segments = 10,
-    opts: FaceOptions & { y?: number; concave?: number } = {}
+    opts: FaceOptions & { y?: number; concave?: number; rings?: number } = {}
   ): this {
     const y0 = opts.y ?? 0;
     const concave = opts.concave ?? 0.25;
-    const rings = 4;
+    const rings = Math.max(1, opts.rings ?? 4);
+    const s = opts.uvScale ?? 1;
+    const off = opts.uvOffset ?? [0, 0];
+    const step = (Math.PI * 2 * radius) / segments;
+    let vRun = 0;
     for (let r = 0; r < rings; r++) {
       const t0 = r / rings;
       const t1 = (r + 1) / rings;
@@ -353,17 +414,20 @@ export class MeshBuilder {
       const rad1 = radius * (1 - t1) * (1 - concave * t1 * (1 - t1) * 4);
       const y0r = y0 + height * t0;
       const y1r = y0 + height * t1;
-      for (let s = 0; s < segments; s++) {
+      const slant = Math.hypot(rad1 - rad0, y1r - y0r);
+      for (let seg = 0; seg < segments; seg++) {
         // Angles run negative: with +y up, decreasing angle is the winding that faces outward.
-        const a0 = -(s / segments) * Math.PI * 2;
-        const a1 = -((s + 1) / segments) * Math.PI * 2;
+        const a0 = -(seg / segments) * Math.PI * 2;
+        const a1 = -((seg + 1) / segments) * Math.PI * 2;
+        const ring: FaceOptions = { ...opts, uvOffset: [off[0] + (seg * step) / s, off[1] + vRun / s] };
         const p0: [number, number, number] = [Math.cos(a0) * rad0, y0r, Math.sin(a0) * rad0];
         const p1: [number, number, number] = [Math.cos(a1) * rad0, y0r, Math.sin(a1) * rad0];
         const p2: [number, number, number] = [Math.cos(a1) * rad1, y1r, Math.sin(a1) * rad1];
         const p3: [number, number, number] = [Math.cos(a0) * rad1, y1r, Math.sin(a0) * rad1];
-        if (rad1 < 1e-4) this.tri(p0, p1, p3, null, opts);
-        else this.quad(p0, p1, p2, p3, opts, [0.92, 0.92, 1, 1]);
+        if (rad1 < 1e-4) this.tri(p0, p1, p3, null, ring);
+        else this.quad(p0, p1, p2, p3, ring, [0.92, 0.92, 1, 1]);
       }
+      vRun += slant;
     }
     return this;
   }

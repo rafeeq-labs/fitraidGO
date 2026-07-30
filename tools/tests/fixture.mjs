@@ -133,8 +133,9 @@ export function makeOsmFixture() {
   });
 
   // --- parks ---------------------------------------------------------------
-  const sydneyOuter = ring([290, -240, 480, -240, 480, -110, 290, -110], {});
-  const sydneyCutting = ring([330, -235, 350, -235, 350, -115, 330, -115], {});
+  // Clear of the Holburne Museum plot: a park is a parcel, and the compiler will not build on one.
+  const sydneyOuter = ring([390, -240, 580, -240, 580, -110, 390, -110], {});
+  const sydneyCutting = ring([430, -235, 450, -235, 450, -115, 430, -115], {});
   elements.push({
     type: 'relation',
     id: rid++,

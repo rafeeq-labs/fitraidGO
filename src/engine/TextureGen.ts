@@ -1,4 +1,11 @@
-import { CanvasTexture, Color, RepeatWrapping, SRGBColorSpace, type Texture } from 'three';
+import {
+  CanvasTexture,
+  Color,
+  LinearFilter,
+  RepeatWrapping,
+  SRGBColorSpace,
+  type Texture,
+} from 'three';
 import { makeNoise2D, fbm } from './noise.js';
 import { makeRng, type Rng } from './rng.js';
 
@@ -62,14 +69,20 @@ function makeCanvas(size: number): { canvas: HTMLCanvasElement; ctx: CanvasRende
   return { canvas, ctx };
 }
 
-function finish(canvas: HTMLCanvasElement, repeat: number, q: TextureQuality): Texture {
+function finish(
+  canvas: HTMLCanvasElement,
+  repeat: number,
+  q: TextureQuality,
+  mipmaps = true
+): Texture {
   const tex = new CanvasTexture(canvas);
   tex.colorSpace = SRGBColorSpace;
   tex.wrapS = RepeatWrapping;
   tex.wrapT = RepeatWrapping;
   tex.repeat.set(repeat, repeat);
   tex.anisotropy = q.anisotropy;
-  tex.generateMipmaps = true;
+  tex.generateMipmaps = mipmaps;
+  if (!mipmaps) tex.minFilter = LinearFilter;
   tex.needsUpdate = true;
   return tex;
 }
@@ -221,6 +234,22 @@ export interface WaterParams {
   foam: number;
 }
 
+export interface ClothParams {
+  lit: number;
+  mid: number;
+  shade: number;
+  /** Number of hanging folds across the tile. */
+  folds: number;
+}
+
+export interface LeafParams {
+  lit: number;
+  mid: number;
+  shade: number;
+  /** Leaf-clump size relative to the tile; smaller reads as denser foliage. */
+  clump: number;
+}
+
 export class TextureFactory {
   private readonly cache = new Map<string, Texture>();
   private readonly q: TextureQuality;
@@ -231,12 +260,17 @@ export class TextureFactory {
     this.q = quality;
   }
 
-  private memo(key: string, make: (rng: Rng, size: number) => HTMLCanvasElement, repeat: number): Texture {
+  private memo(
+    key: string,
+    make: (rng: Rng, size: number) => HTMLCanvasElement,
+    repeat: number,
+    mipmaps = true
+  ): Texture {
     const hit = this.cache.get(key);
     if (hit) return hit;
     let h = this.seed;
     for (let i = 0; i < key.length; i++) h = (Math.imul(h, 31) + key.charCodeAt(i)) | 0;
-    const tex = finish(make(makeRng(h), this.q.size), repeat, this.q);
+    const tex = finish(make(makeRng(h), this.q.size), repeat, this.q, mipmaps);
     this.cache.set(key, tex);
     return tex;
   }
@@ -412,21 +446,24 @@ export class TextureFactory {
             const bx = x + offset;
             const w = blockW - joint;
             const h = rowH - joint;
-            const v = rng.range(-0.05, 0.05);
-            const grad = ctx.createLinearGradient(bx, y, bx + w * 0.5, y + h);
-            grad.addColorStop(0, shiftCss(p.lit, v));
-            grad.addColorStop(0.6, shiftCss(p.mid, v * 0.5));
-            grad.addColorStop(1, css(p.shade));
+            // Per-block value variation, the spec's +/-12 luma. The gradient has to span the WHOLE
+            // block: stopping half way across leaves most of its area sitting on the last stop,
+            // which is what turned dressed ashlar into a dark grey slab.
+            const v = rng.range(-0.055, 0.055);
+            const grad = ctx.createLinearGradient(bx, y, bx + w, y + h);
+            grad.addColorStop(0, shiftCss(p.lit, v + 0.03));
+            grad.addColorStop(0.45, shiftCss(p.mid, v));
+            grad.addColorStop(1, shiftCss(p.shade, v * 0.5 + 0.04));
             ctx.fillStyle = grad;
             ctx.fillRect(bx, y, w, h);
             // Chamfered top edge catches the light; bottom edge sits in contact shadow.
-            ctx.fillStyle = css(p.lit, 0.4);
-            ctx.fillRect(bx, y, w, Math.max(1, h * 0.08));
-            ctx.fillStyle = css(p.shade, 0.5);
-            ctx.fillRect(bx, y + h - Math.max(1, h * 0.1), w, Math.max(1, h * 0.1));
+            ctx.fillStyle = css(p.lit, 0.5);
+            ctx.fillRect(bx, y, w, Math.max(1, h * 0.1));
+            ctx.fillStyle = css(p.shade, 0.35);
+            ctx.fillRect(bx, y + h - Math.max(1, h * 0.09), w, Math.max(1, h * 0.09));
           }
         }
-        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.lit, 8, 0.14);
+        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.lit, 8, 0.12);
         return canvas;
       },
       repeat
@@ -441,10 +478,12 @@ export class TextureFactory {
         const { canvas, ctx } = makeCanvas(size);
         ctx.fillStyle = css(p.mid);
         ctx.fillRect(0, 0, size, size);
-        // Two mottle passes at very different scales. The low-frequency one is what stops a large
-        // lawn reading as flat felt under a high sun, where every fragment lands in the same band.
-        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.lit, 1.4, 0.7);
-        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.lit, 4, 0.45);
+        // Three mottle passes across two octaves. The low-frequency one is what stops a large lawn
+        // reading as flat felt under a high sun, where every fragment lands in the same band; the
+        // spec wants a genuine three-value gradient, so shade and lit are both driven to full.
+        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.lit, 1.3, 0.92);
+        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.lit, 3.2, 0.55);
+        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.mid, 9, 0.3);
 
         const clumps = Math.round(180 / Math.max(p.clump, 0.2));
         for (let i = 0; i < clumps; i++) {
@@ -474,15 +513,23 @@ export class TextureFactory {
           ctx.stroke();
         }
         if (p.flowers.length && p.flowerDensity > 0) {
-          const n = Math.round(size * 0.9 * p.flowerDensity);
-          for (let i = 0; i < n; i++) {
-            const x = rng.range(0, size);
-            const y = rng.range(0, size);
-            const r = rng.range(size / 340, size / 190);
-            ctx.fillStyle = css(rng.pick(p.flowers), rng.range(0.6, 0.95));
-            ctx.beginPath();
-            ctx.arc(x, y, r, 0, Math.PI * 2);
-            ctx.fill();
+          // Wildflowers arrive in small drifts, not as an even sprinkle, and each speck has to be
+          // at least two pixels across at 512 or the mipmap eats it before the GPS camera sees it.
+          const drifts = Math.round(14 * p.flowerDensity);
+          for (let d = 0; d < drifts; d++) {
+            const cx = rng.range(0, size);
+            const cy = rng.range(0, size);
+            const spread = rng.range(size / 26, size / 12);
+            const hue = rng.pick(p.flowers);
+            for (let i = 0; i < 9; i++) {
+              const x = cx + rng.range(-spread, spread);
+              const y = cy + rng.range(-spread, spread);
+              const r = rng.range(size / 230, size / 130);
+              ctx.fillStyle = css(hue, rng.range(0.65, 1));
+              ctx.beginPath();
+              ctx.arc(x, y, r, 0, Math.PI * 2);
+              ctx.fill();
+            }
           }
         }
         return canvas;
@@ -558,6 +605,121 @@ export class TextureFactory {
         return canvas;
       },
       repeat
+    );
+  }
+
+  /**
+   * Canvas: awnings, banners, market stall roofs, pennants.
+   *
+   * The reference awnings are soft desaturated canvas with fold shading and a sagging valance, not
+   * saturated cards. Folds are painted as overlapping vertical value gradients so no facet of an
+   * awning is ever a single flat RGB, which is what the material rules ban outright.
+   */
+  cloth(key: string, p: ClothParams, repeat = 1): Texture {
+    return this.memo(
+      `cloth:${key}`,
+      (rng, size) => {
+        const { canvas, ctx } = makeCanvas(size);
+        ctx.fillStyle = css(p.mid);
+        ctx.fillRect(0, 0, size, size);
+        const foldW = size / Math.max(1, p.folds);
+        for (let i = 0; i < p.folds; i++) {
+          const x = i * foldW;
+          const grad = ctx.createLinearGradient(x, 0, x + foldW, 0);
+          grad.addColorStop(0, shiftCss(p.shade, rng.range(-0.02, 0.02)));
+          grad.addColorStop(0.42, shiftCss(p.lit, rng.range(-0.03, 0.03)));
+          grad.addColorStop(0.72, shiftCss(p.mid, rng.range(-0.02, 0.02)));
+          grad.addColorStop(1, css(p.shade));
+          ctx.fillStyle = grad;
+          ctx.fillRect(x, 0, foldW + 1, size);
+        }
+        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.lit, 6, 0.22);
+        // Weave: very low contrast cross-hatching, which keeps the cloth from reading as plastic.
+        const lines = Math.round(size / 7);
+        for (let i = 0; i < lines; i++) {
+          const y = rng.range(0, size);
+          ctx.strokeStyle = rng.chance(0.5) ? css(p.lit, 0.09) : css(p.shade, 0.11);
+          ctx.lineWidth = Math.max(1, size / 512);
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(size, y + rng.range(-2, 2));
+          ctx.stroke();
+        }
+        return canvas;
+      },
+      repeat
+    );
+  }
+
+  /**
+   * Tree canopy. Separate from `grass` because a canopy read at the GPS camera is a plan shape
+   * made of a few big dappled clumps, while a lawn is an even nap — sharing one generator is what
+   * made every tree in the kit the same speckled yellow-green as the ground it stood on.
+   */
+  leaf(key: string, p: LeafParams, repeat = 1): Texture {
+    return this.memo(
+      `leaf:${key}`,
+      (rng, size) => {
+        const { canvas, ctx } = makeCanvas(size);
+        ctx.fillStyle = css(p.mid);
+        ctx.fillRect(0, 0, size, size);
+        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.lit, 2.2, 0.8);
+        const clumps = Math.round(90 / Math.max(p.clump, 0.25));
+        for (let i = 0; i < clumps; i++) {
+          const cx = rng.range(0, size);
+          const cy = rng.range(0, size);
+          const r = size * 0.055 * p.clump * rng.range(0.55, 1.6);
+          const t = rng.next();
+          shadedBlob(
+            ctx,
+            cx,
+            cy,
+            r,
+            r * rng.range(0.72, 1),
+            rng.range(-0.6, 0.6),
+            mixCss(p.mid, p.lit, 0.5 + t * 0.5),
+            css(p.mid),
+            css(p.shade),
+            null
+          );
+        }
+        return canvas;
+      },
+      repeat
+    );
+  }
+
+  /**
+   * A radial falloff, white in the middle to black at the rim.
+   *
+   * Used as the emissive map of the additive halo materials, which is how a light source proves
+   * itself: the crystal, the lantern and the forge each get a bloom two to three times their own
+   * width plus a pool of spill on whatever they stand on. Nothing else in the kit is additive.
+   */
+  radial(key: string, p: { falloff: number; core: number }, repeat = 1): Texture {
+    return this.memo(
+      `radial:${key}`,
+      (_rng, size) => {
+        const { canvas, ctx } = makeCanvas(size);
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, size, size);
+        const c = size / 2;
+        const grad = ctx.createRadialGradient(c, c, 0, c, c, c);
+        const stops = 12;
+        for (let i = 0; i <= stops; i++) {
+          const t = i / stops;
+          const v = Math.pow(Math.max(0, 1 - t), p.falloff) * (1 + p.core * Math.pow(1 - t, 6));
+          const b = Math.round(Math.min(1, v) * 255);
+          grad.addColorStop(t, `rgb(${b},${b},${b})`);
+        }
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, size, size);
+        return canvas;
+      },
+      repeat,
+      // No mipmaps. A radial falloff mips down toward its own mean, so at any distance the halo
+      // quad samples one flat value and the bloom reads as a hard-edged translucent card.
+      false
     );
   }
 

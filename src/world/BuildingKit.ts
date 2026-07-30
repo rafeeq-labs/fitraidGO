@@ -2,12 +2,15 @@ import { LAYER } from '../engine/Palette.js';
 import { makeRng, mix } from '../engine/rng.js';
 import {
   AO,
+  TAGGED,
   UV,
   archOpening,
   awning,
   balcony,
   bannerPole,
   baseCourse,
+  bloom,
+  groundSpill,
   coneSpire,
   cornerPost,
   crossGable,
@@ -37,7 +40,18 @@ import {
   type WindowBayOptions,
 } from './KitPieces.js';
 import { placePiece } from './KitPlacement.js';
-import { withTransform, type KitContext, type KitPlacement } from './KitTypes.js';
+import {
+  ACCENT_V,
+  withTransform,
+  type FaceOptionsLike,
+  type KitContext,
+  type KitPlacement,
+} from './KitTypes.js';
+import type { MeshBuilder } from './MeshBuilder.js';
+import { buildTree } from './Vegetation.js';
+
+/** Tags glow geometry as cold crystal rather than warm window gold; see ACCENT_V in KitTypes. */
+const CRYSTAL_GLOW = { uvScale: UV.glow, ao: 1, uvOffset: [0, ACCENT_V] as [number, number] };
 
 /**
  * The family recipes: what actually stands on a plot at each level.
@@ -80,7 +94,10 @@ export const MODULE = 0.5;
 const KERB_THICKNESS = 0.34;
 const KERB_HEIGHT = 0.5;
 const POST_SIZE = 0.46;
-const POST_HEIGHT = 0.78;
+const POST_HEIGHT = 1.15;
+/** Posts at every corner and every 4.5 m along each run, per REFERENCE-SPEC 4.2. */
+const POST_PITCH = 4.5;
+const FENCE_HEIGHT = 1.15;
 /** Front face of the building to the inner face of the frontage kerb. */
 const SETBACK = 2;
 const YARD_MARGIN = 0.75;
@@ -108,10 +125,45 @@ function seedVariant(spec: BuildingSpec): number {
 // --- plot foundation ---------------------------------------------------------
 
 /**
- * Slab, kerb wall, capstones, corner posts and threshold — identical for every family and every
- * level. This is the strongest readability device in the references: it is what makes a hundred
- * different buildings read as one system, so nothing about it varies.
+ * Slab, kerb wall, capstones, piers, timber rails and threshold — identical for every family and
+ * every level. This is the strongest readability device in the references: it is what makes a
+ * hundred different buildings read as one system, so nothing about it varies.
+ *
+ * The boundary is the three-part one REFERENCE-SPEC 4.2 specifies, and all three parts have to be
+ * present or it reads as a smooth pale ribbon rather than a surveyed plot line: the 0.50 m ashlar
+ * wall with its capstone, square piers at every corner AND every 4.5 m, and a dark timber two-rail
+ * fence spanning between the piers. The frontage opening is the only gap.
  */
+function boundaryRun(ctx: KitContext, length: number, height: number, fence: boolean): void {
+  kerbRun(ctx, { length, height });
+  if (!fence || length < 1.2) return;
+  const t = ctx.channel.timber;
+  // Rails span BETWEEN the piers, from just above the capstone to the top of the post. Measured
+  // from the capstone instead they floated clear of the piers and read as a wire.
+  for (const ry of [FENCE_HEIGHT * 0.62, FENCE_HEIGHT * 0.93]) {
+    t.box(-length / 2, ry - 0.065, -0.065, length / 2, ry + 0.065, 0.065, {
+      uvScale: UV.timber,
+      uvRotate: true,
+      ao: 0.92,
+    });
+  }
+}
+
+/** Piers along one run, at both ends and every POST_PITCH between them. */
+function piersAlong(
+  ctx: KitContext,
+  from: number,
+  to: number,
+  place: (u: number) => KitPlacement
+): void {
+  const span = to - from;
+  const n = Math.max(1, Math.round(span / POST_PITCH));
+  for (let i = 0; i <= n; i++) {
+    const u = from + (span * i) / n;
+    withTransform(ctx, () => cornerPost(ctx, { size: POST_SIZE, height: POST_HEIGHT }), place(u));
+  }
+}
+
 export function buildPlotFoundation(ctx: KitContext, o: PlotFoundationSpec): void {
   const w = bucket(o.w);
   const d = bucket(o.d);
@@ -125,33 +177,28 @@ export function buildPlotFoundation(ctx: KitContext, o: PlotFoundationSpec): voi
       const insetZ = d / 2 - KERB_THICKNESS / 2;
       const clearX = w - POST_SIZE * 2;
       const clearZ = d - POST_SIZE * 2;
+      const cx = w / 2 - POST_SIZE / 2;
+      const cz = d / 2 - POST_SIZE / 2;
 
-      // Street-facing run, split by the frontage opening.
+      // Street-facing run, split by the frontage opening. No rail across the entrance.
       const side = Math.max(0, (clearX - gap) / 2);
       for (const sx of [-1, 1]) {
-        withTransform(ctx, () => kerbRun(ctx, { length: side, height: KERB_HEIGHT }), {
+        withTransform(ctx, () => boundaryRun(ctx, side, KERB_HEIGHT, false), {
           x: sx * (gap / 2 + side / 2),
           z: -insetZ,
         });
       }
-      withTransform(ctx, () => kerbRun(ctx, { length: clearX, height: KERB_HEIGHT }), {
-        z: insetZ,
-      });
+      withTransform(ctx, () => boundaryRun(ctx, clearX, KERB_HEIGHT, true), { z: insetZ });
       for (const sx of [-1, 1]) {
-        withTransform(
-          ctx,
-          () => kerbRun(ctx, { length: clearZ, height: KERB_HEIGHT }),
-          { x: sx * insetX, yaw: Math.PI / 2 }
-        );
+        withTransform(ctx, () => boundaryRun(ctx, clearZ, KERB_HEIGHT, true), {
+          x: sx * insetX,
+          yaw: Math.PI / 2,
+        });
       }
-      for (const sx of [-1, 1]) {
-        for (const sz of [-1, 1]) {
-          withTransform(ctx, () => cornerPost(ctx, { size: POST_SIZE, height: POST_HEIGHT }), {
-            x: sx * (w / 2 - POST_SIZE / 2),
-            z: sz * (d / 2 - POST_SIZE / 2),
-          });
-        }
-      }
+      piersAlong(ctx, -cx, cx, (u) => ({ x: u, z: -cz }));
+      piersAlong(ctx, -cx, cx, (u) => ({ x: u, z: cz }));
+      piersAlong(ctx, -cz, cz, (u) => ({ x: -cx, z: u }));
+      piersAlong(ctx, -cz, cz, (u) => ({ x: cx, z: u }));
       withTransform(ctx, () => thresholdSlab(ctx, { w: gap, d: KERB_THICKNESS + 0.8 }), {
         z: -(d / 2 - KERB_THICKNESS / 2),
       });
@@ -191,13 +238,17 @@ function siteOf(plotW: number, plotD: number): Site {
 /**
  * Fits a nominal footprint to a real plot. Only the footprint adapts — heights are the level
  * ladder and must never scale, or a cottage on a big plot would read as a house.
+ *
+ * `reserveW` is width set aside beside the mass for an attached feature (a furnace stack, a wing).
+ * Without it the mass grows to the full plot and the feature ends up inside the building.
  */
-function placeMass(site: Site, nomW: number, nomD: number, projection = 0): Mass {
-  const availW = site.halfX * 2;
+function placeMass(site: Site, nomW: number, nomD: number, projection = 0, reserveW = 0): Mass {
+  const availW = Math.max(2, site.halfX * 2 - reserveW);
   const availD = site.rearLimit - site.frontLimit - projection;
   const s = clamp(Math.min(availW / nomW, availD / nomD), 0.6, 1.2);
-  const w = bucket(nomW * s);
-  const d = bucket(nomD * s);
+  // Floor rather than round: a mass bucketed UP past the space it was fitted to overhangs its kerb.
+  const w = Math.max(MODULE, Math.floor((nomW * s) / MODULE) * MODULE);
+  const d = Math.max(MODULE, Math.floor((nomD * s) / MODULE) * MODULE);
   return { w, d, z: site.frontLimit + projection + d / 2 };
 }
 
@@ -261,16 +312,34 @@ function postedFace(ctx: KitContext, mass: Mass, face: WallFace, y: number, h: n
  * paved fraction is a level property, not a decoration: it is measured from the frontage inward.
  */
 function yardSurface(ctx: KitContext, plotW: number, plotD: number, paved: number): void {
-  const iw = plotW - KERB_THICKNESS * 2;
-  const id = plotD - KERB_THICKNESS * 2;
+  // The fill stops at the kerb's INNER face plus the batter its taper adds at the base. At exactly
+  // the nominal face it clipped through the wall and laid a hard green line over the ashlar.
+  const iw = plotW - KERB_THICKNESS * 2 - 0.12;
+  const id = plotD - KERB_THICKNESS * 2 - 0.12;
   const g = ctx.channel.foliage;
-  g.quad(
-    [-iw / 2, LAYER.yard, id / 2],
-    [iw / 2, LAYER.yard, id / 2],
-    [iw / 2, LAYER.yard, -id / 2],
-    [-iw / 2, LAYER.yard, -id / 2],
-    { uvScale: UV.foliage }
-  );
+  // A 3x3 grid rather than one quad, so the aAO channel can darken the metre inside the kerb line.
+  // That contact darkening is what makes the plot rim read as a boundary at thumbnail size.
+  const xs = [-iw / 2, -iw / 2 + 1.1, iw / 2 - 1.1, iw / 2];
+  const zs = [-id / 2, -id / 2 + 1.1, id / 2 - 1.1, id / 2];
+  const edge = (i: number): number => (i === 0 || i === 3 ? 0.62 : 1);
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 3; j++) {
+      const ao: [number, number, number, number] = [
+        Math.min(edge(i), edge(j + 1)),
+        Math.min(edge(i + 1), edge(j + 1)),
+        Math.min(edge(i + 1), edge(j)),
+        Math.min(edge(i), edge(j)),
+      ];
+      g.quad(
+        [xs[i]!, LAYER.yard, zs[j + 1]!],
+        [xs[i + 1]!, LAYER.yard, zs[j + 1]!],
+        [xs[i + 1]!, LAYER.yard, zs[j]!],
+        [xs[i]!, LAYER.yard, zs[j]!],
+        { uvScale: UV.foliage },
+        ao
+      );
+    }
+  }
   if (paved <= 0) return;
   const depth = id * Math.min(1, paved);
   const z1 = -id / 2 + depth;
@@ -290,7 +359,7 @@ function yardSurface(ctx: KitContext, plotW: number, plotD: number, paved: numbe
     [iw / 2, LAYER.yard + 0.02, z1],
     [iw / 2, LAYER.yard + 0.02, -id / 2],
     [-iw / 2, LAYER.yard + 0.02, -id / 2],
-    { uvScale: UV.paving }
+    TAGGED.paving
   );
 }
 
@@ -313,7 +382,7 @@ function entryPath(ctx: KitContext, plotD: number, doorZ: number, x = 0, width =
     [x + width / 2, LAYER.yard + 0.03, doorZ],
     [x + width / 2, LAYER.yard + 0.03, z0],
     [x - width / 2, LAYER.yard + 0.03, z0],
-    { uvScale: UV.paving }
+    TAGGED.paving
   );
 }
 
@@ -346,9 +415,45 @@ function crystalPair(ctx: KitContext, x: number, z: number): void {
             skip: { ny: true, py: true },
             groundAO: AO.ground,
           });
-          ctx.channel.glow.cone(0.3, 0.9, 5, { y: 2.4, concave: -0.4, uvScale: UV.glow, ao: 1 });
+          ctx.channel.glow.cone(0.3, 0.9, 5, { ...CRYSTAL_GLOW, y: 2.4, concave: -0.4 });
+          bloom(ctx, 1.9, { y: 2.9 }, 'cool');
+          groundSpill(ctx, 3.2, 0.03, 0, 'cool');
         },
         { x: sx * x, z }
+      );
+    }
+  }
+}
+
+/**
+ * Formal planting on a fully paved forecourt: four planters, clipped cypresses, a low hedge along
+ * the frontage and an urn on each gate pier.
+ *
+ * REFERENCE-SPEC 5 requires all four escalators — height, silhouette, material, yard occupancy —
+ * to move together at every step. Paving the L3 yard without filling it moved only one of them,
+ * and the tile came out 90% bare stone.
+ */
+function formalForecourt(ctx: KitContext, site: Site, frontZ: number): void {
+  const y = LAYER.plotSlab;
+  const zBand = Math.min(frontZ - 1.4, site.frontLimit + 1.2);
+  for (const sx of [-1, 1]) {
+    placePiece(ctx, 'planter', { x: sx * (site.halfX - 1.1), y, z: zBand }, { w: 1, d: 1, h: 0.55 });
+    placePiece(ctx, 'planter', { x: sx * (site.halfX - 1.1), y, z: zBand + 2.4 }, { w: 1, d: 1, h: 0.55 });
+    withTransform(ctx, () => buildTree(ctx, { archetype: 'cypress', height: 4.4, seed: sx }), {
+      x: sx * (site.halfX - 1.1),
+      y: y + 0.5,
+      z: zBand,
+    });
+    placePiece(ctx, 'urn', { x: sx * 1.9, y, z: site.frontLimit - 1.5 }, { height: 0.62 });
+  }
+  const hedge = site.halfX * 2 - 5.6;
+  if (hedge > 1.5) {
+    for (const sx of [-1, 1]) {
+      placePiece(
+        ctx,
+        'hedgeRun',
+        { x: sx * (site.halfX - 0.7), y, z: (zBand + site.rearLimit) / 2, yaw: Math.PI / 2 },
+        { length: Math.max(1.5, site.rearLimit - zBand), height: 0.95, width: 0.7 }
       );
     }
   }
@@ -385,10 +490,12 @@ function residentialL1(ctx: KitContext, site: Site, v: number): void {
 
       const chimneyX = (mirror ? 0.2 : -0.2) * (acrossRidge ? 0 : mass.w);
       const chimneyZ = acrossRidge ? (mirror ? 0.2 : -0.2) * mass.d : 0;
+      // The chimney is what lifts the L0 -> L1 step above a 3% change in silhouette height: it
+      // stands 1.9 m clear of the ridge and is built from the ground so it reads as a stack.
       withTransform(
         ctx,
-        () => squareChimney(ctx, { w: 0.7, height: ridge + 1.5 - (eaves - 1.1) }),
-        { x: chimneyX, y: eaves - 1.1, z: chimneyZ }
+        () => squareChimney(ctx, { w: 0.78, height: ridge + 1.9 - (eaves - 2.4) }),
+        { x: chimneyX, y: eaves - 2.4, z: chimneyZ }
       );
 
       const doorU = v === 1 ? mass.w * 0.16 : 0;
@@ -484,10 +591,14 @@ function residentialL2(ctx: KitContext, site: Site, v: number): void {
         { x: wingX, z: -mass.d / 2 - wingD / 2 + 1.4 }
       );
 
-      withTransform(ctx, () => dormer(ctx, { w: 1.5, h: 1.05, d: 1.3 }), {
+      // The dormer has to sit ON the pitch, so its base is solved from the roof plane at its own
+      // z. Placing it at a fixed fraction of the rise buried it, and it read as a flat decal.
+      const dormerZ = -mass.d * 0.22;
+      const roofY = eaves + rise * (1 - Math.abs(dormerZ) / (upper.d / 2));
+      withTransform(ctx, () => dormer(ctx, { w: 1.6, h: 1.15, d: 1.4, sink: 1.35 }), {
         x: -wingSide * mass.w * 0.26,
-        y: eaves + rise * 0.42,
-        z: -mass.d * 0.16,
+        y: roofY - 0.1,
+        z: dormerZ,
       });
       withTransform(ctx, () => squareChimney(ctx, { w: 0.9, height: ridge + 1.6 - (eaves - 1.4) }), {
         x: wingSide === 0 ? mass.w * 0.3 : -wingSide * mass.w * 0.34,
@@ -529,11 +640,13 @@ function residentialL3(ctx: KitContext, site: Site, v: number): void {
   const towerSide = v === 1 ? -1 : 1;
   // The entrance bay and its five steps project 4.5 m in front of the mass; the setback is
   // measured to the bottom step, so the depth has to be reserved before the mass is sized.
-  const mass = placeMass(site, 9.6, 7, 4.5);
+  const mass = placeMass(site, 9.6, 7, 4.5, 1.6);
   const base = 0.9;
-  const eaves = 6.6;
+  // REFERENCE-SPEC 5.1: eaves 8.4, ridge 14, tallest point 22. The L3 tile has to be the tallest
+  // AND the lightest thing in its row or the flagship building recedes into the backdrop.
+  const eaves = 8.4;
   const towerR = 1.9;
-  const towerH = 9.5;
+  const towerH = 12;
 
   withTransform(
     ctx,
@@ -541,7 +654,7 @@ function residentialL3(ctx: KitContext, site: Site, v: number): void {
       baseCourse(ctx, { w: mass.w, d: mass.d, h: base });
       wallBox(ctx, { w: mass.w, d: mass.d, h: eaves - base, y: base, ashlar: true });
       stringCourse(ctx, { w: mass.w, d: mass.d, y: 3.4 });
-      gableRoof(ctx, { w: mass.w, d: mass.d, y: eaves });
+      gableRoof(ctx, { w: mass.w, d: mass.d, y: eaves, ashlar: true });
       // A low parapeted wing opposite the tower. The parapet has to stand on a mass of its own,
       // or it reads as a rectangle floating over the roof.
       if (v !== 2) {
@@ -566,11 +679,16 @@ function residentialL3(ctx: KitContext, site: Site, v: number): void {
         ctx,
         () => {
           roundTower(ctx, { radius: towerR, height: towerH });
-          coneSpire(ctx, { radius: towerR * 1.28, height: 3.6, y: towerH, finialHeight: 1.1 });
-          withTransform(ctx, () => pennant(ctx, { length: 1.6, height: 0.55 }), {
-            y: towerH + 3.6 + 0.95,
+          coneSpire(ctx, { radius: towerR * 1.28, height: 4.6, y: towerH, finialHeight: 1.3 });
+          withTransform(ctx, () => pennant(ctx, { length: 1.8, height: 0.6 }), {
+            y: towerH + 4.6 + 1.15,
             x: 0.12,
           });
+          for (let i = 0; i < 3; i++) {
+            onWallFace(ctx, (['front', 'left', 'right'] as const)[i]!, towerR * 2, towerR * 2, 0, 0, () =>
+              mullionWindow(ctx, { w: 0.9, h: 1.6, y: towerH - 3.4, lights: 1, transoms: 0, arched: true })
+            );
+          }
         },
         { x: besideMass(site, mass, towerSide, towerR * 0.55, towerR * 1.3), z: -mass.d / 2 + towerR * 0.7 }
       );
@@ -625,17 +743,18 @@ function residentialL3(ctx: KitContext, site: Site, v: number): void {
   );
 
   const doorZ = mass.z - mass.d / 2 - 2.8 - 0.85;
-  yardSurface(ctx, site.plotW, site.plotD, 0.7);
+  yardSurface(ctx, site.plotW, site.plotD, 0.72);
   entryPath(ctx, site.plotD, doorZ, -towerSide * 1.2, 2.2);
   withTransform(ctx, () => crystalPair(ctx, 2.4, doorZ - 0.6), { y: LAYER.plotSlab });
   for (const sx of [-1, 1]) {
-    withTransform(ctx, () => bannerPole(ctx, { height: 4.2, clothW: 1.2, clothH: 3 }), {
-      x: sx * (site.halfX - 0.5),
+    withTransform(ctx, () => bannerPole(ctx, { height: 4.6, clothW: 1.2, clothH: 3 }), {
+      x: sx * (site.halfX - 1.6),
       y: LAYER.plotSlab,
       z: site.frontLimit - 0.9,
     });
   }
-  yardProps(ctx, site, mass, 4);
+  formalForecourt(ctx, site, doorZ);
+  yardProps(ctx, site, mass, 3);
 }
 
 // --- merchant ----------------------------------------------------------------
@@ -661,20 +780,40 @@ function merchantL1(ctx: KitContext, site: Site, v: number): void {
           );
         }
       }
-      ctx.channel.timber.box(-mass.w / 2, postH, -mass.d / 2, mass.w / 2, postH + 0.16, mass.d / 2, {
-        uvScale: UV.timber,
-        skip: { ny: true },
-        groundAO: 0.8,
-      });
-      onWallFace(ctx, 'front', mass.w, mass.d + 0.3, 0, 0, () =>
-        awning(ctx, {
-          w: mass.w + 0.5,
-          reach: 1.5,
-          y: postH + 0.6,
-          drop: 0.55,
-          striped: v === 2,
-          brackets: false,
-        })
+      // A perimeter head beam, not a deck: the canopy over a market stall is the awning itself, and
+      // a solid plate here hides it completely from the GPS camera.
+      const beam = 0.08;
+      for (const sz of [-1, 1]) {
+        const cz = sz * (mass.d / 2 - beam);
+        ctx.channel.timber.box(-mass.w / 2, postH, cz - beam, mass.w / 2, postH + 0.16, cz + beam, {
+          uvScale: UV.timber,
+          skip: { ny: true },
+          groundAO: 0.8,
+        });
+      }
+      for (const sx of [-1, 1]) {
+        const cx = sx * (mass.w / 2 - beam);
+        ctx.channel.timber.box(cx - beam, postH, -mass.d / 2, cx + beam, postH + 0.16, mass.d / 2, {
+          uvScale: UV.timber,
+          skip: { ny: true },
+          groundAO: 0.8,
+        });
+      }
+      // The canopy is the stall's roof, so it hangs from the BACK beam and runs forward over the
+      // whole footprint, rather than projecting off the front the way a shopfront awning does.
+      withTransform(
+        ctx,
+        () =>
+          awning(ctx, {
+            w: mass.w + 0.5,
+            reach: mass.d + 0.9,
+            y: postH + 0.75,
+            drop: 0.5,
+            striped: v === 2,
+            brackets: false,
+            valance: false,
+          }),
+        { z: mass.d / 2 + 0.35, yaw: Math.PI }
       );
       // Plank counter under the awning.
       ctx.channel.timber.box(-1.6, 0.86, -0.4, 1.6, 1, 0.4, {
@@ -772,49 +911,101 @@ function merchantL2(ctx: KitContext, site: Site, v: number): void {
   yardProps(ctx, site, mass, 4);
 }
 
+/**
+ * A projecting round-arched arcade: piers standing proud of the elevation, arches between them,
+ * and a moulded entablature across the top.
+ *
+ * The arcade has to be MASS, not a recess. As a set of shallow openings cut back into a flat wall
+ * it changed nothing about the silhouette, and merchant L3 was separable from L2 only by footprint
+ * and wall darkness — which REFERENCE-SPEC 10.6 auto-fails.
+ */
+function stoneArcade(ctx: KitContext, mass: Mass, bays: number, archW: number, archH: number): void {
+  const pier = 0.62;
+  const depth = 0.85;
+  const span = bays * archW + (bays + 1) * pier;
+  const z = -mass.d / 2 - depth / 2;
+  const s = ctx.channel.stone;
+  for (let i = 0; i <= bays; i++) {
+    const x = -span / 2 + i * (archW + pier) + pier / 2;
+    withTransform(ctx, () => {
+      s.box(-pier / 2, 0, -depth / 2, pier / 2, archH + 0.5, depth / 2, {
+        uvScale: UV.stone,
+        taper: 0.03,
+        skip: { ny: true, py: true },
+        groundAO: AO.ground,
+      });
+    }, { x, z });
+  }
+  // Entablature over the whole arcade, with a cornice a step lighter than the frieze below it.
+  s.box(-span / 2 - 0.2, archH + 0.5, z - depth / 2 - 0.14, span / 2 + 0.2, archH + 1.05, z + depth / 2 + 0.14, {
+    uvScale: UV.stone,
+    skip: { ny: true },
+    groundAO: 0.86,
+  });
+  s.box(-span / 2 - 0.34, archH + 1.05, z - depth / 2 - 0.24, span / 2 + 0.34, archH + 1.3, z + depth / 2 + 0.24, {
+    uvScale: UV.stone,
+    skip: { ny: true },
+    groundAO: 0.95,
+  });
+  for (let i = 0; i < bays; i++) {
+    const x = -span / 2 + pier + i * (archW + pier) + archW / 2;
+    withTransform(ctx, () => {
+      archOpening(ctx, { w: archW, h: archH, depth: 0.45, thickness: 0.28, glow: true });
+    }, { x, z: z - depth / 2, yaw: Math.PI });
+  }
+}
+
+/** A banner on a 5 m gallows bracket off the building face, as in reference 09's guild tile. */
+function gallowsBanner(ctx: KitContext, y: number, reach: number): void {
+  const m = ctx.channel.metal;
+  const o: FaceOptionsLike = { uvScale: UV.metal };
+  m.box(-0.06, y, 0, 0.06, 0.16 + y, reach, { ...o, skip: { nz: true }, groundAO: 0.85 });
+  m.tri([0, y, 0], [0, y, reach * 0.6], [0, y - reach * 0.55, 0], null, { ...o, ao: 0.8 });
+  m.tri([0, y, reach * 0.6], [0, y, 0], [0, y - reach * 0.55, 0], null, { ...o, ao: 0.8 });
+  withTransform(ctx, () => wallBanner(ctx, { w: 1.3, h: 2.9, y: y - 0.12, rod: false, z: 0 }), {
+    z: reach - 0.3,
+  });
+}
+
 function merchantL3(ctx: KitContext, site: Site, v: number): void {
-  const mass = placeMass(site, 11, 7.4, 0.4);
+  const mass = placeMass(site, 11, 7.2, 1.1);
   const base = 0.9;
-  const eaves = 6.8;
+  const eaves = 9.2;
   const rise = (ctx.kit.roof.pitch * mass.d) / 2;
-  const arches = 3;
+  const archH = 3.2;
 
   withTransform(
     ctx,
     () => {
       baseCourse(ctx, { w: mass.w, d: mass.d, h: base });
       wallBox(ctx, { w: mass.w, d: mass.d, h: eaves - base, y: base, ashlar: true });
-      stringCourse(ctx, { w: mass.w, d: mass.d, y: 3.7, thickness: 0.24 });
-      gableRoof(ctx, { w: mass.w, d: mass.d, y: eaves });
+      stringCourse(ctx, { w: mass.w, d: mass.d, y: 4.9, thickness: 0.24 });
+      gableRoof(ctx, { w: mass.w, d: mass.d, y: eaves, ashlar: true });
       coneSpire(ctx, {
         radius: 1.2,
-        height: 2.6,
+        height: 3,
         y: eaves + rise - 0.4,
         segments: 6,
-        finialHeight: 0.9,
+        finialHeight: 1,
       });
 
-      const pitchX = mass.w * 0.66;
-      for (let i = 0; i < arches; i++) {
-        const u = -pitchX / 2 + (pitchX * i) / (arches - 1);
+      const bays = mass.w >= 10 ? 3 : 2;
+      stoneArcade(ctx, mass, bays, 2.2, archH);
+      for (let i = 0; i < bays; i++) {
+        const step = 2.2 + 0.62;
+        const u = -((bays - 1) * step) / 2 + i * step;
         onWallFace(ctx, 'front', mass.w, mass.d, u, 0, () =>
-          archOpening(ctx, { w: 2.2, h: 3.2, depth: 0.55, thickness: 0.3, glow: i === 1 })
-        );
-        onWallFace(ctx, 'front', mass.w, mass.d, u, 0, () =>
-          awning(ctx, { w: 2.4, reach: 1.3, y: 3.6, drop: 0.4, striped: true })
-        );
-        onWallFace(ctx, 'front', mass.w, mass.d, u, 0, () =>
-          mullionWindow(ctx, { w: 1.3, h: 1.9, y: 4.4, lights: 2, arched: true })
+          mullionWindow(ctx, { w: 1.3, h: 2.1, y: archH + 1.7, lights: 2, arched: true })
         );
       }
       for (const sx of [-1, 1]) {
-        onWallFace(ctx, 'front', mass.w, mass.d, sx * (mass.w / 2 - 0.9), 0, () =>
-          wallBanner(ctx, { w: 1.3, h: 2.8, y: 5.6 })
+        onWallFace(ctx, 'front', mass.w, mass.d, sx * (mass.w / 2 - 0.7), archH + 3.1, () =>
+          gallowsBanner(ctx, 0, 1.7)
         );
       }
-      windowRow(ctx, mass, 'left', 2, { w: 1.1, h: 1.9, y: 4.4, timber: false }, 0.5);
-      windowRow(ctx, mass, 'right', 2, { w: 1.1, h: 1.9, y: 4.4, timber: false }, 0.5);
-      windowRow(ctx, mass, 'back', 3, { w: 1, h: 1.8, y: 4.4, timber: false }, 0.6);
+      windowRow(ctx, mass, 'left', 2, { w: 1.1, h: 2.1, y: 5.6, timber: false }, 0.5);
+      windowRow(ctx, mass, 'right', 2, { w: 1.1, h: 2.1, y: 5.6, timber: false }, 0.5);
+      windowRow(ctx, mass, 'back', 3, { w: 1, h: 1.8, y: 5.6, timber: false }, 0.6);
       if (v !== 0) {
         onWallFace(ctx, 'left', mass.w, mass.d, 0, 0, () =>
           archOpening(ctx, { w: 1.8, h: 2.8, depth: 0.45, thickness: 0.26 })
@@ -824,22 +1015,30 @@ function merchantL3(ctx: KitContext, site: Site, v: number): void {
     { y: LAYER.plotSlab, z: mass.z }
   );
 
-  const frontZ = mass.z - mass.d / 2;
+  const frontZ = mass.z - mass.d / 2 - 0.85;
   yardSurface(ctx, site.plotW, site.plotD, 1);
   withTransform(ctx, () => crystalPair(ctx, site.halfX - 0.6, frontZ - 1.6), { y: LAYER.plotSlab });
   for (const sx of [-1, 1]) {
-    withTransform(ctx, () => bannerPole(ctx, { height: 5, clothW: 1.3, clothH: 3.2 }), {
-      x: sx * (site.halfX - 2.4),
+    placePiece(ctx, 'crateStack', {
+      x: sx * (site.halfX - 1.2),
       y: LAYER.plotSlab,
-      z: site.frontLimit - 1.1,
+      z: frontZ - 0.6,
+      yaw: sx * 0.4,
     });
+    placePiece(ctx, 'urn', { x: sx * 2.2, y: LAYER.plotSlab, z: site.frontLimit - 1.4 });
   }
+  placePiece(ctx, 'produceRack', { x: 0, y: LAYER.plotSlab, z: frontZ - 1.9 });
   yardProps(ctx, site, mass, 3);
 }
 
 // --- workshop ----------------------------------------------------------------
 
-/** Stone forge with an ember glow and a short flue: the family's mark from L1 up. */
+/**
+ * Stone forge with a fire in it: the workshop family's mark from L1 up, and the one thing that
+ * names the family instantly in reference 09 — all three workshop tiles there are dominated by an
+ * orange glow. The fire is tagged as forge orange rather than window gold, gets a bloom of its
+ * own, and throws a warm pool onto the working area in front of it.
+ */
 function forge(ctx: KitContext, w: number, d: number, h: number, flue: number): void {
   ctx.channel.stone.box(-w / 2, 0, -d / 2, w / 2, h, d / 2, {
     uvScale: UV.stone,
@@ -847,10 +1046,13 @@ function forge(ctx: KitContext, w: number, d: number, h: number, flue: number): 
     skip: { ny: true },
     groundAO: AO.ground,
   });
-  ctx.channel.glow.box(-w * 0.3, h * 0.35, -d / 2 - 0.05, w * 0.3, h * 0.85, d / 2 + 0.05, {
-    uvScale: UV.glow,
-    ao: 1,
+  const g = ctx.channel.glow;
+  g.box(-w * 0.34, h * 0.32, -d / 2 - 0.06, w * 0.34, h * 0.92, d / 2 + 0.06, {
+    ...TAGGED.fire,
+    taper: -0.25,
   });
+  bloom(ctx, w * 1.4, { y: h * 0.7 }, 'fire');
+  groundSpill(ctx, w * 1.6, 0.05, -d * 0.9, 'fire');
   if (flue > 0) squareChimney(ctx, { w: 0.5, height: flue, y: h });
 }
 
@@ -917,12 +1119,18 @@ function workshopL2(ctx: KitContext, site: Site, v: number): void {
       }
       gableRoof(ctx, { w: mass.w, d: mass.d, y: eaves });
 
-      // The tall square flue is the family's identifying silhouette: 9 m, above everything else.
-      withTransform(ctx, () => squareChimney(ctx, { w: 1.1, height: 9 - base }), {
-        x: -shedSide * (mass.w / 2 - 0.9),
-        y: base,
-        z: mass.d * 0.2,
-      });
+      // The tall square flue is the family's identifying silhouette and the tallest thing on the
+      // plot by a wide margin. It stands OUTSIDE the gable wall and forward of the ridge, because
+      // a stack buried in the roof only shows its last metre and the workshop stops being tellable
+      // from a house at thumbnail size.
+      withTransform(
+        ctx,
+        () => {
+          squareChimney(ctx, { w: 1.25, height: 10.4 });
+          stringCourse(ctx, { w: 1.25, d: 1.25, y: 6.2, thickness: 0.2, overhang: 0.14 });
+        },
+        { x: -shedSide * (mass.w / 2 + 0.5), z: -mass.d * 0.18 }
+      );
 
       const shedW = 3.6;
       const shedD = 3;
@@ -937,7 +1145,7 @@ function workshopL2(ctx: KitContext, site: Site, v: number): void {
 
       // Wide work opening with the forge burning behind it.
       onWallFace(ctx, 'front', mass.w, mass.d, -shedSide * 1.3, 0, () =>
-        archOpening(ctx, { w: 2.6, h: 2.9, depth: 0.5, thickness: 0.26, glow: true })
+        archOpening(ctx, { w: 2.6, h: 2.9, depth: 0.5, thickness: 0.26, fire: true })
       );
       withTransform(ctx, () => forge(ctx, 1.4, 1.1, 1.2, 0), {
         x: -shedSide * 1.3,
@@ -959,10 +1167,14 @@ function workshopL2(ctx: KitContext, site: Site, v: number): void {
 
 function workshopL3(ctx: KitContext, site: Site, v: number): void {
   const stackSide = v === 1 ? -1 : 1;
-  const mass = placeMass(site, 11.5, 7.8, 0.4);
+  const stackR = 1.15;
+  // The furnace stack is the level-3 silhouette, so the room for it is reserved BEFORE the hall is
+  // sized. Previously the mass grew to the full plot width and swallowed the stack, which then
+  // peeked a metre over the ridge instead of towering 12.5 m clear of it.
+  const mass = placeMass(site, 10, 7.4, 0.4, stackR * 2 + 0.5);
   const base = 0.9;
   const eaves = 6.4;
-  const rise = (ctx.kit.roof.pitch * mass.d) / 2;
+  const stackX = stackSide * Math.min(mass.w / 2 + stackR + 0.2, site.halfX - stackR);
 
   withTransform(
     ctx,
@@ -970,41 +1182,45 @@ function workshopL3(ctx: KitContext, site: Site, v: number): void {
       baseCourse(ctx, { w: mass.w, d: mass.d, h: base });
       wallBox(ctx, { w: mass.w, d: mass.d, h: eaves - base, y: base, ashlar: true });
       stringCourse(ctx, { w: mass.w, d: mass.d, y: 3.6, thickness: 0.22 });
-      gableRoof(ctx, { w: mass.w, d: mass.d, y: eaves });
+      gableRoof(ctx, { w: mass.w, d: mass.d, y: eaves, ashlar: true });
 
-      withTransform(ctx, () => furnaceStack(ctx, { w: 1.8, height: 12.5 }), {
-        x: besideMass(site, mass, stackSide, 0.6, 1.3),
-        z: mass.d * 0.1,
+      // Free-standing, forward of the ridge and clear of the roof, with the fire at its foot —
+      // exactly the read of reference 09's bottom-right tile.
+      withTransform(ctx, () => furnaceStack(ctx, { w: stackR * 2, height: 15 }), {
+        x: stackX,
+        z: -mass.d / 2 + stackR * 0.5,
       });
 
-      onWallFace(ctx, 'front', mass.w, mass.d, -stackSide * 1.6, 0, () =>
-        archOpening(ctx, { w: 3.4, h: 4.2, depth: 0.6, thickness: 0.34, glow: true })
+      onWallFace(ctx, 'front', mass.w, mass.d, -stackSide * 1.4, 0, () =>
+        archOpening(ctx, { w: 3.4, h: 4.2, depth: 0.6, thickness: 0.34, fire: true })
       );
       withTransform(ctx, () => forge(ctx, 2, 1.4, 1.3, 0), {
-        x: -stackSide * 1.6,
+        x: -stackSide * 1.4,
         z: -mass.d / 2 + 1,
       });
       onWallFace(ctx, 'front', mass.w, mass.d, stackSide * (mass.w / 2 - 1.2), 0, () =>
         wallBanner(ctx, { w: 1.8, h: 2.6, y: 5.4 })
       );
-      windowRow(ctx, mass, 'front', 3, { w: 1.1, h: 1.3, y: 4.5 }, 0.6);
+      windowRow(ctx, mass, 'front', 3, { w: 1.1, h: 1.3, y: 5 }, 0.6);
       windowRow(ctx, mass, 'left', 2, { w: 1, h: 1.3, y: 2.4 }, 0.5);
-      windowRow(ctx, mass, 'right', 2, { w: 1, h: 1.3, y: 4.5 }, 0.5);
+      windowRow(ctx, mass, 'right', 2, { w: 1, h: 1.3, y: 5 }, 0.5);
       windowRow(ctx, mass, 'back', 2, { w: 1, h: 1.3, y: 2.4 }, 0.5);
 
-      // Crane jib off the gable, for the ingot yard below.
-      withTransform(
-        ctx,
-        () => {
-          ctx.channel.timber.box(-0.12, 0, -0.12, 0.12, 2.4, 2.6, {
-            uvScale: UV.timber,
-            skip: { ny: true },
-            groundAO: AO.soffit,
-          });
-          ctx.channel.metal.box(-0.06, -0.9, 2.2, 0.06, 0, 2.34, { uvScale: UV.metal, ao: 0.8 });
-        },
-        { x: -stackSide * (mass.w / 2 - 1), y: eaves + rise * 0.5, z: -mass.d / 2 - 0.2 }
-      );
+      // Hoist beam on the gable wall under the eaves. Mounted on the wall face rather than on the
+      // roof plane, which is where it used to sit — through the slate, with its bracket on top.
+      onWallFace(ctx, stackSide > 0 ? 'left' : 'right', mass.w, mass.d, mass.d * 0.1, eaves - 1.6, () => {
+        const t = ctx.channel.timber;
+        const jib: Parameters<MeshBuilder['box']>[6] = {
+          uvScale: UV.timber,
+          skip: { ny: true },
+          groundAO: AO.soffit,
+        };
+        t.box(-0.12, 0, 0, 0.12, 0.24, 1.9, jib);
+        t.box(-0.1, -0.95, 0, 0.1, 0, 0.12, jib);
+        t.tri([0, 0, 0.1], [0, 0, 1.1], [0, -0.9, 0.1], null, { uvScale: UV.timber, ao: 0.7 });
+        t.tri([0, 0, 1.1], [0, 0, 0.1], [0, -0.9, 0.1], null, { uvScale: UV.timber, ao: 0.7 });
+        ctx.channel.metal.box(-0.05, -0.85, 1.7, 0.05, 0, 1.8, { uvScale: UV.metal, ao: 0.8 });
+      });
     },
     { y: LAYER.plotSlab, z: mass.z }
   );
@@ -1037,7 +1253,7 @@ function civic(ctx: KitContext, site: Site, v: number): void {
       wallBox(ctx, { w: mass.w, d: mass.d, h: eaves - base, y: base, ashlar: true });
       stringCourse(ctx, { w: mass.w, d: mass.d, y: 4.4, thickness: 0.26, overhang: 0.16 });
       if (v === 1) hipRoof(ctx, { w: mass.w, d: mass.d, y: eaves });
-      else gableRoof(ctx, { w: mass.w, d: mass.d, y: eaves });
+      else gableRoof(ctx, { w: mass.w, d: mass.d, y: eaves, ashlar: true });
 
       withTransform(
         ctx,
@@ -1110,7 +1326,7 @@ function civic(ctx: KitContext, site: Site, v: number): void {
       ctx,
       () => {
         ctx.channel.stone.cylinder(1.9, 1.5, 0.55, 10, { uvScale: UV.stone });
-        ctx.channel.glow.cone(0.75, 4.5, 6, { y: 0.55, concave: -0.15, uvScale: UV.glow, ao: 1 });
+        ctx.channel.glow.cone(0.75, 4.5, 6, { ...CRYSTAL_GLOW, y: 0.55, concave: -0.15 });
       },
       { y: LAYER.plotSlab, z: site.rearLimit - 2.4 }
     );

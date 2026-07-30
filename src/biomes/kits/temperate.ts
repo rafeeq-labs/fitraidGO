@@ -55,12 +55,25 @@ export const temperate: BiomeKit = {
       creep: 0.25,
       creepColor: 0x55603a,
     },
+    // 10 stones across a 3 m tile lands at 0.30 m each, i.e. 11 per square metre — the middle of
+    // the reference's 8-14 band. The forecourt module has to read smaller than the building's
+    // ashlar or a paved L3 yard looks like a stone floor slab.
+    paving: {
+      stone: PALETTE.pavingStone,
+      stoneLit: PALETTE.pavingLit,
+      stoneShade: PALETTE.pavingShade,
+      grout: PALETTE.pavingJoint,
+      rows: 10,
+      jitter: 0.42,
+      creep: 0.16,
+      creepColor: 0x55603a,
+    },
     ground: {
       lit: PALETTE.grassLit,
       mid: PALETTE.grassMid,
       shade: PALETTE.grassShade,
       flowers: [PALETTE.flowerWhite, PALETTE.flowerViolet, PALETTE.flowerGold],
-      flowerDensity: 0.5,
+      flowerDensity: 1,
       clump: 1,
     },
     roof: {
@@ -70,7 +83,16 @@ export const temperate: BiomeKit = {
       ridge: PALETTE.roofRidge,
       rows: 9,
       round: 0.45,
-      variance: 0.06,
+      variance: 0.11,
+    },
+    shingle: {
+      lit: PALETTE.shingleLit,
+      mid: PALETTE.shingleMid,
+      shade: PALETTE.shingleShade,
+      ridge: PALETTE.shingleRidge,
+      rows: 8,
+      round: 0.18,
+      variance: 0.13,
     },
     wall: {
       base: PALETTE.plasterWarm,
@@ -78,11 +100,13 @@ export const temperate: BiomeKit = {
       cool: PALETTE.plasterCool,
       weathering: 0.55,
     },
+    // The mortar is the darkest value the whole wall can reach, and at cobble-grout black it
+    // dragged every ashlar elevation 40 luma under the reference's darkest dressed stone.
     stone: {
       lit: PALETTE.stoneLit,
       mid: PALETTE.stoneMid,
       shade: PALETTE.stoneShade,
-      mortar: PALETTE.cobbleGrout,
+      mortar: PALETTE.mortar,
       courses: 5,
       stagger: 1,
     },
@@ -97,11 +121,26 @@ export const temperate: BiomeKit = {
       shallow: PALETTE.waterShallow,
       foam: PALETTE.waterFoam,
     },
+    cloth: {
+      lit: PALETTE.bannerLit,
+      mid: PALETTE.bannerBlue,
+      shade: PALETTE.bannerNavy,
+      folds: 6,
+    },
+    leaf: {
+      lit: PALETTE.broadleafLit,
+      mid: PALETTE.canopyDeciduous,
+      shade: PALETTE.broadleafDark,
+      clump: 1,
+    },
   },
 
+  // Pitch is rise over half-span: 1.15 is 49 degrees, inside the reference's 48-52 band. At the
+  // old 0.85 (40 degrees) the level ladder could not reach the specified 6 / 10.5 / 14 m ridges
+  // without absurd eaves heights.
   roof: {
     material: 'slate',
-    pitch: 0.85,
+    pitch: 1.15,
     overhang: 0.45,
     sag: 0.02,
     eaveKick: 0.1,
@@ -142,13 +181,17 @@ export const temperate: BiomeKit = {
     fogNearOffset: 18,
     fogFarOffset: 330,
     sunColor: PALETTE.sunWarm,
-    sunIntensity: 3.1,
-    sunElevation: 60,
-    sunAzimuth: 70,
+    sunIntensity: 3.4,
+    sunElevation: 59,
+    // Azimuth is measured against the game camera looking up the avenue. 105 puts the sun up and
+    // to the screen-right, so shadows fall screen-LEFT and about 15 degrees toward the viewer —
+    // REFERENCE-SPEC 8.1. At 70 they fell away from the camera instead, which is why no plot in
+    // the ladder sheet caught a shadow on its own interior.
+    sunAzimuth: 105,
     skyFill: 0x7c93b8,
     groundFill: 0x6b5a42,
-    fillIntensity: 1.05,
-    exposure: 1.12,
+    fillIntensity: 1.2,
+    exposure: 1.34,
     particles: 'none',
   },
 
