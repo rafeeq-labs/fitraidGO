@@ -369,11 +369,16 @@ const GROUND_BLEND = /* glsl */ `
 	vec3 sum = rfGrassTap( c1, uv, dx, dy, sheet, mean ) * w.x
 		+ rfGrassTap( c2, uv, dx, dy, sheet, mean ) * w.y
 		+ rfGrassTap( c3, uv, dx, dy, sheet, mean ) * w.z;
-	// Variance restoration, at 70%. Averaging taps drives the result toward the mean; the full
-	// correction assumes the taps are uncorrelated, which near a cell vertex they are not, so it is
-	// eased in rather than applied flat.
-	float amp = mix( 1.0, inversesqrt( max( dot( w, w ), 1e-5 ) ), 0.7 );
-	vec3 base = max( mean + sum * amp, vec3( 0.0 ) );
+	// NO variance restoration, and that is the considered choice rather than an omission.
+	//
+	// The textbook correction divides the weighted sum by the weight vector's norm, which restores
+	// the contrast three averaged taps lose. Against sharpened weights it backfires: sharpening
+	// squeezes all the actual blending into a narrow band along each cell edge, and the correction
+	// then boosts contrast by up to 29% inside exactly that band — printing a dark web of triangle
+	// edges over every field, which is the lattice this chunk exists to remove. Sharpening already
+	// keeps one tap dominant over ~90% of each cell, so the sheet's contrast survives where it
+	// matters and the seams stay very slightly SOFT instead of very visibly dark.
+	vec3 base = max( mean + sum, vec3( 0.0 ) );
 
 	// Fine nap, then the slow drifts. The hue swing is asymmetric on purpose: ground catching sun
 	// goes yellow-green, ground in the lee goes blue-green, and a symmetric tint would only wash.
@@ -382,7 +387,7 @@ const GROUND_BLEND = /* glsl */ `
 	float drift = ( macro.g - 0.5 ) * 2.0;
 	float warm = ( macro.b - 0.5 ) * 2.0;
 	base *= 1.0 + drift * uGrassParams.x;
-	base *= mix( vec3( 1.0 ), vec3( 1.18, 1.06, 0.66 ), max( warm, 0.0 ) * uGrassParams.x );
+	base *= mix( vec3( 1.0 ), vec3( 1.12, 1.05, 0.76 ), max( warm, 0.0 ) * uGrassParams.x );
 	base *= mix( vec3( 1.0 ), vec3( 0.80, 0.96, 1.10 ), max( -warm, 0.0 ) * uGrassParams.x );
 
 	diffuseColor.rgb *= base * uGrassTint;

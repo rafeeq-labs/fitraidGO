@@ -342,12 +342,25 @@ export function blade(
     /** Width at the tip as a fraction of `width`. */
     taper?: number;
     y?: number;
+    /**
+     * AO at the root and at the tip of the strip.
+     *
+     * The default ramps 0.5 to 0.9, which is right for a blade that grows UP out of a clump: its
+     * root sits in shade and its tip is in the open. A willow strand is the same primitive flipped
+     * over, so the default lit its buried root and shaded the tip hanging free in the light —
+     * exactly inverted, and it is why a curtain of strands read as a set of dark stilts under the
+     * crown rather than as a fringe catching the sun.
+     */
+    aoBase?: number;
+    aoTip?: number;
   } = {}
 ): void {
   const segs = Math.max(1, opts.segments ?? 2);
   const curve = opts.curve ?? 0.9;
   const tilt = opts.tilt ?? 0.15;
   const taper = opts.taper ?? 0.1;
+  const aoBase = opts.aoBase ?? 0.5;
+  const aoTip = opts.aoTip ?? 0.9;
   const step = length / segs;
   let x = 0;
   let y = opts.y ?? 0;
@@ -357,8 +370,8 @@ export function blade(
     const w1 = (width * (1 - ((i + 1) / segs) * (1 - taper))) / 2;
     const nx = x + Math.sin(ang) * step;
     const ny = y + Math.cos(ang) * step;
-    const a0 = 0.5 + (i / segs) * 0.4;
-    const a1 = 0.5 + ((i + 1) / segs) * 0.4;
+    const a0 = aoBase + (i / segs) * (aoTip - aoBase);
+    const a1 = aoBase + ((i + 1) / segs) * (aoTip - aoBase);
     const ex = -Math.cos(ang) * SHEET_GAP;
     const ey = Math.sin(ang) * SHEET_GAP;
     mb.quad([x + ex, y + ey, -w0], [x + ex, y + ey, w0], [nx + ex, ny + ey, w1], [nx + ex, ny + ey, -w1],

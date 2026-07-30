@@ -8,12 +8,14 @@ import {
   Object3D,
 } from 'three';
 import type { BiomeKit } from '../biomes/BiomeKit.js';
-import { PALETTE } from '../engine/Palette.js';
+import { LAYER, PALETTE } from '../engine/Palette.js';
 import { RampMaterial } from '../engine/RampMaterial.js';
+import { grade } from '../engine/TextureGen.js';
 import { makeNoise2D } from '../engine/noise.js';
 import { makeRng, mix } from '../engine/rng.js';
 import type { Polyline, WorldTile } from '../map/types.js';
 import { MeshBuilder } from './MeshBuilder.js';
+import { assignBuilding } from './PlotBuilder.js';
 
 /**
  * Living ground: instanced grass tufts, flower clumps and small stones standing up out of the
@@ -46,6 +48,17 @@ export interface GroundCoverResult {
   meshes: Object3D[];
   stats: { instances: number; triangles: number };
 }
+
+/** The three flowering-clump silhouettes scattered through the cover. */
+const FLOWER_STYLES = ['daisy', 'spike', 'umbel'] as const;
+
+/**
+ * Metres of an empty parcel kept clear of cover at its edge.
+ *
+ * Matches PlotBuilder's own `KERB_INSET` of 0.55 with a little to spare, so blades never lean out
+ * over the kerb course that rims every plot.
+ */
+const PLOT_INSET = 0.85;
 
 /**
  * A `RampMaterial` that does not flip its normal on back faces.
@@ -546,7 +559,7 @@ export function buildGroundCover(
 
   const tuftMatrices: Matrix4[][] = TIERS.map(() => []);
   const tuftTints: Color[][] = TIERS.map(() => []);
-  const flowerMatrices: Matrix4[] = [];
+  const flowerMatrices: Matrix4[][] = FLOWER_STYLES.map(() => []);
 
   const m = new Matrix4();
   const rot = new Matrix4();
@@ -567,17 +580,25 @@ export function buildGroundCover(
       const lushness = (noise(x * 0.035, z * 0.035) + 1) / 2;
       if (rng.next() > (0.25 + lushness * 0.9) * falloff(dSq)) continue;
 
-      // Cover creeps right up to the kerb but never onto the carriageway or a plot.
-      if (mask.blocked(x, z)) continue;
+      // Cover creeps right up to the kerb but never onto the carriageway; a plot blocks it unless
+      // the plot is an empty one, which is planted ground and stands on its own slab.
+      let y = 0;
+      if (mask.blocked(x, z)) {
+        y = insidePlot(x, z);
+        if (y < 0) continue;
+      }
 
       const yaw = rng.range(0, Math.PI * 2);
       const scale = rng.range(0.95, 1.7) * (0.82 + lushness * 0.46);
       rot.makeRotationY(yaw);
       scl.makeScale(scale, scale * rng.range(0.85, 1.3), scale);
-      m.makeTranslation(x, 0, z).multiply(rot).multiply(scl);
+      m.makeTranslation(x, y, z).multiply(rot).multiply(scl);
 
-      if (rng.chance(kit.vegetation.flowers ? 0.045 : 0.012)) {
-        flowerMatrices.push(m.clone());
+      // Wildflowers are commoner on the parcels than on the verges, which is what an unbuilt plot
+      // gone over to meadow actually looks like and what the spec asks an L0 parcel to read as.
+      const flowerChance = (kit.vegetation.flowers ? 0.05 : 0.014) * (y > 0 ? 2.6 : 1);
+      if (rng.chance(flowerChance)) {
+        flowerMatrices[rng.int(0, FLOWER_STYLES.length - 1)]!.push(m.clone());
       } else {
         const tier = tierOf(dSq);
         tuftMatrices[tier]!.push(m.clone());
@@ -605,17 +626,24 @@ export function buildGroundCover(
     side: DoubleSide,
   });
 
-  // Two shapes per tier, so neither the near field nor the far field reads as one stamp.
+  /**
+   * Five shapes per tier rather than two.
+   *
+   * Two stamps at 30 000 instances is 15 000 copies of each, and a clump is a distinctive enough
+   * silhouette from above that the eye finds the repeat — the same failure as the ground sheet, one
+   * scale down. Five costs five geometries per tier, which is nothing; what it buys is that no two
+   * neighbouring tufts are ever the same object, and the near field stops reading as a stamped
+   * pattern of identical rosettes.
+   */
   let tuftInstances = 0;
   for (let tier = 0; tier < TIERS.length; tier++) {
     const all = tuftMatrices[tier]!;
     if (!all.length) continue;
     tuftInstances += all.length;
     const allTints = tuftTints[tier]!;
-    const variants = [
-      tuftGeometry(TIERS[tier]!.shape, mix(seed, tier * 7 + 1)),
-      tuftGeometry(TIERS[tier]!.shape, mix(seed, tier * 7 + 2)),
-    ];
+    const variants = [0, 1, 2, 3, 4].map((v) =>
+      tuftGeometry(TIERS[tier]!.shape, mix(seed, tier * 11 + v + 1))
+    );
     const buckets: Matrix4[][] = variants.map(() => []);
     const tints: Color[][] = variants.map(() => []);
     for (let i = 0; i < all.length; i++) {
@@ -643,44 +671,59 @@ export function buildGroundCover(
     }
   }
 
-  if (flowerMatrices.length) {
-    const { leaves, heads: headGeo } = flowerGeometry(mix(seed, 9));
-    // Single-quad parts need the double-sided material a blade already uses, and the same restraint
-    // on the rim: at 1.2 and 1.8 these were the two bluest things on the lawn.
-    const leafMaterial = new BladeMaterial({
-      // The lawn's own greens, not the CONIFER greens `foliageLit` holds in every temperate kit.
-      color: new Color(kit.palette.groundLit).lerp(new Color(kit.palette.groundMid), 0.3).getHex(),
-      vertexAO: true,
-      sway: true,
-      rim: 0.4,
-      side: DoubleSide,
-    });
-    const headMaterial = new BladeMaterial({
-      color: 0xffffff,
-      vertexAO: true,
-      sway: true,
-      rim: 0.6,
-      side: DoubleSide,
-    });
-    // Dimmed off their literal palette values: a petal quad faces UP, so it takes the full key at
-    // AO 1 and `#F2F0E0` lands over the luma-220 ceiling REFERENCE-SPEC 8.1 reserves for the three
-    // emissive families. At 0.8 they still read as white, violet and gold specks.
-    const petals = [
-      PALETTE.flowerWhite,
-      PALETTE.flowerViolet,
-      PALETTE.flowerGold,
-      kit.palette.foliageAccent,
-    ].map((c) => new Color(c).multiplyScalar(0.8));
+  let flowerInstances = 0;
+  // Single-quad parts need the double-sided material a blade already uses, and the same restraint
+  // on the rim: at 1.2 and 1.8 these were the two bluest things on the lawn.
+  const leafMaterial = new BladeMaterial({
+    // The lawn's own greens, not the CONIFER greens `foliageLit` holds in every temperate kit.
+    color: grade(kit.palette.groundLit, 1.34, 1.5, 0.16),
+    vertexAO: true,
+    sway: true,
+    rim: 0.4,
+    side: DoubleSide,
+  });
+  const headMaterial = new BladeMaterial({
+    color: 0xffffff,
+    vertexAO: true,
+    sway: true,
+    rim: 0.6,
+    side: DoubleSide,
+  });
+  /**
+   * Nine petal colours rather than four.
+   *
+   * The reference meadows carry white, cream, gold, coral, magenta, violet and a cool blue in the
+   * same field, and it is that spread — not the count of flowers — that stops a scatter reading as
+   * confetti stamped from one sheet. Each is dimmed off its literal value because a petal quad faces
+   * UP and takes the full key at AO 1, and `#F2F0E0` undimmed lands over the luma-220 ceiling
+   * REFERENCE-SPEC 8.1 reserves for the three emissive families.
+   */
+  const petals = [
+    PALETTE.flowerWhite,
+    PALETTE.flowerViolet,
+    PALETTE.flowerGold,
+    kit.palette.foliageAccent,
+    0xf6e2a0,
+    0xe4919a,
+    0xc98fc4,
+    0xfbf3dc,
+    0x9fb8e0,
+  ].map((c) => new Color(c).multiplyScalar(0.8));
+  for (let s = 0; s < FLOWER_STYLES.length; s++) {
+    const list = flowerMatrices[s]!;
+    if (!list.length) continue;
+    flowerInstances += list.length;
+    const { leaves, heads: headGeo } = flowerGeometry(mix(seed, 9 + s * 13), FLOWER_STYLES[s]!);
     for (const [geometry, material, tinted] of [
       [leaves, leafMaterial, false],
       [headGeo, headMaterial, true],
     ] as const) {
       if (!geometry.getIndex()?.count) continue;
-      const mesh = new InstancedMesh(geometry, material, flowerMatrices.length);
-      mesh.name = tinted ? 'groundcover-flower-heads' : 'groundcover-flower-leaves';
-      for (let k = 0; k < flowerMatrices.length; k++) {
-        mesh.setMatrixAt(k, flowerMatrices[k]!);
-        if (tinted) mesh.setColorAt(k, petals[k % petals.length]!);
+      const mesh = new InstancedMesh(geometry, material, list.length);
+      mesh.name = `groundcover-flower-${FLOWER_STYLES[s]}-${tinted ? 'heads' : 'leaves'}`;
+      for (let k = 0; k < list.length; k++) {
+        mesh.setMatrixAt(k, list[k]!);
+        if (tinted) mesh.setColorAt(k, petals[(k * 3 + s) % petals.length]!);
       }
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
@@ -688,12 +731,12 @@ export function buildGroundCover(
       mesh.receiveShadow = true;
       mesh.computeBoundingSphere();
       meshes.push(mesh);
-      triangles += ((geometry.getIndex()?.count ?? 0) / 3) * flowerMatrices.length;
+      triangles += ((geometry.getIndex()?.count ?? 0) / 3) * list.length;
     }
   }
 
   return {
     meshes,
-    stats: { instances: tuftInstances + flowerMatrices.length, triangles },
+    stats: { instances: tuftInstances + flowerInstances, triangles },
   };
 }

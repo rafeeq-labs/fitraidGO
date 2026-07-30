@@ -49,13 +49,13 @@ export interface TreeOptions {
   /** Carry `palette.foliageAccent` blossom. Ignored by archetypes that cannot flower. */
   blossom?: boolean;
   /**
-   * `distant` swaps in a ~60-triangle stand-in that keeps the archetype's PLAN shape and hue and
-   * throws away everything else.
+   * `distant` swaps in a cheaper stand-in that keeps the archetype's mass, plan shape and hue and
+   * throws away the parts that are genuinely sub-pixel.
    *
-   * The far half of the frame is 100-150 m out, where a canopy is 12-25 px across and every lobe,
-   * frond and limb lands inside one pixel. Paying full price out there is what forced the covered
-   * radius down to a hard edge in the first place; at a fifth of the cost the same budget reaches
-   * twice as far, which is the difference between a world that fades and one that stops.
+   * The swap happens past ~123 m, where a canopy is under 35 px: limbs, withies, frond strands and
+   * a multi-section tapered trunk all land inside a pixel out there, and dropping them costs
+   * nothing visible while reaching a third again further for the same money. What it must NOT drop
+   * is lobe count and latitude bands — see `distantTree`.
    */
   detail?: 'full' | 'distant';
 }
@@ -172,8 +172,11 @@ function conifer(ctx: KitContext, h: number, rng: Rng): void {
       bow: 0.34,
       wobble: 0.17,
       rand: () => rng.next(),
-      aoTop: 0.62 + t * 0.38,
-      aoBottom: (0.62 + t * 0.38) * 0.62,
+      // The AO floor is much higher than the broadleaf's on purpose: this multiplies an albedo
+      // that is already the darkest in the palette, and at 0.36 the bottom tier landed under the
+      // spec's luma floor of 30 with nothing left to model.
+      aoTop: 0.8 + t * 0.34,
+      aoBottom: (0.8 + t * 0.34) * 0.74,
     });
     // Frond lobes hanging off the tier, breaking its silhouette in plan and in profile.
     const lobes = 6;
@@ -189,8 +192,8 @@ function conifer(ctx: KitContext, h: number, rng: Rng): void {
         bow: 0.26,
         wobble: 0.2,
         rand: () => rng.next(),
-        aoTop: 0.58 + t * 0.42,
-        aoBottom: (0.58 + t * 0.42) * 0.58,
+        aoTop: 0.76 + t * 0.34,
+        aoBottom: (0.76 + t * 0.34) * 0.7,
       });
       f.pop();
     }
@@ -280,7 +283,11 @@ function broadleaf(ctx: KitContext, h: number, rng: Rng, blossom: boolean): void
      * the second, tree-wide gradient the benchmark canopies have — a lit shoulder over a deeply
      * shaded interior.
      */
-    const level = 0.66 + storey * 0.34;
+    // Above 1 at the top. `aAO` is a straight multiply on albedo in the ramp shader, so a value over
+    // unity is a baked TOP LIGHT rather than occlusion — the bleached sunlit crown every canopy in
+    // the benchmark carries, which no amount of key light can produce on its own because the key is
+    // one direction and a canopy's crown is a hemisphere of normals.
+    const level = 0.6 + storey * 0.55;
     canopyBlob(f, r * k, {
       ...skin,
       ry: rng.range(0.74, 0.98),
@@ -460,7 +467,7 @@ function olive(ctx: KitContext, h: number, rng: Rng, blossom: boolean): void {
       bands: 5,
       plump: 0.78,
       sag: 0.18,
-      aoTop: 0.72 + hy * 0.38,
+      aoTop: 0.66 + hy * 0.55,
       aoBottom: 0.34,
       wobble: 0.22,
       lumps: 0.17,
@@ -496,11 +503,11 @@ function willow(ctx: KitContext, h: number, rng: Rng): void {
   f.translate(0, h * 0.76, 0);
   canopyBlob(f, r * 0.44, {
     ...WILLOW,
-    ry: 0.78,
+    ry: 0.9,
     segments: 16,
     bands: 5,
-    plump: 0.72,
-    sag: 0.34,
+    plump: 0.86,
+    sag: 0.2,
     aoTop: 1,
     aoBottom: 0.38,
     wobble: 0.14,
@@ -509,24 +516,24 @@ function willow(ctx: KitContext, h: number, rng: Rng): void {
   });
   f.pop();
   const bosses = 7;
-  /** Where each outer clump sits, so the strand curtain can be hung from the same places. */
-  const hang: [number, number, number][] = [];
+  /** Where each outer clump sits and how big it is, so the fringe can hang off its own rim. */
+  const hang: [number, number, number, number][] = [];
   for (let i = 0; i < bosses; i++) {
     const a = (i / bosses) * Math.PI * 2 + rng.range(-0.16, 0.16);
     const d = r * rng.range(0.5, 0.68);
     const y = h * rng.range(0.6, 0.7);
     const k = rng.range(0.3, 0.4);
-    hang.push([a, d, y]);
+    hang.push([a, d, y, r * k]);
     f.push();
     f.translate(Math.cos(a) * d, y, Math.sin(a) * d);
     f.rotateY(a);
     canopyBlob(f, r * k, {
       ...WILLOW,
-      ry: 0.62,
+      ry: 0.8,
       segments: 13,
       bands: 5,
-      plump: 0.74,
-      sag: 0.4,
+      plump: 0.86,
+      sag: 0.24,
       aoTop: 0.86,
       aoBottom: 0.32,
       wobble: 0.2,
@@ -536,30 +543,41 @@ function willow(ctx: KitContext, h: number, rng: Rng): void {
     f.pop();
   }
   /**
-   * The curtain: 63 narrow strands, nine hung under each outer clump.
+   * The fringe: 84 strands, twelve hung round the RIM of each outer clump.
    *
-   * They were 26 strands a metre and a half wide, which at this scale are planks — from the game
-   * camera a willow looked like a green boulder with palm fronds stuck in it. A withy is a few
-   * centimetres across and reads only as a mass, so the archetype needs many thin ones, all
-   * starting under the crown that is supposed to be growing them.
+   * Two failures preceded this. At 26 strands a metre and a half wide they were planks, and the
+   * willow read as a boulder with palm fronds in it. Hung from the clump CENTRES and run down two
+   * thirds of the tree's height they became a set of thin dark legs reaching the turf — the
+   * archetype looked like it was standing on stilts. A withy curtain is short, dense and starts at
+   * the outside edge of the foliage it falls from, so the plan silhouette gains a soft fringe
+   * instead of the profile gaining a set of poles.
    */
-  const perBoss = 9;
+  const perBoss = 12;
   for (let i = 0; i < bosses; i++) {
-    const [a0, d0, y0] = hang[i]!;
+    const [a0, d0, y0, br] = hang[i]!;
     for (let j = 0; j < perBoss; j++) {
-      const a = a0 + rng.range(-0.42, 0.42);
-      const d = d0 * rng.range(0.72, 1.5);
+      // Around the clump's own rim, biased outward: the strands that matter are the ones on the
+      // outside of the crown, where they extend the plan outline.
+      const ra = (j / perBoss) * Math.PI * 2 + rng.range(-0.2, 0.2);
+      const rd = br * rng.range(0.72, 1.02);
+      const x = Math.cos(a0) * d0 + Math.cos(ra) * rd;
+      const z = Math.sin(a0) * d0 + Math.sin(ra) * rd;
       f.push();
-      f.translate(Math.cos(a) * d, y0 - h * rng.range(0.02, 0.1), Math.sin(a) * d);
-      f.rotateY(a + Math.PI / 2);
+      f.translate(x, y0 - h * rng.range(0.0, 0.06), z);
+      f.rotateY(Math.atan2(z, x) + Math.PI / 2);
       // Pi tips the strand over so it grows downward; the residual curve lets it swing outward.
-      f.rotateZ(Math.PI + rng.range(-0.14, 0.14));
-      blade(f, h * rng.range(0.26, 0.5), rng.range(0.32, 0.62), {
+      f.rotateZ(Math.PI + rng.range(-0.12, 0.12));
+      blade(f, h * rng.range(0.22, 0.42), rng.range(0.5, 0.95), {
         ...WILLOW,
         segments: 4,
-        curve: -0.34,
+        curve: -0.3,
         tilt: 0,
-        taper: 0.25,
+        taper: 0.3,
+        // The strand hangs, so its root is up in the lit crown and its tip is the fringe below.
+        // The fall-off stays SHALLOW: at 1.05 to 0.5 the tips went black and the curtain read as a
+        // set of roots dangling out of the crown rather than as foliage catching the light.
+        aoBase: 1.05,
+        aoTip: 0.76,
       });
       f.pop();
     }
@@ -575,12 +593,12 @@ function skinFor(archetype: TreeArchetype, blossom: boolean): FaceOptions {
 }
 
 /**
- * The far-field stand-in: the archetype's plan shape and hue in 40-80 triangles.
+ * The far-field stand-in: the archetype's plan shape, mass and hue at about a third of full cost.
  *
- * Everything a full tree spends its budget on — tier lobes, limbs, frond strands, a tapered
- * multi-section trunk — is sub-pixel past about 90 m at the GPS camera. What survives is the width
- * of the mass, whether it is a spike or a dome, its hue, and the shadow under it, so that is all
- * this builds.
+ * Limbs, frond strands, hanging withies and a tapered multi-section trunk are genuinely sub-pixel
+ * past the swap distance. Lobe COUNT and latitude bands are not — they are what the canopy's
+ * outline and its lit-crown-to-dark-underside gradient are made of, and dropping them is what made
+ * the middle distance read as gravel.
  */
 function distantTree(ctx: KitContext, archetype: TreeArchetype, h: number, rng: Rng): void {
   const f = ctx.channel.foliage;
@@ -606,45 +624,49 @@ function distantTree(ctx: KitContext, archetype: TreeArchetype, h: number, rng: 
     return;
   }
   /**
-   * A dome: three overlapping lobes at four bands.
+   * A dome: one crown lobe over a ring of five shoulders, at five bands.
    *
-   * Even the far field is not far. The frame runs to about 155 m and the fade starts at 0.92 of the
-   * caller's radius, so most of what this builds sits between 90 and 150 m — a canopy 25-40 px
-   * across, not the 12 px the 3-band, 2-lobe version was written for. Four bands and three lobes is
-   * still under a fifth of the full tree and it stops the middle distance reading as gravel.
+   * Even the far field is not far. The stand-in used to be a 3-band blob plus one satellite, on the
+   * arithmetic that a far tree is 12 px across. It is not: the swap happens at ~123 m and a 9 m
+   * canopy is 35 px there, so the two-lobe version read as a flat faceted lump sitting on the grass
+   * — measurably cruder than the tree next to it, which is worse than paying for the tree. Six
+   * lobes at five bands is a THIRD of the full tree's cost, not a fifth, and the transition stops
+   * being visible.
    */
   const r = h * 0.45;
-  trunk(t, h * 0.055, h * 0.44, 1, 6);
+  trunk(t, h * 0.055, h * 0.46, 1, 6);
   f.push();
-  f.translate(0, h * 0.68, 0);
-  canopyBlob(f, r * 0.8, {
+  f.translate(0, h * 0.72, 0);
+  canopyBlob(f, r * 0.74, {
     ...skin,
-    ry: 0.72,
-    segments: 14,
-    bands: 4,
-    plump: 0.74,
-    sag: 0.2,
-    aoTop: 1,
-    aoBottom: 0.4,
-    wobble: 0.16,
+    ry: 0.78,
+    segments: 16,
+    bands: 5,
+    plump: 0.72,
+    sag: 0.22,
+    aoTop: 1.12,
+    aoBottom: 0.42,
+    wobble: 0.14,
     lumps: 0.12,
     rand: () => rng.next(),
   });
   f.pop();
-  for (let i = 0; i < 2; i++) {
-    const a = rng.range(0, Math.PI * 2);
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2 + rng.range(-0.3, 0.3);
+    const d = r * rng.range(0.44, 0.62);
     f.push();
-    f.translate(Math.cos(a) * r * 0.5, h * rng.range(0.54, 0.64), Math.sin(a) * r * 0.5);
-    canopyBlob(f, r * rng.range(0.44, 0.56), {
+    f.translate(Math.cos(a) * d, h * rng.range(0.56, 0.66), Math.sin(a) * d);
+    canopyBlob(f, r * rng.range(0.42, 0.54), {
       ...skin,
-      ry: 0.66,
-      segments: 10,
-      bands: 4,
+      ry: 0.74,
+      segments: 11,
+      bands: 5,
       plump: 0.76,
-      aoTop: 1,
-      aoBottom: 0.4,
+      sag: 0.2,
+      aoTop: 0.86,
+      aoBottom: 0.36,
       wobble: 0.2,
-      lumps: 0.14,
+      lumps: 0.15,
       rand: () => rng.next(),
     });
     f.pop();

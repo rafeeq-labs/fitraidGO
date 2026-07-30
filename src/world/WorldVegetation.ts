@@ -32,8 +32,11 @@ import { DEFAULT_HEIGHT, buildTree, buildUnderstory } from './Vegetation.js';
  * of a park, and the untidy margins. Scattering them uniformly across open ground instead is what
  * makes a generated town read as wilderness with roads through it.
  *
- * A handful of prototype geometries are built once and instanced with per-instance scale, rotation
- * and tint, so a street of forty trees costs one draw and no two look alike.
+ * Twenty full-detail prototype geometries, ten distant stand-ins, four bank willows and five shrubs
+ * are built once and instanced with per-instance scale, rotation and tint, so a street of forty
+ * trees costs a handful of draws and no two look alike. Prototype COUNT is the cheapest variety
+ * there is — each one is a single vertex buffer, however many thousand instances it carries — and it
+ * is the only thing that fixes a street reading as one tree stamped repeatedly.
  */
 
 export interface WorldVegetationOptions {
@@ -120,28 +123,46 @@ function foliageMaterials(
   // The blossom accent, on the same recipe PlotBuilder uses for the trees inside plots. Without it
   // `buildWorldVegetation` had nowhere to put a flowering tree, which is why it never planted one.
   const blossom = new RampMaterial({
-    map: textures.leaf(`${kit.id}:blossom`, {
-      lit: p.foliageAccent,
+    map: textures.leaf(`${kit.id}:worldblossom`, {
+      // A LIT stop above the accent, where PlotBuilder's version has lit == mid. With both stops
+      // equal the map is one flat colour and a blossom crown has no albedo modelling whatever, so
+      // the whole tree resolves as a single pink silhouette — fine at the 3 m a plot tree occupies,
+      // a 60 px flat lump on open ground. The mid stop stays exactly on the palette's #C9A0B4.
+      lit: new Color(p.foliageAccent).lerp(new Color(0xffffff), 0.3).getHex(),
       mid: p.foliageAccent,
-      shade: new Color(p.foliageAccent).multiplyScalar(0.55).getHex(),
-      clump: 0.8,
+      shade: new Color(p.foliageAccent).multiplyScalar(0.5).getHex(),
+      clump: 0.7,
     }),
     vertexAO: true,
     sway: true,
     rim: 0.5,
   });
   const conifer = new RampMaterial({
-    // Same lift PlotBuilder applies: the ACES toe crushes `foliageLit` to luma 40, so a needle mass
-    // rendered at its literal palette value has two luma of modelling across the whole tree.
+    /**
+     * Lifted further than PlotBuilder's, and lifted at all three stops.
+     *
+     * PlotBuilder raises only the LIT stop, toward a sage, on the reasoning that the ACES toe
+     * crushes `foliageLit`. It does not go far enough for a tree standing on open ground. Measured
+     * on a capture, a world conifer came back at rgb(25,43,68) — luma 41 against the broadleaf
+     * beside it at 107, and B exceeding R by FORTY. That is not the spec's `#22302C` dark blue-green,
+     * it is navy: the hemisphere fill is a cool sky colour and it is albedo-modulated, so at a needle
+     * albedo this dark the fill is most of what comes back and it arrives blue. REFERENCE-SPEC wants
+     * the conifer to be the darkest large mass in the frame, which it still comfortably is at these
+     * values — it does not want it to be a hole.
+     *
+     * The mid and shade stops carry a deliberate GREEN bias against the blue the fill adds back.
+     */
     map: textures.leaf(`${kit.id}:conifer`, {
-      lit: new Color(p.foliageLit).lerp(new Color(0x9ab488), 0.55).getHex(),
-      mid: new Color(p.foliageLit).lerp(new Color(p.foliageDark), 0.34).getHex(),
-      shade: p.foliageDark,
+      lit: new Color(p.foliageLit).lerp(new Color(0xb4c98e), 0.72).getHex(),
+      mid: new Color(p.foliageLit).lerp(new Color(0x7f9367), 0.55).getHex(),
+      shade: new Color(p.foliageDark).lerp(new Color(p.foliageLit), 0.5).getHex(),
       clump: 0.6,
     }),
     vertexAO: true,
     sway: true,
-    rim: 0.3,
+    // 0.15, not 0.3. The rim colour is a cool `#8FA8C4`, and on a conifer — the one archetype whose
+    // silhouette is made of dozens of small skirt rims — it lands on nearly every visible edge.
+    rim: 0.15,
   });
   const willow = new RampMaterial({
     map: textures.leaf(`${kit.id}:willow`, {
@@ -203,11 +224,18 @@ function makeDappleMask(): Texture {
   return tex;
 }
 
-/** The shadow-pass stand-in for a canopy: same geometry, alpha-punched by the dapple mask. */
-function dappledDepth(mask: Texture): MeshDepthMaterial {
+/**
+ * The shadow-pass stand-in for a canopy: same geometry, alpha-punched by the dapple mask.
+ *
+ * `threshold` is how much of the mask survives — higher means more holes and a lighter shadow. The
+ * conifer needs a higher one than the broadleaf: it is eight overlapping tiers deep, so at the same
+ * threshold as a broadleaf's single-layer crown the holes in one tier are plugged by the tier under
+ * it and the archetype went on casting a solid navy spike while everything around it had softened.
+ */
+function dappledDepth(mask: Texture, threshold = 0.5): MeshDepthMaterial {
   const depth = new MeshDepthMaterial({ depthPacking: RGBADepthPacking });
   depth.alphaMap = mask;
-  depth.alphaTest = 0.5;
+  depth.alphaTest = threshold;
   return depth;
 }
 
@@ -295,7 +323,17 @@ export function buildWorldVegetation(
    * which is a fifth of the cost, so the extra reach is cheaper than the fade it replaces.
    */
   const maxRadius = radius * 1.55;
-  const farFrom = radius * 0.92;
+  /**
+   * Where the distant stand-in takes over. 1.3 of the caller's radius, not 0.92.
+   *
+   * 0.92 put the swap at 87 m. At the GPS camera's 11.8 px/m a 9 m canopy is still about NINETY
+   * pixels across at that distance — a third of the frame's width — and the stand-in is a two-lobe
+   * dome with no lobe structure. Measured on a capture, the trees standing one block ahead of the
+   * player were visibly cruder than the ones beside them: flat faceted lumps sitting on the grass.
+   * 1.3 pushes the swap to ~123 m, where a canopy is under 35 px and its lobes genuinely are
+   * sub-pixel, and the stand-in itself is no longer a two-lobe dome (see `distantTree`).
+   */
+  const farFrom = radius * 1.3;
   /** 1 out to 45% of the radius, then easing to a thin scatter at the edge. */
   const falloff = (dSq: number): number => {
     const u = Math.sqrt(dSq) / maxRadius;
@@ -344,9 +382,20 @@ export function buildWorldVegetation(
     let archetype = secondary;
     let blossom = false;
     if (code === 'P') archetype = primary;
-    else if (code === 'X') archetype = extras.length ? extras[i % extras.length]! : secondary;
+    else if (code === 'X') {
+      // Indexed by which PASS through the pattern this is, not by slot number: `i % extras.length`
+      // with a pattern of period ten and an even-length extras list picks the same archetype every
+      // time, so temperate got two cypresses and never an olive.
+      const pass = Math.floor(i / PATTERN.length);
+      archetype = extras.length ? extras[pass % extras.length]! : secondary;
+    }
     else if (code === 'B') {
-      if (kit.vegetation.blossom) blossom = true;
+      // One blossom slot in twenty, not one in ten: the pattern's period is ten and it runs twice,
+      // so the second pass demotes its blossom back to a shade tree. REFERENCE-SPEC 6.4 caps
+      // blossom at about six per frame and 13 uses exactly that; at one slot in ten the temperate
+      // frame carried a dozen, which turns the one saturated accent vegetation gets into a
+      // background colour.
+      if (kit.vegetation.blossom && i < PATTERN.length) blossom = true;
       else archetype = extras.length ? extras[i % extras.length]! : secondary;
     }
     // Height and hue walk the range on coprime strides, so consecutive slots never land close to
@@ -358,7 +407,10 @@ export function buildWorldVegetation(
       blossom,
       // 0.7 to 1.3 of the archetype's reference height. A canopy's plan diameter is a fixed
       // fraction of its height, so this is also the spread of the silhouette the camera reads.
-      heightK: 0.7 + hStep * 0.6,
+      // Blossom gets a narrower band ending at parity: REFERENCE-SPEC 6.4 puts it at 5 m against
+      // the shade tree's 9, and a 30 % oversize blossom standing alone on open lawn was the largest
+      // and the most saturated object in the frame — the accent outranking everything it accents.
+      heightK: blossom ? 0.78 + hStep * 0.24 : 0.7 + hStep * 0.6,
       hue: cStep * 2 - 1,
     });
   }
@@ -405,7 +457,10 @@ export function buildWorldVegetation(
   // the far field is 90-150 m out, which is most of the frame's ground area, not a fringe.
   const farSpecs = specs.filter((_, i) => i % 2 === 0).slice(0, 10);
   const farSets: ProtoSet[] = farSpecs.map((spec, i) => ({
-    slot: foliageSlotFor(spec.archetype, spec.blossom),
+    // No blossom past the swap distance. `distantTree` builds one dome per archetype and knows
+    // nothing about flowering, so a blossom far slot was a plain dome wearing the pink material —
+    // and REFERENCE-SPEC's six-per-frame accent has no business being spent on the far field.
+    slot: foliageSlotFor(spec.archetype, false),
     hue: spec.hue,
     parts: prototype(kit, mix(seed, 0x180 + i), (ctx) =>
       buildTree(ctx, {
@@ -592,8 +647,12 @@ export function buildWorldVegetation(
       const coarse = (noise(x * 0.011, z * 0.011) + 1) / 2;
       const fine = (noise(x * 0.055 + 31, z * 0.055 - 17) + 1) / 2;
       const field = coarse * 0.75 + fine * 0.25;
-      if (field < 0.56) continue;
-      const strength = Math.min(1, (field - 0.56) / 0.3);
+      // Outside a stand the field does not go to zero, it goes to a floor: about one specimen tree
+      // per 1200 m2 of open ground. A block of lawn with a single shade tree standing in the middle
+      // of it is the village green of REFERENCE-SPEC 6.6, and it is also what keeps a block the
+      // groves happened to miss from being a bald green rectangle.
+      const strength =
+        field < 0.56 ? 0.045 : Math.max(0.045, Math.min(1, (field - 0.56) / 0.3));
       if (rng.next() > strength * falloff(dSq)) continue;
       if (blocked(x, z, 2.4)) continue;
       plant(x, z, dSq, [0.74, 1.12]);
@@ -686,6 +745,7 @@ export function buildWorldVegetation(
   let triangles = 0;
   const dapple = makeDappleMask();
   const canopyDepth = dappledDepth(dapple);
+  const coniferDepth = dappledDepth(dapple, 0.64);
 
   const emit = (sets: ProtoSet[], list: Matrix4[], name: string, tint: boolean): void => {
     if (!list.length || !sets.length) return;
@@ -718,7 +778,9 @@ export function buildWorldVegetation(
         mesh.castShadow = true;
         mesh.receiveShadow = true;
         // Canopies cast through the dapple mask; trunks cast solid.
-        if (proto.foliage) mesh.customDepthMaterial = canopyDepth;
+        if (proto.foliage) {
+          mesh.customDepthMaterial = set.slot === 'conifer' ? coniferDepth : canopyDepth;
+        }
         mesh.computeBoundingSphere();
         meshes.push(mesh);
         triangles += ((proto.geometry.getIndex()?.count ?? 0) / 3) * instances.length;

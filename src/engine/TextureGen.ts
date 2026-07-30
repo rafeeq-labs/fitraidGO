@@ -7,7 +7,7 @@ import {
   SRGBColorSpace,
   type Texture,
 } from 'three';
-import { makeNoise2D, fbm } from './noise.js';
+import { makeNoise2D, fbm, type Noise2D } from './noise.js';
 import { makeRng, type Rng } from './rng.js';
 
 /**
@@ -170,6 +170,66 @@ function recordMean(canvas: HTMLCanvasElement, tex: Texture): void {
   tex.userData.meanLinear = new Color(r / n, g / n, b / n);
 }
 
+/**
+ * fBm that is exactly periodic over `period`, by blending the four wrapped corners.
+ *
+ * Simplex noise has no axis period, so any control map built straight from `fbm` carries a hard
+ * discontinuity at its own edge and lays a visible grid over whatever it drives. The four corner
+ * samples are far enough apart in noise space to be independent, so dividing by the weight vector's
+ * norm restores the variance the blend would otherwise lose toward the middle of the tile.
+ */
+function tileableFbm(
+  noise: Noise2D,
+  u: number,
+  v: number,
+  octaves: number,
+  period: number
+): number {
+  const fu = u / period;
+  const fv = v / period;
+  const w0 = (1 - fu) * (1 - fv);
+  const w1 = fu * (1 - fv);
+  const w2 = (1 - fu) * fv;
+  const w3 = fu * fv;
+  const sum =
+    fbm(noise, u, v, octaves) * w0 +
+    fbm(noise, u - period, v, octaves) * w1 +
+    fbm(noise, u, v - period, octaves) * w2 +
+    fbm(noise, u - period, v - period, octaves) * w3;
+  return sum / Math.sqrt(w0 * w0 + w1 * w1 + w2 * w2 + w3 * w3);
+}
+
+/**
+ * Runs `draw` at every wrapped position an element of radius `reach` touches.
+ *
+ * A tiled sheet whose elements are painted only where they fall has a hard discontinuity down two of
+ * its edges, and stochastic tiling makes that WORSE rather than better: the offset puts the sheet's
+ * own seam at a different place inside every cell, so instead of one grid of seams the field gets a
+ * scatter of straight dark lines at no particular spacing — which is exactly what the first pass of
+ * this ground shipped, and it was the last thing left reading as artificial.
+ */
+function wrapped(
+  size: number,
+  x: number,
+  y: number,
+  reach: number,
+  draw: (x: number, y: number) => void
+): void {
+  draw(x, y);
+  const l = x < reach;
+  const r = x > size - reach;
+  const t = y < reach;
+  const b = y > size - reach;
+  if (l) draw(x + size, y);
+  if (r) draw(x - size, y);
+  if (t) draw(x, y + size);
+  if (b) draw(x, y - size);
+  if (l && t) draw(x + size, y + size);
+  if (l && b) draw(x + size, y - size);
+  if (r && t) draw(x - size, y + size);
+  if (r && b) draw(x - size, y - size);
+}
+
 /** Soft mottling that breaks up any large flat fill. Applied under most generators. */
 function mottle(
   ctx: CanvasRenderingContext2D,
@@ -317,7 +377,7 @@ export interface GrassParams {
  *
  *  - `sward`  — the default: even, lush, fine-bladed lawn.
  *  - `meadow` — coarser: big tussocks, long blades, bleached patches, many more wildflowers.
- *  - `mown`   — parks and greens: short, fine, evenly lit, with faint mower stripes.
+ *  - `mown`   — parks and greens: short, fine, evenly lit, tight clumps and few flowers.
  */
 export type GrassVariant = 'sward' | 'meadow' | 'mown';
 
@@ -342,8 +402,6 @@ interface GrassRecipe {
   dry: number;
   /** Wildflower multiplier. */
   flowers: number;
-  /** Mower stripe amplitude; 0 for none. */
-  stripe: number;
 }
 
 const GRASS_RECIPES: Record<GrassVariant, GrassRecipe> = {
@@ -353,12 +411,11 @@ const GRASS_RECIPES: Record<GrassVariant, GrassRecipe> = {
     clump: [0.16, 0.62],
     clumpsPerM2: 5.2,
     tussocksPerM2: 0.55,
-    blades: [70, 190],
+    blades: [115, 300],
     bladeLen: [0.11, 0.24],
     zoning: 0.78,
     dry: 0.16,
     flowers: 0.8,
-    stripe: 0,
   },
   meadow: {
     value: 1.04,
@@ -366,12 +423,11 @@ const GRASS_RECIPES: Record<GrassVariant, GrassRecipe> = {
     clump: [0.22, 1.05],
     clumpsPerM2: 3.4,
     tussocksPerM2: 1.15,
-    blades: [95, 150],
+    blades: [145, 235],
     bladeLen: [0.16, 0.4],
     zoning: 1,
     dry: 0.55,
     flowers: 2.6,
-    stripe: 0,
   },
   mown: {
     value: 1.06,
@@ -379,12 +435,11 @@ const GRASS_RECIPES: Record<GrassVariant, GrassRecipe> = {
     clump: [0.12, 0.4],
     clumpsPerM2: 7,
     tussocksPerM2: 0.12,
-    blades: [55, 230],
+    blades: [90, 345],
     bladeLen: [0.07, 0.15],
     zoning: 0.5,
     dry: 0.08,
     flowers: 0.35,
-    stripe: 0.06,
   },
 };
 
@@ -408,9 +463,9 @@ function grassScale(
   return {
     deep: grade(p.shade, 0.72 * v, 1.35 * s, 0.06, 0x2a4038),
     shade: grade(p.shade, 1.0 * v, 1.45 * s, 0.02),
-    mid: grade(p.mid, 1.18 * v, 1.6 * s, 0.06),
-    lit: grade(p.lit, 1.28 * v, 1.7 * s, 0.16),
-    sun: grade(p.lit, 1.52 * v, 1.6 * s, 0.3),
+    mid: grade(p.mid, 1.18 * v, 1.72 * s, 0.06),
+    lit: grade(p.lit, 1.28 * v, 1.8 * s, 0.16),
+    sun: grade(p.lit, 1.46 * v, 1.58 * s, 0.28),
     straw: grade(p.lit, 1.45 * v, 1.15 * s, 0.55, 0xdcc474),
   };
 }
@@ -809,81 +864,96 @@ export class TextureFactory {
         ctx.fillStyle = css(c.mid);
         ctx.fillRect(0, 0, size, size);
 
-        // --- value zoning. Four octaves rather than three, and driven from `deep` to `sun` rather
-        // than shade-to-lit, because the reference's ground swings 100 luma across a single field.
-        mottle(ctx, size, rng.int(0, 1e6), c.deep, c.sun, 1.1, 0.95 * r.zoning, 224);
-        mottle(ctx, size, rng.int(0, 1e6), c.shade, c.lit, 2.7, 0.62 * r.zoning, 224);
-        mottle(ctx, size, rng.int(0, 1e6), c.deep, c.mid, 6.5, 0.34 * r.zoning, 224);
-        mottle(ctx, size, rng.int(0, 1e6), c.mid, c.lit, 13, 0.22 * r.zoning, 224);
+        /**
+         * Value zoning as painted BLOBS, not as an fBm mottle.
+         *
+         * Two reasons, and the second is the one that mattered. First, this file's own rule: painted
+         * elements with their own soft gradient read as hand-painted, a noise field reads as noise.
+         * Second and decisive, `mottle` runs off simplex noise, which has no period, so every pass of
+         * it wrote a hard discontinuity down two edges of the sheet — and under stochastic tiling that
+         * seam does not land on a grid where the eye can dismiss it as a texture, it lands at a
+         * different place inside every cell as an isolated straight dark line across the grass.
+         * Blobs go through `wrapped`, so the sheet is genuinely seamless and the shader is free to
+         * offset it anywhere.
+         *
+         * Three passes, from field-sized down to clump-sized, so the sheet carries value at every
+         * scale between 0.25 m and 5 m rather than at one.
+         */
+        const softBlob = (
+          x: number,
+          y: number,
+          rad: number,
+          hue: number,
+          alpha: number,
+          plateau: number
+        ): void => {
+          const grad = ctx.createRadialGradient(
+            x + LIGHT.x * rad * 0.3,
+            y + LIGHT.y * rad * 0.3,
+            0,
+            x,
+            y,
+            rad
+          );
+          grad.addColorStop(0, css(hue, alpha));
+          grad.addColorStop(plateau, css(hue, alpha * 0.55));
+          grad.addColorStop(1, css(hue, 0));
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(x, y, rad, 0, Math.PI * 2);
+          ctx.fill();
+        };
+        const zonePass = (
+          perM2: number,
+          radLo: number,
+          radHi: number,
+          alphaLo: number,
+          alphaHi: number,
+          stops: readonly number[]
+        ): void => {
+          for (let i = 0; i < count(perM2); i++) {
+            const rad = ppm * rng.range(radLo, radHi);
+            const hue = rng.pick(stops);
+            const alpha = rng.range(alphaLo, alphaHi) * r.zoning;
+            const plateau = rng.range(0.35, 0.62);
+            wrapped(size, rng.range(0, size), rng.range(0, size), rad, (x, y) =>
+              softBlob(x, y, rad, hue, alpha, plateau)
+            );
+          }
+        };
+        zonePass(0.24, 1.9, 4.6, 0.34, 0.6, [c.deep, c.shade, c.lit, c.sun, c.sun, c.straw]);
+        zonePass(1.1, 0.7, 2.1, 0.24, 0.46, [c.shade, c.mid, c.lit, c.lit, c.sun, c.straw]);
+        zonePass(3.4, 0.24, 0.85, 0.12, 0.26, [c.deep, c.shade, c.lit, c.sun]);
         // Bleached, sun-dried patches: the warm straw notes that keep a green field from reading as
         // one pigment. The benchmark's lawns are never a single hue over any two square metres.
-        if (r.dry > 0) mottle(ctx, size, rng.int(0, 1e6), c.lit, c.straw, 2.2, 0.55 * r.dry, 192);
-
-        if (r.stripe > 0) {
-          // Mower stripes: alternating lay of the blades, so a park reads as kept ground.
-          const band = ppm * 1.6;
-          const angle = rng.range(0, Math.PI);
-          ctx.save();
-          ctx.translate(size / 2, size / 2);
-          ctx.rotate(angle);
-          for (let i = -Math.ceil(size / band); i <= Math.ceil(size / band); i++) {
-            const g = ctx.createLinearGradient(i * band, 0, (i + 1) * band, 0);
-            const up = i % 2 === 0;
-            g.addColorStop(0, css(up ? c.sun : c.shade, 0));
-            g.addColorStop(0.5, css(up ? c.sun : c.shade, r.stripe));
-            g.addColorStop(1, css(up ? c.sun : c.shade, 0));
-            ctx.fillStyle = g;
-            ctx.fillRect(i * band, -size, band, size * 2);
-          }
-          ctx.restore();
-        }
+        if (r.dry > 0) zonePass(0.5 * r.dry, 1.1, 3.2, 0.3, 0.55, [c.straw, c.straw, c.sun]);
 
         // --- tussocks: the 0.5-1.4 m structure that actually survives to the GPS camera. A shaded
         // base with a lit crown offset toward the sun, which is what makes a clump read as a solid
         // standing thing rather than as a stain.
         for (let i = 0; i < count(r.tussocksPerM2); i++) {
-          const cx = rng.range(0, size);
-          const cy = rng.range(0, size);
           const rad = ppm * rng.range(r.clump[1] * 0.85, r.clump[1] * 1.9);
+          const squash = rng.range(0.7, 1);
+          const spin = rng.range(-0.7, 0.7);
           const t = rng.next();
-          shadedBlob(
-            ctx,
-            cx,
-            cy,
-            rad,
-            rad * rng.range(0.7, 1),
-            rng.range(-0.7, 0.7),
-            mixCss(c.lit, c.sun, t),
-            mixCss(c.mid, c.lit, 0.35 + t * 0.5),
-            css(c.deep),
-            css(c.deep, 0.35)
+          const crown = mixCss(c.lit, c.sun, t);
+          const body = mixCss(c.mid, c.lit, 0.35 + t * 0.5);
+          wrapped(size, rng.range(0, size), rng.range(0, size), rad * 1.3, (x, y) =>
+            shadedBlob(ctx, x, y, rad, rad * squash, spin, crown, body, css(c.shade), css(c.shade, 0.18))
           );
         }
 
         // --- sward clumps: soft overlapping discs across the whole scale. Each one is given its own
-        // stop rather than a shared tint, so the field carries value everywhere, not just where the
-        // zoning noise happens to swing.
+        // stop rather than a shared tint, so the field carries value everywhere.
         const stops = [c.deep, c.shade, c.mid, c.mid, c.lit, c.lit, c.sun, c.straw];
         for (let i = 0; i < count(r.clumpsPerM2); i++) {
-          const cx = rng.range(0, size);
-          const cy = rng.range(0, size);
           const rad = ppm * rng.range(r.clump[0], r.clump[1]);
           const hue = stops[Math.min(stops.length - 1, Math.floor(rng.next() ** 1.4 * stops.length))]!;
-          const grad = ctx.createRadialGradient(
-            cx + LIGHT.x * rad * 0.35,
-            cy + LIGHT.y * rad * 0.35,
-            0,
-            cx,
-            cy,
-            rad
+          const alpha = rng.range(0.5, 0.85);
+          const plateau = rng.range(0.45, 0.7);
+          wrapped(size, rng.range(0, size), rng.range(0, size), rad, (x, y) =>
+            softBlob(x, y, rad, hue, alpha, plateau)
           );
-          grad.addColorStop(0, css(hue, rng.range(0.5, 0.85)));
-          grad.addColorStop(0.6, css(hue, rng.range(0.2, 0.45)));
-          grad.addColorStop(1, css(hue, 0));
-          ctx.fillStyle = grad;
-          ctx.beginPath();
-          ctx.arc(cx, cy, rad, 0, Math.PI * 2);
-          ctx.fill();
         }
 
         // --- blades. Two passes: a coarse one that resolves at the street camera and a fine one
@@ -898,24 +968,27 @@ export class TextureFactory {
           alphaHi: number
         ): void => {
           for (let i = 0; i < n; i++) {
-            const x = rng.range(0, size);
-            const y = rng.range(0, size);
             const len = ppm * rng.range(lo, hi);
             const lean = rng.range(-0.5, 0.5);
             const u = rng.next();
             // Weighted toward the light end: a blade standing above the sward catches sun on its
             // upper half, and it is those catches, not the dark gaps, that read as living grass.
-            const hue = u < 0.16 ? c.deep : u < 0.34 ? c.shade : u < 0.6 ? c.lit : u < 0.88 ? c.sun : c.straw;
-            ctx.strokeStyle = css(hue, rng.range(alphaLo, alphaHi));
-            ctx.lineWidth = Math.max(1, ppm * width * rng.range(0.75, 1.35));
-            ctx.beginPath();
-            ctx.moveTo(x, y);
-            ctx.quadraticCurveTo(x + lean * len * 0.35, y - len * 0.6, x + lean * len, y - len);
-            ctx.stroke();
+            const hue =
+              u < 0.16 ? c.deep : u < 0.34 ? c.shade : u < 0.6 ? c.lit : u < 0.88 ? c.sun : c.straw;
+            const stroke = css(hue, rng.range(alphaLo, alphaHi));
+            const lw = Math.max(1, ppm * width * rng.range(0.75, 1.35));
+            wrapped(size, rng.range(0, size), rng.range(0, size), len + lw, (x, y) => {
+              ctx.strokeStyle = stroke;
+              ctx.lineWidth = lw;
+              ctx.beginPath();
+              ctx.moveTo(x, y);
+              ctx.quadraticCurveTo(x + lean * len * 0.35, y - len * 0.6, x + lean * len, y - len);
+              ctx.stroke();
+            });
           }
         };
-        bladePass(count(r.blades[0]), r.bladeLen[0], r.bladeLen[1], 0.024, 0.3, 0.62);
-        bladePass(count(r.blades[1]), r.bladeLen[0] * 0.42, r.bladeLen[1] * 0.5, 0.014, 0.18, 0.4);
+        bladePass(count(r.blades[0]), r.bladeLen[0], r.bladeLen[1], 0.028, 0.34, 0.7);
+        bladePass(count(r.blades[1]), r.bladeLen[0] * 0.42, r.bladeLen[1] * 0.5, 0.016, 0.2, 0.46);
 
         if (p.flowers.length && p.flowerDensity > 0) {
           /**
@@ -929,36 +1002,39 @@ export class TextureFactory {
            */
           const drifts = Math.round(22 * p.flowerDensity * r.flowers);
           for (let d = 0; d < drifts; d++) {
-            const cx = rng.range(0, size);
-            const cy = rng.range(0, size);
+            const dx = rng.range(0, size);
+            const dy = rng.range(0, size);
             const spread = ppm * rng.range(0.35, 1.1);
             const hue = rng.pick(p.flowers);
             const heads = rng.int(6, 14);
             for (let i = 0; i < heads; i++) {
-              const x = cx + rng.range(-spread, spread);
-              const y = cy + rng.range(-spread, spread);
+              const ox = rng.range(-spread, spread);
+              const oy = rng.range(-spread, spread);
               const rad = ppm * rng.range(0.018, 0.034);
               const petals = rng.int(4, 6);
               const spin = rng.range(0, Math.PI * 2);
-              ctx.fillStyle = css(hue, rng.range(0.7, 1));
-              for (let k = 0; k < petals; k++) {
-                const a = spin + (k / petals) * Math.PI * 2;
+              const petalCss = css(hue, rng.range(0.7, 1));
+              wrapped(size, (dx + ox + size) % size, (dy + oy + size) % size, rad * 2, (x, y) => {
+                ctx.fillStyle = petalCss;
+                for (let k = 0; k < petals; k++) {
+                  const a = spin + (k / petals) * Math.PI * 2;
+                  ctx.beginPath();
+                  ctx.ellipse(
+                    x + Math.cos(a) * rad * 0.55,
+                    y + Math.sin(a) * rad * 0.55,
+                    rad * 0.62,
+                    rad * 0.42,
+                    a,
+                    0,
+                    Math.PI * 2
+                  );
+                  ctx.fill();
+                }
+                ctx.fillStyle = css(0xf6e9a8, 0.85);
                 ctx.beginPath();
-                ctx.ellipse(
-                  x + Math.cos(a) * rad * 0.55,
-                  y + Math.sin(a) * rad * 0.55,
-                  rad * 0.62,
-                  rad * 0.42,
-                  a,
-                  0,
-                  Math.PI * 2
-                );
+                ctx.arc(x, y, rad * 0.36, 0, Math.PI * 2);
                 ctx.fill();
-              }
-              ctx.fillStyle = css(0xf6e9a8, 0.85);
-              ctx.beginPath();
-              ctx.arc(x, y, rad * 0.36, 0, Math.PI * 2);
-              ctx.fill();
+              });
             }
           }
         }
@@ -994,9 +1070,9 @@ export class TextureFactory {
             const v = (y / size) * 4;
             const i = (y * size + x) * 4;
             const clamp01 = (t: number): number => Math.max(0, Math.min(1, t));
-            img.data[i] = clamp01(fbm(n1, u, v, 4) * 0.85 + 0.5) * 255;
-            img.data[i + 1] = clamp01(fbm(n2, u * 0.55, v * 0.55, 4) * 0.8 + 0.5) * 255;
-            img.data[i + 2] = clamp01(fbm(n3, u * 1.7, v * 1.7, 3) * 0.7 + 0.5) * 255;
+            img.data[i] = clamp01(tileableFbm(n1, u, v, 4, 4) * 0.85 + 0.5) * 255;
+            img.data[i + 1] = clamp01(tileableFbm(n2, u, v, 3, 4) * 0.8 + 0.5) * 255;
+            img.data[i + 2] = clamp01(tileableFbm(n3, u * 2, v * 2, 3, 8) * 0.7 + 0.5) * 255;
             img.data[i + 3] = 255;
           }
         }
@@ -1028,7 +1104,8 @@ export class TextureFactory {
           for (let x = 0; x < size; x++) {
             const u = (x / size) * 16;
             const v = (y / size) * 16;
-            const n = fbm(a, u, v, 3) * 0.62 + fbm(b, u * 3.1, v * 3.1, 2) * 0.38;
+            const n =
+              tileableFbm(a, u, v, 3, 16) * 0.62 + tileableFbm(b, u * 3, v * 3, 2, 48) * 0.38;
             const t = Math.max(0, Math.min(1, n * 0.62 + 0.5));
             const i = (y * size + x) * 4;
             img.data[i] = t * 255;
