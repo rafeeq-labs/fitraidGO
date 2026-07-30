@@ -193,16 +193,29 @@ export function buildTileSurfaces(
     emitFlatMesh(b.park, park.mesh, LAYER.park, park.kind === 'forest' ? 9 : 5.5);
   }
 
+  const roadTile = kit.textures.road.sheetScale ?? 1;
   for (const road of tile.roads) {
-    const uv = road.klass === 'footway' || road.klass === 'path' ? 3 : 4.5;
-    emitFlatMesh(b.road, road.ribbon, road.bridge ? LAYER.bridgeDeck : LAYER.road, uv, 1, road.width);
+    // Metres of carriageway per cobble tile, DERIVED from the sheet the kit authors rather than
+    // fixed. A kit that doubles its road sheet (`sheetScale`) and doubles its sett count across it
+    // wants twice the tile too: the sett stays the same size on the ground and only the wavelength of
+    // the repeat changes. Hard-coding 9 here would have given every other biome — which still
+    // authors 13 setts on a 1024 px sheet — 0.7 m boulders for a carriageway.
+    const uv = 4.5 * roadTile;
+    emitFlatMesh(
+      b.road,
+      road.ribbon,
+      road.bridge ? LAYER.bridgeDeck : LAYER.road,
+      road.klass === 'footway' || road.klass === 'path' ? uv * (3 / 4.5) : uv,
+      1,
+      road.width
+    );
     for (const strip of road.kerbs) {
       emitKerb(b.kerb, strip, LAYER.kerb, LAYER.road - 0.02, 1.4, 0.35);
     }
   }
 
   for (const junction of tile.junctions) {
-    emitFlatMesh(b.road, junction.pad, LAYER.junction, 4.5);
+    emitFlatMesh(b.road, junction.pad, LAYER.junction, 4.5 * roadTile);
   }
 
   if (!options.skipWater) {
@@ -214,7 +227,7 @@ export function buildTileSurfaces(
       }
     }
     for (const bridge of tile.bridges) {
-      emitFlatMesh(b.road, bridge.deck, LAYER.bridgeDeck, 4.5, 1, bridge.width);
+      emitFlatMesh(b.road, bridge.deck, LAYER.bridgeDeck, 4.5 * roadTile, 1, bridge.width);
       // Parapets along both sides of the deck, walked from the deck's boundary edges.
       emitKerb(b.stone, bridge.deck, LAYER.bridgeDeck + 0.85, LAYER.bridgeDeck - 0.35, 1.4, bridge.width);
     }

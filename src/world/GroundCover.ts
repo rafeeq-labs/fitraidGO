@@ -553,9 +553,13 @@ export function buildGroundCover(
    * they stand in — a dark speckle over bright turf, which is the opposite of the reference, where
    * the blades are the brightest thing on the ground because they are what is catching the sun. The
    * dark end now sits at the sheet's mid and the lit end above its sun stop.
+   *
+   * Re-synced when the sheets were rebuilt against the supplied reference art: the sheet's sun stop
+   * moved from luma 164 to 189, which left the old 1.62 lit end sitting UNDER it and the tufts once
+   * again reading as speckle rather than as the blades catching the sun.
    */
   const tuftDark = new Color(grade(kit.palette.groundMid, 1.16, 1.55, 0.08));
-  const tuftLit = new Color(grade(kit.palette.groundLit, 1.62, 1.6, 0.32));
+  const tuftLit = new Color(grade(kit.palette.groundLit, 1.72, 1.6, 0.3));
 
   const tuftMatrices: Matrix4[][] = TIERS.map(() => []);
   const tuftTints: Color[][] = TIERS.map(() => []);

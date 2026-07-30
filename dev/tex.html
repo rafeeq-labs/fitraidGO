@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>RaidFit — ground material sheet</title>
+  <style>
+    html, body { margin: 0; background: #101010; }
+    #grid { display: grid; grid-template-columns: repeat(4, 440px); grid-auto-rows: 440px; gap: 0; }
+    #grid canvas { width: 440px; height: 440px; display: block; image-rendering: auto; }
+  </style>
+  <script type="importmap">
+    { "imports": { "three": "/vendor/three/three.module.js", "earcut": "/vendor/earcut/earcut.js" } }
+  </script>
+</head>
+<body>
+  <div id="grid"></div>
+  <script type="module">
+    import { TextureFactory } from '/dist/js/engine/TextureGen.js';
+    import { temperate } from '/dist/js/biomes/kits/temperate.js';
+
+    const f = new TextureFactory(7);
+    const t = temperate.textures;
+    const grid = document.getElementById('grid');
+    const cells = [
+      f.grass('t', t.ground, 1, 'meadow'),
+      f.grass('t', t.ground, 1, 'mown'),
+      f.grass('t', t.ground, 1, 'sward'),
+      f.granular('gravel', { base: 0xa8946f, lit: 0xd8c79a, shade: 0x6d6049, grain: 1 }),
+      f.cobble('t', t.road),
+      f.flagstone('t', t.paving),
+      f.groundMacro('t'),
+      f.groundDetail('t'),
+    ];
+    const mode = new URLSearchParams(location.search).get('mode') || 'sheet';
+    for (const tex of cells) {
+      const src = tex.image;
+      const c = document.createElement('canvas');
+      c.width = 440; c.height = 440;
+      const ctx = c.getContext('2d');
+      ctx.imageSmoothingQuality = 'high';
+      if (mode === 'tile') {
+        // 2x2 copies: any wrap seam shows as a cross through the middle.
+        for (let y = 0; y < 2; y++) for (let x = 0; x < 2; x++) ctx.drawImage(src, x * 220, y * 220, 220, 220);
+      } else if (mode === 'zoom') {
+        // Native 1:1 crop, so blade and joint detail is judged at authoring resolution.
+        ctx.drawImage(src, 0, 0, 440, 440, 0, 0, 440, 440);
+      } else {
+        ctx.drawImage(src, 0, 0, 440, 440);
+      }
+      grid.appendChild(c);
+    }
+    window.__RAIDFIT_READY = true;
+  </script>
+</body>
+</html>

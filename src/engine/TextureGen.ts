@@ -230,7 +230,16 @@ function wrapped(
   if (r && b) draw(x - size, y - size);
 }
 
-/** Soft mottling that breaks up any large flat fill. Applied under most generators. */
+/**
+ * Soft mottling that breaks up any large flat fill. Applied under most generators.
+ *
+ * PERIODIC, via `tileableFbm`. It was not, and every sheet that used it — cobble, flagstone,
+ * plaster, ashlar, water, granular — carried a hard value discontinuity down two of its own edges
+ * where the unwrapped simplex field jumped. On a 512 px wall that was a hairline nobody found; at
+ * 1024 px on ground-scale surfaces it is a visible wrap seam, and the same defect had already been
+ * diagnosed and fixed once for grass. The domain sampled here is exactly [0, scale) in both axes,
+ * so `scale` is also the period.
+ */
 function mottle(
   ctx: CanvasRenderingContext2D,
   size: number,
@@ -245,11 +254,67 @@ function mottle(
   const step = Math.max(2, Math.round(size / cells));
   for (let y = 0; y < size; y += step) {
     for (let x = 0; x < size; x += step) {
-      const n = fbm(noise, (x / size) * scale, (y / size) * scale, 4);
-      const t = (n + 1) / 2;
+      const n = tileableFbm(noise, (x / size) * scale, (y / size) * scale, 4, scale);
+      const t = Math.max(0, Math.min(1, (n + 1) / 2));
       ctx.fillStyle = mixCss(lo, hi, t, strength);
       ctx.fillRect(x, y, step, step);
     }
+  }
+}
+
+/**
+ * Growth creeping out of the joints of a paved surface: moss, weed and windblown soil.
+ *
+ * Periodic like `mottle`, and painted as short strokes rather than as square cells — the reference
+ * paving sheets grow tufts out of the joints, not a green haze over them.
+ */
+function jointCreep(
+  ctx: CanvasRenderingContext2D,
+  size: number,
+  rng: Rng,
+  amount: number,
+  colour: number,
+  scale: number
+): void {
+  const noise = makeNoise2D(rng.int(0, 1e6));
+  const dark = mixCss(colour, 0x1c2410, 0.45);
+  const step = Math.max(2, Math.round(size / 220));
+  for (let y = 0; y < size; y += step) {
+    for (let x = 0; x < size; x += step) {
+      const n = tileableFbm(noise, (x / size) * scale, (y / size) * scale, 3, scale);
+      if (n > 1 - amount * 1.5) {
+        ctx.fillStyle = cssOf(new Color(colour), Math.min(0.75, 0.6 * amount + 0.2));
+        ctx.fillRect(x, y, step, step);
+      }
+    }
+  }
+  // Tufts standing proud of the wash, so the growth reads as plants rather than as a stain.
+  const tufts = Math.round(size * size * 0.00018 * amount * 6);
+  ctx.lineCap = 'round';
+  for (let i = 0; i < tufts; i++) {
+    const x = rng.range(0, size);
+    const y = rng.range(0, size);
+    const n = tileableFbm(noise, (x / size) * scale, (y / size) * scale, 3, scale);
+    if (n < 1 - amount * 1.9) continue;
+    const blades = rng.int(3, 7);
+    const reach = size / 34;
+    wrapped(size, x, y, reach, (px, py) => {
+      for (let k = 0; k < blades; k++) {
+        const a = rng.range(0, Math.PI * 2);
+        const len = reach * rng.range(0.4, 1);
+        ctx.strokeStyle = rng.chance(0.45) ? dark : cssOf(new Color(colour), 0.9);
+        ctx.lineWidth = Math.max(1, size / 640);
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.quadraticCurveTo(
+          px + Math.cos(a) * len * 0.5,
+          py + Math.sin(a) * len * 0.5 - len * 0.25,
+          px + Math.cos(a) * len,
+          py + Math.sin(a) * len
+        );
+        ctx.stroke();
+      }
+    });
   }
 }
 
@@ -322,6 +387,16 @@ export interface CobbleParams {
   /** Moss or sand creeping into the joints. */
   creep?: number;
   creepColor?: number;
+  /**
+   * Multiple of the kit texture size this sheet is authored at.
+   *
+   * A carriageway is the one non-grass surface asked to cover a whole street from one sheet, so like
+   * grass its authored size sets the wavelength of the repeat: 1024 px over a 4.5 m tile put a copy
+   * of the same twenty setts every 4.5 m down the avenue and the eye found the rhythm immediately.
+   * Doubling both the sheet and the tile keeps the setts the same size on the ground and halves the
+   * repeat frequency. Left at 1 for the small paving modules, where the tile is a forecourt.
+   */
+  sheetScale?: number;
 }
 
 export interface RoofParams {
@@ -386,60 +461,95 @@ interface GrassRecipe {
   value: number;
   /** Multiplier on the saturation push. */
   sat: number;
-  /** Clump radius in metres, min and max. */
-  clump: readonly [number, number];
-  /** Clumps per square metre. */
-  clumpsPerM2: number;
-  /** Tussocks (big shaded-base, lit-crown clumps) per square metre. */
-  tussocksPerM2: number;
-  /** Coarse and fine blade strokes per square metre. */
-  blades: readonly [number, number];
-  /** Coarse blade length in metres, min and max. */
+  /** Tuft radius in metres, min and max — the spread of one plant's crown. */
+  tuft: readonly [number, number];
+  /** Tufts per square metre. */
+  tuftsPerM2: number;
+  /** Blades in one tuft, min and max. */
+  tuftBlades: readonly [number, number];
+  /** Blade length in metres, min and max. */
   bladeLen: readonly [number, number];
+  /** Loose blades and fine understorey blades per square metre, outside the tufts. */
+  filler: readonly [number, number];
+  /** Fraction of a full turn one tuft's blades fan over. 1 = a rosette, 0.5 = a leaning clump. */
+  fan: number;
+  /**
+   * Added to every blade's position on the pigment ramp.
+   *
+   * Coverage and value are not separable when the base is a dark floor: a short-bladed variant with
+   * the same blade count per square metre covers far less ground, so more of that floor shows and
+   * the sheet measures darker even though every blade on it is the same colour. Measured, mown came
+   * out at luma 78 against the meadow's 129 for exactly that reason. Coverage is corrected with the
+   * blade counts; this corrects the pigment, so a mown lawn reads as the LIGHTEST of the three the
+   * way a kept lawn does, and rough meadow as the deepest.
+   */
+  bias: number;
   /** Strength of the low-frequency value zoning, 0..1. */
   zoning: number;
   /** Bleached straw patch strength. */
   dry: number;
   /** Wildflower multiplier. */
   flowers: number;
+  /** Broad-leaved weeds (plantain, dock) per square metre. */
+  weedsPerM2: number;
 }
 
+/**
+ * Blade counts are an order of magnitude up on the previous recipe, and that is the whole point.
+ *
+ * The supplied reference sheets are thousands of individually painted blades per tile with visible
+ * tips, gathered into clumps. The old recipe painted 115+300 strokes per square metre over a base of
+ * soft value discs, which at any zoom reads as a mottled wash with some grain on it — and the discs
+ * themselves printed visible dark circles in the short variants. Roughly 800-1000 blades per square
+ * metre is where a canvas of overlapping tapered blades stops reading as noise and starts reading as
+ * turf: about three to four times coverage, so the dark base only shows through as the gaps between
+ * plants.
+ */
 const GRASS_RECIPES: Record<GrassVariant, GrassRecipe> = {
   sward: {
     value: 1,
     sat: 1,
-    clump: [0.16, 0.62],
-    clumpsPerM2: 5.2,
-    tussocksPerM2: 0.55,
-    blades: [115, 300],
-    bladeLen: [0.11, 0.24],
+    tuft: [0.16, 0.44],
+    tuftsPerM2: 12,
+    tuftBlades: [12, 24],
+    bladeLen: [0.13, 0.3],
+    filler: [470, 860],
+    fan: 0.86,
+    bias: 0.03,
     zoning: 0.78,
-    dry: 0.16,
-    flowers: 0.8,
+    dry: 0.18,
+    flowers: 0.9,
+    weedsPerM2: 0.35,
   },
   meadow: {
-    value: 1.04,
-    sat: 1.06,
-    clump: [0.22, 1.05],
-    clumpsPerM2: 3.4,
-    tussocksPerM2: 1.15,
-    blades: [145, 235],
-    bladeLen: [0.16, 0.4],
+    value: 1.02,
+    sat: 1.07,
+    tuft: [0.24, 0.66],
+    tuftsPerM2: 7,
+    tuftBlades: [18, 34],
+    bladeLen: [0.2, 0.5],
+    filler: [350, 640],
+    fan: 0.72,
+    bias: -0.08,
     zoning: 1,
-    dry: 0.55,
-    flowers: 2.6,
+    dry: 0.2,
+    flowers: 1.7,
+    weedsPerM2: 0.55,
   },
   mown: {
-    value: 1.06,
-    sat: 0.94,
-    clump: [0.12, 0.4],
-    clumpsPerM2: 7,
-    tussocksPerM2: 0.12,
-    blades: [90, 345],
-    bladeLen: [0.07, 0.15],
+    value: 1.07,
+    sat: 0.95,
+    tuft: [0.1, 0.26],
+    tuftsPerM2: 30,
+    tuftBlades: [9, 17],
+    bladeLen: [0.08, 0.18],
+    filler: [860, 1450],
+    fan: 1,
+    bias: 0.11,
     zoning: 0.5,
     dry: 0.08,
-    flowers: 0.35,
+    flowers: 0.4,
+    weedsPerM2: 0.22,
   },
 };
 
@@ -461,12 +571,17 @@ function grassScale(
   const v = r.value;
   const s = r.sat;
   return {
-    deep: grade(p.shade, 0.72 * v, 1.35 * s, 0.06, 0x2a4038),
-    shade: grade(p.shade, 1.0 * v, 1.45 * s, 0.02),
-    mid: grade(p.mid, 1.18 * v, 1.72 * s, 0.06),
-    lit: grade(p.lit, 1.28 * v, 1.8 * s, 0.16),
-    sun: grade(p.lit, 1.46 * v, 1.58 * s, 0.28),
-    straw: grade(p.lit, 1.45 * v, 1.15 * s, 0.55, 0xdcc474),
+    // The dark end is pushed a further two stops down because it is now the colour of the GAPS
+    // between blades rather than a wash under them, and the reference sheets measure p5 at luma
+    // 53-64 against a p95 of 168-181. That 110-130 luma spread is the single biggest measurable
+    // difference between painted turf and a green field, and it cannot exist if the darkest pigment
+    // on the sheet is luma 43.
+    deep: grade(p.shade, 0.52 * v, 1.3 * s, 0.04, 0x2a4038),
+    shade: grade(p.shade, 0.92 * v, 1.55 * s, 0.02),
+    mid: grade(p.mid, 1.16 * v, 2.05 * s, 0.05),
+    lit: grade(p.lit, 1.38 * v, 2.15 * s, 0.13),
+    sun: grade(p.lit, 1.8 * v, 1.9 * s, 0.26),
+    straw: grade(p.lit, 1.72 * v, 1.25 * s, 0.55, 0xdcc474),
   };
 }
 
@@ -549,142 +664,358 @@ export class TextureFactory {
         mottle(ctx, size, rng.int(0, 1e6), p.grout, p.stoneShade, 6, 0.5);
 
         const cell = size / p.rows;
-        const contact = css(p.grout, 0.55);
-        // Two passes offset by half a cell so no straight grout lines survive.
-        for (let row = -1; row <= p.rows; row++) {
-          const stagger = (row % 2) * 0.5;
-          for (let col = -1; col <= p.rows; col++) {
-            const jx = (rng.next() - 0.5) * cell * 0.34 * p.jitter;
-            const jy = (rng.next() - 0.5) * cell * 0.34 * p.jitter;
-            const cx = (col + stagger + 0.5) * cell + jx;
+        /**
+         * Setts are drawn as ROUNDED QUADS with a joint, not as soft ellipses.
+         *
+         * Measured, the old sheet had a p5-to-p95 luma spread of 17 and an adjacent-pixel |dL| of
+         * 0.78 — statistically a flat brown field. Three things caused it, and all three are gone:
+         *
+         *  - `shadedBlob` runs its radial gradient out to 1.15 r, so the whole visible face of a
+         *    sett sat between the mid and shade stops and never reached the lit one at all.
+         *  - the ellipses covered about half the cell, so half the sheet was grout, and the joints
+         *    between neighbours were as wide as the setts and read as the dominant shape.
+         *  - `shiftCss` offsets lightness in three's LINEAR space, where +/-0.1 on a stone at l=0.15
+         *    is a factor of 1.7 up or 3 down; the per-sett spread it was supposed to give was
+         *    violently asymmetric and mostly darkening.
+         *
+         * The reference sheet measures spread 119 with |dL| 12.9. Getting there needs the per-sett
+         * value spread to be authored as an explicit lerp along the stone ramp, the face gradient to
+         * span lit to shade across the sett, and the joints to be narrow and genuinely dark.
+         */
+        const joint = cell * 0.15;
+        const shade = new Color(p.stoneShade);
+        const lit = new Color(p.stoneLit);
+        const litEdge = css(grade(p.stoneLit, 1.18, 0.9), 0.3);
+        const darkJoint = mixCss(p.grout, 0x000000, 0.35);
+
+        /**
+         * The lattice runs 0..rows-1 and every sett is drawn through `wrapped`, so the sheet is
+         * genuinely seamless.
+         *
+         * The previous loop ran -1..rows and relied on the overhang to cover the edge, which does not
+         * tile: the half sett clipped by the left edge and the half clipped by the right are two
+         * DIFFERENT random stones, so a wrap seam runs down the sheet as a column of mismatched
+         * halves. Both `stagger` and `bow` are written to close over a whole period of the row index
+         * for the same reason — at rows even, row 0 and row `rows` agree.
+         */
+        for (let row = 0; row < p.rows; row++) {
+          const stagger = (row % 2 + 2) % 2 === 0 ? 0 : 0.5;
+          // Real setts are laid to a curved course; a dead straight row of them reads as a printed
+          // grid however well each stone is painted.
+          const bow = Math.sin((row / p.rows) * Math.PI * 2 + 1.1) * cell * 0.16 * p.jitter;
+          for (let col = 0; col < p.rows; col++) {
+            const jx = (rng.next() - 0.5) * cell * 0.16 * p.jitter;
+            const jy = (rng.next() - 0.5) * cell * 0.14 * p.jitter;
+            const cx = (col + stagger + 0.5) * cell + jx + bow;
             const cy = (row + 0.5) * cell + jy;
-            const rx = cell * rng.range(0.36, 0.5) * (1 - p.jitter * 0.12);
-            const ry = cell * rng.range(0.32, 0.46) * (1 - p.jitter * 0.12);
-            const v = rng.range(-p.jitter, p.jitter) * 0.18;
-            shadedBlob(
-              ctx,
-              cx,
-              cy,
-              rx,
-              ry,
-              rng.range(-0.4, 0.4),
-              shiftCss(p.stoneLit, v),
-              shiftCss(p.stone, v, rng.range(-0.03, 0.03)),
-              css(p.stoneShade),
-              contact
-            );
+            const w = (cell - joint) * rng.range(0.86, 1.06);
+            const h = (cell - joint) * rng.range(0.8, 1.0);
+            const rot = rng.range(-0.13, 0.13) * (1 + p.jitter);
+            const round = Math.min(w, h) * rng.range(0.18, 0.34);
+
+            // Per-sett value, as a straight lerp along the stone ramp so the spread is symmetric and
+            // predictable. `v` above 1 overshoots past `stoneLit` toward white-warm, which is what
+            // gives a paved surface its handful of near-glaring stones.
+            const v = rng.range(-1, 1) * (0.55 + p.jitter * 0.45);
+            const face = new Color(p.stone);
+            if (v >= 0) face.lerp(lit, v);
+            else face.lerp(shade, -v);
+            const hueJog = rng.range(-0.035, 0.035);
+            const faceLit = face.clone().offsetHSL(hueJog, 0.02, 0.055);
+            const faceShade = new Color(p.stoneShade).lerp(face, 0.35);
+
+            let px = cx;
+            let py = cy;
+            const trace = (ox = 0, oy = 0, grow = 0): void => {
+              ctx.save();
+              ctx.translate(px + ox, py + oy);
+              ctx.rotate(rot);
+              ctx.beginPath();
+              const hw = w / 2 + grow;
+              const hh = h / 2 + grow;
+              ctx.moveTo(-hw + round, -hh);
+              ctx.lineTo(hw - round, -hh);
+              ctx.quadraticCurveTo(hw, -hh, hw, -hh + round);
+              ctx.lineTo(hw, hh - round);
+              ctx.quadraticCurveTo(hw, hh, hw - round, hh);
+              ctx.lineTo(-hw + round, hh);
+              ctx.quadraticCurveTo(-hw, hh, -hw, hh - round);
+              ctx.lineTo(-hw, -hh + round);
+              ctx.quadraticCurveTo(-hw, -hh, -hw, -hh + round);
+              ctx.closePath();
+              ctx.restore();
+            };
+
+            // Wear speckle is drawn from a pre-rolled list so every wrapped copy of a sett carries
+            // the SAME pitting; rolling it inside the draw would make the two halves of an edge sett
+            // differ, which is the seam this loop exists to avoid.
+            const pits: Array<[number, number, number, string]> = [];
+            for (let k = 0, n = Math.round(cell * 0.42); k < n; k++) {
+              const a = rng.range(0, Math.PI * 2);
+              const rr = Math.sqrt(rng.next()) * Math.min(w, h) * 0.42;
+              pits.push([
+                Math.cos(a) * rr,
+                Math.sin(a) * rr,
+                Math.max(0.6, cell * rng.range(0.012, 0.045)),
+                rng.chance(0.5)
+                  ? cssOf(faceShade, rng.range(0.18, 0.45))
+                  : cssOf(faceLit, rng.range(0.16, 0.4)),
+              ]);
+            }
+
+            wrapped(size, cx, cy, Math.max(w, h) * 0.75 + joint, (dx, dy) => {
+              px = dx;
+              py = dy;
+              // Contact shadow on the shaded side, cast into the joint.
+              ctx.fillStyle = darkJoint;
+              trace(-LIGHT.x * joint * 0.55, -LIGHT.y * joint * 0.55, joint * 0.2);
+              ctx.fill();
+
+              const g = ctx.createLinearGradient(
+                px + LIGHT.x * w * 0.55,
+                py + LIGHT.y * h * 0.55,
+                px - LIGHT.x * w * 0.6,
+                py - LIGHT.y * h * 0.6
+              );
+              g.addColorStop(0, cssOf(faceLit, 1));
+              g.addColorStop(0.42, cssOf(face, 1));
+              g.addColorStop(1, cssOf(faceShade, 1));
+              ctx.fillStyle = g;
+              trace();
+              ctx.fill();
+
+              for (const [ox, oy, rr, fill] of pits) {
+                ctx.fillStyle = fill;
+                ctx.beginPath();
+                ctx.arc(px + ox, py + oy, rr, 0, Math.PI * 2);
+                ctx.fill();
+              }
+
+              // The arris: a bright chip along the lit edge. Two setts butted together are told apart
+              // by this line far more than by their face values.
+              ctx.save();
+              ctx.strokeStyle = litEdge;
+              ctx.lineWidth = Math.max(1, cell * 0.055);
+              ctx.beginPath();
+              trace(LIGHT.x * joint * 0.12, LIGHT.y * joint * 0.12);
+              ctx.clip();
+              trace(LIGHT.x * joint * 0.12, LIGHT.y * joint * 0.12);
+              ctx.stroke();
+              ctx.restore();
+            });
+            px = cx;
+            py = cy;
           }
         }
 
         if (p.creep && p.creepColor !== undefined) {
-          const noise = makeNoise2D(rng.int(0, 1e6));
-          const step = Math.max(2, Math.round(size / 160));
-          for (let y = 0; y < size; y += step) {
-            for (let x = 0; x < size; x += step) {
-              const n = fbm(noise, (x / size) * 9, (y / size) * 9, 3);
-              if (n > 1 - p.creep * 1.4) {
-                ctx.fillStyle = css(p.creepColor, 0.5 * p.creep);
-                ctx.fillRect(x, y, step, step);
-              }
-            }
-          }
+          jointCreep(ctx, size, rng, p.creep, p.creepColor, 9);
         }
         return canvas;
       },
-      repeat
+      repeat,
+      true,
+      { sizeScale: p.sheetScale ?? 1 }
     );
   }
 
   /**
-   * Large irregular flagstones — the paving in the benchmark close-ups.
+   * Large irregular flagstones — the crazy paving in the supplied reference sheet.
    *
    * Distinct from `cobble` in the way that matters at this camera: the slabs are big enough to read
-   * individually from above, they are polygonal rather than rounded, and the joints between them
-   * are wide and filled with growth. Small rounded cobbles at this scale collapse into noise.
+   * individually from above, they are POLYGONAL rather than rounded, and the joints between them are
+   * wide and full of growth. Small rounded cobbles at this scale collapse into noise.
+   *
+   * The previous version drew each slab's outline with `quadraticCurveTo` through the edge
+   * midpoints, which is a corner-cutting subdivision: a hexagon came out as a circle, and the sheet
+   * measured as a field of pale discs with an adjacent-pixel |dL| of 1.45 — no joints at all. Slabs
+   * are now traced with straight edges and a small explicit corner radius, laid on an overlapping
+   * grid so a later slab cuts into its neighbour and the shapes interlock the way a laid pavement
+   * does, and each carries a dark outline that IS the joint.
    */
   flagstone(key: string, p: CobbleParams, repeat = 1): Texture {
     return this.memo(
       `flagstone:${key}`,
       (rng, size) => {
         const { canvas, ctx } = makeCanvas(size);
-        ctx.fillStyle = css(p.grout);
+        ctx.fillStyle = mixCss(p.grout, 0x000000, 0.25);
         ctx.fillRect(0, 0, size, size);
-        mottle(ctx, size, rng.int(0, 1e6), p.grout, p.stoneShade, 5, 0.6);
+        mottle(ctx, size, rng.int(0, 1e6), p.grout, p.stoneShade, 5, 0.35);
 
-        // Jittered lattice of sites; each slab is the cell around its site, drawn as a rounded
-        // polygon so neighbouring slabs leave a visible joint rather than tiling seamlessly.
-        const cells = Math.max(2, Math.round(p.rows * 0.55));
+        const cells = Math.max(2, Math.round(p.rows * 0.45));
         const cell = size / cells;
-        for (let row = -1; row <= cells; row++) {
-          for (let col = -1; col <= cells; col++) {
-            const cx = (col + 0.5) * cell + (rng.next() - 0.5) * cell * 0.5 * p.jitter;
-            const cy = (row + 0.5) * cell + (rng.next() - 0.5) * cell * 0.5 * p.jitter;
-            const sides = rng.int(5, 7);
-            const joint = cell * rng.range(0.07, 0.13);
-            const baseR = cell * 0.5 - joint;
-            const pts: Array<[number, number]> = [];
-            const spin = rng.range(0, Math.PI * 2);
-            for (let i = 0; i < sides; i++) {
-              const a = spin + (i / sides) * Math.PI * 2;
-              const r = baseR * rng.range(0.78, 1.16);
-              pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]);
-            }
+        const lit = new Color(p.stoneLit);
+        const shade = new Color(p.stoneShade);
+        const jointCss = mixCss(p.grout, 0x000000, 0.3);
 
-            const v = rng.range(-0.09, 0.09);
-            const grad = ctx.createLinearGradient(
+        // Site order is shuffled so the overlap does not run consistently one way, which would read
+        // as courses rather than as crazy paving.
+        // Sites run 0..cells-1 and every slab is drawn through `wrapped`: a lattice that overhangs
+        // the sheet instead does not tile, because the slab clipped by one edge and the slab clipped
+        // by the opposite edge are different stones.
+        const sites: Array<[number, number]> = [];
+        for (let row = 0; row < cells; row++) {
+          for (let col = 0; col < cells; col++) {
+            sites.push([
+              (col + 0.5) * cell + (rng.next() - 0.5) * cell * 0.42 * p.jitter,
+              (row + 0.5) * cell + (rng.next() - 0.5) * cell * 0.42 * p.jitter,
+            ]);
+          }
+        }
+        for (let i = sites.length - 1; i > 0; i--) {
+          const j = rng.int(0, i);
+          const t = sites[i]!;
+          sites[i] = sites[j]!;
+          sites[j] = t;
+        }
+
+        for (const [sx, sy] of sites) {
+          const sides = rng.int(5, 8);
+          const baseR = cell * rng.range(0.52, 0.68);
+          const spin = rng.range(0, Math.PI * 2);
+          // Vertices are offsets from the site so the whole slab can be replayed at each wrapped
+          // position; `cx`/`cy` are rebound per copy below.
+          let cx = sx;
+          let cy = sy;
+          const off: Array<[number, number]> = [];
+          for (let i = 0; i < sides; i++) {
+            const a = spin + (i / sides) * Math.PI * 2 + rng.range(-0.22, 0.22);
+            const rr = baseR * rng.range(0.66, 1.12);
+            off.push([Math.cos(a) * rr, Math.sin(a) * rr]);
+          }
+          const pts: Array<[number, number]> = off.map(() => [0, 0]);
+          const place = (): void => {
+            for (let i = 0; i < off.length; i++) {
+              pts[i]![0] = cx + off[i]![0];
+              pts[i]![1] = cy + off[i]![1];
+            }
+          };
+
+          // Straight edges with a small rounded corner: cut stone, not a pebble.
+          const corner = cell * 0.06;
+          const trace = (): void => {
+            ctx.beginPath();
+            for (let i = 0; i < pts.length; i++) {
+              const prev = pts[(i - 1 + pts.length) % pts.length]!;
+              const cur = pts[i]!;
+              const next = pts[(i + 1) % pts.length]!;
+              const inSet = (a: number[], b: number[]): [number, number] => {
+                const dx = b[0]! - a[0]!;
+                const dy = b[1]! - a[1]!;
+                const len = Math.hypot(dx, dy) || 1;
+                const t = Math.min(0.42, corner / len);
+                return [a[0]! + dx * t, a[1]! + dy * t];
+              };
+              const from = inSet(cur, prev);
+              const to = inSet(cur, next);
+              if (i === 0) ctx.moveTo(from[0], from[1]);
+              else ctx.lineTo(from[0], from[1]);
+              ctx.quadraticCurveTo(cur[0], cur[1], to[0], to[1]);
+            }
+            ctx.closePath();
+          };
+
+          const v = rng.range(-1, 1);
+          const face = new Color(p.stone);
+          if (v >= 0) face.lerp(lit, v);
+          else face.lerp(shade, -v);
+          // Slabs come out of different beds. A pure lightness spread reads as one stone under a
+          // dimmer, which is exactly how the previous sheet measured: saturation 0.20 against the
+          // reference's 0.39.
+          face.offsetHSL(rng.range(-0.018, 0.018), rng.range(-0.03, 0.05), 0);
+          const faceLit = face.clone().offsetHSL(0, 0.02, 0.06);
+          const faceShade = shade.clone().lerp(face, 0.3);
+
+          const jointW = cell * rng.range(0.06, 0.11);
+          // Pre-rolled so every wrapped copy of a slab carries the same surface.
+          const pits: Array<[number, number, number, string]> = [];
+          for (let k = 0, n = Math.round(cell * 0.9); k < n; k++) {
+            const a = rng.range(0, Math.PI * 2);
+            const rr = Math.sqrt(rng.next()) * baseR;
+            pits.push([
+              Math.cos(a) * rr,
+              Math.sin(a) * rr,
+              cell * rng.range(0.01, 0.05),
+              rng.chance(0.5)
+                ? cssOf(faceShade, rng.range(0.14, 0.36))
+                : cssOf(faceLit, rng.range(0.12, 0.32)),
+            ]);
+          }
+          const crackA = rng.range(0, Math.PI * 2);
+          const crackC: [number, number] = [
+            rng.range(-baseR, baseR) * 0.3,
+            rng.range(-baseR, baseR) * 0.3,
+          ];
+          const cracked = rng.chance(0.55);
+
+          wrapped(size, sx, sy, baseR * 1.3 + jointW, (dx, dy) => {
+            cx = dx;
+            cy = dy;
+            place();
+
+            // The joint, drawn as a fat dark outline under the slab. Drawing it as a stroke rather
+            // than as an offset copy keeps its width constant round the whole slab, which is what
+            // makes a laid pavement read as laid.
+            ctx.strokeStyle = jointCss;
+            ctx.lineWidth = jointW;
+            ctx.lineJoin = 'round';
+            trace();
+            ctx.stroke();
+
+            const g = ctx.createLinearGradient(
               cx + LIGHT.x * baseR,
               cy + LIGHT.y * baseR,
               cx - LIGHT.x * baseR,
               cy - LIGHT.y * baseR
             );
-            grad.addColorStop(0, shiftCss(p.stoneLit, v));
-            grad.addColorStop(0.55, shiftCss(p.stone, v * 0.6, rng.range(-0.02, 0.02)));
-            grad.addColorStop(1, css(p.stoneShade));
-
-            const trace = (): void => {
-              ctx.beginPath();
-              ctx.moveTo(pts[0]![0], pts[0]![1]);
-              for (let i = 1; i < pts.length; i++) {
-                const a = pts[i]!;
-                const b = pts[(i + 1) % pts.length]!;
-                ctx.quadraticCurveTo(a[0], a[1], (a[0] + b[0]) / 2, (a[1] + b[1]) / 2);
-              }
-              ctx.closePath();
-            };
-
-            // Contact shadow on the shaded side, then the slab over it.
-            ctx.save();
-            ctx.translate(-LIGHT.x * joint * 0.8, -LIGHT.y * joint * 0.8);
-            ctx.fillStyle = css(p.grout, 0.6);
+            g.addColorStop(0, cssOf(faceLit, 1));
+            g.addColorStop(0.5, cssOf(face, 1));
+            g.addColorStop(1, cssOf(faceShade, 1));
+            ctx.fillStyle = g;
             trace();
             ctx.fill();
+
+            // Surface: pitting, and a hairline crack running across the slab.
+            ctx.save();
+            trace();
+            ctx.clip();
+            for (const [ox, oy, rr, fill] of pits) {
+              ctx.fillStyle = fill;
+              ctx.beginPath();
+              ctx.arc(cx + ox, cy + oy, rr, 0, Math.PI * 2);
+              ctx.fill();
+            }
+            if (cracked) {
+              ctx.strokeStyle = cssOf(faceShade, 0.55);
+              ctx.lineWidth = Math.max(1, cell * 0.012);
+              ctx.beginPath();
+              ctx.moveTo(cx - Math.cos(crackA) * baseR, cy - Math.sin(crackA) * baseR);
+              ctx.quadraticCurveTo(
+                cx + crackC[0],
+                cy + crackC[1],
+                cx + Math.cos(crackA) * baseR,
+                cy + Math.sin(crackA) * baseR
+              );
+              ctx.stroke();
+            }
             ctx.restore();
 
-            ctx.fillStyle = grad;
+            // A bright chip along the lit arris, clipped inside the slab.
+            ctx.save();
             trace();
-            ctx.fill();
-
-            // A bright chip along the lit edge: worn stone catches light on its arris.
-            ctx.strokeStyle = shiftCss(p.stoneLit, 0.1, 0, 0.35);
-            ctx.lineWidth = Math.max(1, size / 420);
+            ctx.clip();
+            ctx.strokeStyle = cssOf(faceLit.clone().offsetHSL(0, 0, 0.08), 0.4);
+            ctx.lineWidth = Math.max(1.5, cell * 0.035);
+            ctx.beginPath();
+            ctx.translate(LIGHT.x * cell * 0.03, LIGHT.y * cell * 0.03);
             trace();
             ctx.stroke();
-          }
+            ctx.restore();
+          });
         }
 
         if (p.creep && p.creepColor !== undefined) {
-          // Growth in the joints, thickest where the noise says the paving is least walked.
-          const n2 = makeNoise2D(rng.int(0, 1e6));
-          const step = Math.max(2, Math.round(size / 200));
-          for (let y = 0; y < size; y += step) {
-            for (let x = 0; x < size; x += step) {
-              const n = fbm(n2, (x / size) * 7, (y / size) * 7, 3);
-              if (n > 1 - p.creep * 1.6) {
-                ctx.fillStyle = css(p.creepColor, 0.55 * p.creep);
-                ctx.fillRect(x, y, step, step);
-              }
-            }
-          }
+          jointCreep(ctx, size, rng, p.creep, p.creepColor, 7);
         }
         return canvas;
       },
@@ -842,7 +1173,21 @@ export class TextureFactory {
   }
 
   /**
-   * Lawn and meadow. Painted as overlapping soft clumps, never as noise.
+   * Lawn and meadow. Painted as individual BLADES gathered into tufts, never as clumps or noise.
+   *
+   * The supplied reference sheets settled this: they are thousands of separately painted blades with
+   * visible tips, in distinct clumps, over a near-black floor of self-shadow. The previous recipe
+   * painted soft value discs with a few hundred blade strokes per square metre scribbled over them,
+   * and measured the difference exactly — a p5-to-p95 luma spread of 74 against the reference's 128,
+   * a saturation of 0.65 against 0.75, and hard-edged dark circles printed across the short variants
+   * wherever the discs overlapped. So the discs are gone entirely: the value zoning they were a
+   * stand-in for is now a periodic noise field that the blades take their own pigment from, and the
+   * sheet is built in five layers — dark floor, understorey, tufts, sunlit canopy, shadow blades.
+   *
+   * It is not cheap. Each sheet is 100 000 to 300 000 filled paths and takes 19-30 seconds to
+   * generate in this software-canvas capture environment (a browser with a GPU-backed canvas is
+   * several times quicker). That is the deliberate trade: the triangle and texture budget is
+   * suspended for this pass and the cost is recorded rather than designed around.
    *
    * Authored in METRES rather than in fractions of the sheet. The sheet stands for `GRASS_METRES` of
    * ground, so a tussock is written as 0.8 m and stays 0.8 m whatever the texture size is — which is
@@ -861,178 +1206,331 @@ export class TextureFactory {
         const c = grassScale(p, r);
         const count = (perM2: number): number => Math.round(perM2 * area);
 
-        ctx.fillStyle = css(c.mid);
+        /**
+         * The base is the SHADOW BETWEEN the blades, not the colour of the grass.
+         *
+         * The previous recipe filled with the mid stop and then painted soft value discs over it, so
+         * every pixel the blades missed was still mid green and the sheet's darkest reachable value
+         * was whatever the darkest disc happened to be. Reference turf is the other way round: a
+         * near-black floor of leaf litter and self-shadow, with three or four layers of blades built
+         * up on top of it, and it is the slivers of that floor showing between blades that give the
+         * sheet its p5 and therefore its whole sense of depth.
+         */
+        ctx.fillStyle = mixCss(c.deep, c.shade, 0.35);
         ctx.fillRect(0, 0, size, size);
 
         /**
-         * Value zoning as painted BLOBS, not as an fBm mottle.
+         * Value zoning as a PERIODIC NOISE FIELD that the blades are coloured from.
          *
-         * Two reasons, and the second is the one that mattered. First, this file's own rule: painted
-         * elements with their own soft gradient read as hand-painted, a noise field reads as noise.
-         * Second and decisive, `mottle` runs off simplex noise, which has no period, so every pass of
-         * it wrote a hard discontinuity down two edges of the sheet — and under stochastic tiling that
-         * seam does not land on a grid where the eye can dismiss it as a texture, it lands at a
-         * different place inside every cell as an isolated straight dark line across the grass.
-         * Blobs go through `wrapped`, so the sheet is genuinely seamless and the shader is free to
-         * offset it anywhere.
+         * Not as painted discs, which is what the previous pass did and what printed the visible
+         * dark circles all over the mown variant: a disc is a hard-edged object, and hundreds of
+         * them at 0.25-0.9 m read as bubbles however soft their falloff. And not as `mottle`, which
+         * had no period and wrote a seam down two edges of the sheet.
          *
-         * Three passes, from field-sized down to clump-sized, so the sheet carries value at every
-         * scale between 0.25 m and 5 m rather than at one.
+         * Sampling a tileable fBm at each plant's own position and biasing that plant's pigment by
+         * it puts the zoning INSIDE the grass rather than over it — a patch of field goes lush or
+         * goes dry because its blades are lush or dry, which is how a real sward varies and is the
+         * thing the discs were a stand-in for. Two octave bands: `zoneAt` at roughly 3 m for the
+         * lush/shaded drift, `dryAt` at roughly 5 m for the bleached straw patches.
          */
-        const softBlob = (
+        const zoneNoise = makeNoise2D(rng.int(0, 1e6));
+        const dryNoise = makeNoise2D(rng.int(0, 1e6));
+        const ZONE_SCALE = 3.5;
+        const DRY_SCALE = 3.4;
+        const zoneAt = (x: number, y: number): number =>
+          tileableFbm(zoneNoise, (x / size) * ZONE_SCALE, (y / size) * ZONE_SCALE, 3, ZONE_SCALE) *
+          r.zoning;
+        const dryAt = (x: number, y: number): number =>
+          Math.max(
+            0,
+            tileableFbm(dryNoise, (x / size) * DRY_SCALE, (y / size) * DRY_SCALE, 2, DRY_SCALE) *
+              0.9 +
+              0.15
+          ) * r.dry;
+
+        /**
+         * Pigments, resolved once into a lookup table.
+         *
+         * Every blade wants its own colour, and there are of the order of 150 000 of them per sheet.
+         * Going through `Color` per blade means half a million allocations and conversions; 40 value
+         * steps across the ramp by 5 dryness steps is 200 strings, quantisation the eye cannot see,
+         * and it turns the colour work into an array index.
+         */
+        const RAMP = [c.deep, c.shade, c.mid, c.lit, c.sun];
+        const VSTEPS = 40;
+        const DSTEPS = 5;
+        const lut: string[] = [];
+        const lutSoft: string[] = [];
+        for (let d = 0; d < DSTEPS; d++) {
+          for (let i = 0; i < VSTEPS; i++) {
+            const f = (i / (VSTEPS - 1)) * (RAMP.length - 1);
+            const k = Math.min(RAMP.length - 2, Math.floor(f));
+            const col = new Color(RAMP[k]!).lerp(new Color(RAMP[k + 1]!), f - k);
+            if (d > 0) col.lerp(new Color(c.straw), (d / (DSTEPS - 1)) * 0.8);
+            lut.push(cssOf(col, 1));
+            lutSoft.push(cssOf(col, 0.55));
+          }
+        }
+        const pigment = (t: number, dry: number, soft = false): string => {
+          const i = Math.max(0, Math.min(VSTEPS - 1, Math.round(t * (VSTEPS - 1))));
+          const d = Math.max(0, Math.min(DSTEPS - 1, Math.round(dry * (DSTEPS - 1))));
+          return (soft ? lutSoft : lut)[d * VSTEPS + i]!;
+        };
+
+        /**
+         * One blade: a tapered leaf with a pointed tip, filled rather than stroked.
+         *
+         * A round-capped stroke has no tip, and a tip is exactly what makes the reference read as
+         * thousands of blades rather than as a scribble — the silhouette of turf from above is a
+         * mass of little spear points. `curve` bends the blade sideways along its length so no two
+         * are the same shape and the field never looks combed.
+         */
+        const blade = (
           x: number,
           y: number,
-          rad: number,
-          hue: number,
-          alpha: number,
-          plateau: number
+          len: number,
+          ang: number,
+          w: number,
+          curve: number
         ): void => {
-          const grad = ctx.createRadialGradient(
-            x + LIGHT.x * rad * 0.3,
-            y + LIGHT.y * rad * 0.3,
-            0,
-            x,
-            y,
-            rad
-          );
-          grad.addColorStop(0, css(hue, alpha));
-          grad.addColorStop(plateau, css(hue, alpha * 0.55));
-          grad.addColorStop(1, css(hue, 0));
-          ctx.fillStyle = grad;
+          const dx = Math.cos(ang);
+          const dy = Math.sin(ang);
+          const px = -dy * w;
+          const py = dx * w;
+          const cx = -dy * curve * len;
+          const cy = dx * curve * len;
+          const tipX = x + dx * len + cx;
+          const tipY = y + dy * len + cy;
+          const mx = x + dx * len * 0.5 + cx * 0.3;
+          const my = y + dy * len * 0.5 + cy * 0.3;
           ctx.beginPath();
-          ctx.arc(x, y, rad, 0, Math.PI * 2);
+          ctx.moveTo(x - px, y - py);
+          ctx.quadraticCurveTo(mx - px * 0.62, my - py * 0.62, tipX, tipY);
+          ctx.quadraticCurveTo(mx + px * 0.62, my + py * 0.62, x + px, y + py);
+          ctx.closePath();
           ctx.fill();
         };
-        const zonePass = (
-          perM2: number,
-          radLo: number,
-          radHi: number,
-          alphaLo: number,
-          alphaHi: number,
-          stops: readonly number[]
-        ): void => {
-          for (let i = 0; i < count(perM2); i++) {
-            const rad = ppm * rng.range(radLo, radHi);
-            const hue = rng.pick(stops);
-            const alpha = rng.range(alphaLo, alphaHi) * r.zoning;
-            const plateau = rng.range(0.35, 0.62);
-            wrapped(size, rng.range(0, size), rng.range(0, size), rad, (x, y) =>
-              softBlob(x, y, rad, hue, alpha, plateau)
-            );
-          }
-        };
-        zonePass(0.24, 1.9, 4.6, 0.34, 0.6, [c.deep, c.shade, c.lit, c.sun, c.sun, c.straw]);
-        zonePass(1.1, 0.7, 2.1, 0.24, 0.46, [c.shade, c.mid, c.lit, c.lit, c.sun, c.straw]);
-        zonePass(3.4, 0.24, 0.85, 0.12, 0.26, [c.deep, c.shade, c.lit, c.sun]);
-        // Bleached, sun-dried patches: the warm straw notes that keep a green field from reading as
-        // one pigment. The benchmark's lawns are never a single hue over any two square metres.
-        if (r.dry > 0) zonePass(0.5 * r.dry, 1.1, 3.2, 0.3, 0.55, [c.straw, c.straw, c.sun]);
 
-        // --- tussocks: the 0.5-1.4 m structure that actually survives to the GPS camera. A shaded
-        // base with a lit crown offset toward the sun, which is what makes a clump read as a solid
-        // standing thing rather than as a stain.
-        for (let i = 0; i < count(r.tussocksPerM2); i++) {
-          const rad = ppm * rng.range(r.clump[1] * 0.85, r.clump[1] * 1.9);
-          const squash = rng.range(0.7, 1);
-          const spin = rng.range(-0.7, 0.7);
-          const t = rng.next();
-          const crown = mixCss(c.lit, c.sun, t);
-          const body = mixCss(c.mid, c.lit, 0.35 + t * 0.5);
-          wrapped(size, rng.range(0, size), rng.range(0, size), rad * 1.3, (x, y) =>
-            shadedBlob(ctx, x, y, rad, rad * squash, spin, crown, body, css(c.shade), css(c.shade, 0.18))
-          );
-        }
+        /**
+         * How much a blade leaning toward the sun is lightened.
+         *
+         * The sheet has no normals, so the only way a blade can catch light is for the painter to
+         * paint it catching light. Half a ramp step across the angle range is enough to make a tuft
+         * read as a three-dimensional standing thing rather than a decal, and it is what gives the
+         * reference clumps their lit crown and shaded far side.
+         */
+        const facing = (ang: number): number =>
+          -(Math.cos(ang) * LIGHT.x + Math.sin(ang) * LIGHT.y) * 0.5;
 
-        // --- sward clumps: soft overlapping discs across the whole scale. Each one is given its own
-        // stop rather than a shared tint, so the field carries value everywhere.
-        const stops = [c.deep, c.shade, c.mid, c.mid, c.lit, c.lit, c.sun, c.straw];
-        for (let i = 0; i < count(r.clumpsPerM2); i++) {
-          const rad = ppm * rng.range(r.clump[0], r.clump[1]);
-          const hue = stops[Math.min(stops.length - 1, Math.floor(rng.next() ** 1.4 * stops.length))]!;
-          const alpha = rng.range(0.5, 0.85);
-          const plateau = rng.range(0.45, 0.7);
-          wrapped(size, rng.range(0, size), rng.range(0, size), rad, (x, y) =>
-            softBlob(x, y, rad, hue, alpha, plateau)
-          );
-        }
-
-        // --- blades. Two passes: a coarse one that resolves at the street camera and a fine one
-        // that only ever contributes grain and variance, which the stochastic blend then preserves.
-        ctx.lineCap = 'round';
-        const bladePass = (
+        /**
+         * Loose blades filling the ground between the tufts.
+         *
+         * Split into an understorey laid BEFORE the tufts and a canopy laid after, because draw
+         * order is the only depth cue a flat sheet has. One undifferentiated pass over the top of
+         * the tufts painted the clumps flat again — the thing that made the previous sheet read as a
+         * wash — while a dark layer underneath and a light layer over gives every square centimetre
+         * three or four blades of implied depth, which is what the reference's crisp blade contrast
+         * actually is.
+         */
+        const loose = (
           n: number,
+          scale: number,
+          wide: number,
           lo: number,
-          hi: number,
-          width: number,
-          alphaLo: number,
-          alphaHi: number
+          span: number,
+          alphaSoft: boolean
         ): void => {
           for (let i = 0; i < n; i++) {
-            const len = ppm * rng.range(lo, hi);
-            const lean = rng.range(-0.5, 0.5);
-            const u = rng.next();
-            // Weighted toward the light end: a blade standing above the sward catches sun on its
-            // upper half, and it is those catches, not the dark gaps, that read as living grass.
-            const hue =
-              u < 0.16 ? c.deep : u < 0.34 ? c.shade : u < 0.6 ? c.lit : u < 0.88 ? c.sun : c.straw;
-            const stroke = css(hue, rng.range(alphaLo, alphaHi));
-            const lw = Math.max(1, ppm * width * rng.range(0.75, 1.35));
-            wrapped(size, rng.range(0, size), rng.range(0, size), len + lw, (x, y) => {
-              ctx.strokeStyle = stroke;
-              ctx.lineWidth = lw;
-              ctx.beginPath();
-              ctx.moveTo(x, y);
-              ctx.quadraticCurveTo(x + lean * len * 0.35, y - len * 0.6, x + lean * len, y - len);
-              ctx.stroke();
+            const x = rng.range(0, size);
+            const y = rng.range(0, size);
+            const len = ppm * rng.range(r.bladeLen[0], r.bladeLen[1]) * scale;
+            const ang = rng.range(0, Math.PI * 2);
+            const dry = dryAt(x, y);
+            const t =
+              lo + rng.next() ** 0.8 * span + r.bias + zoneAt(x, y) * 0.46 + facing(ang) * 0.8;
+            const fill = pigment(t, dry, alphaSoft);
+            const w = Math.max(0.6, len * wide);
+            const curve = rng.range(-0.4, 0.4);
+            wrapped(size, x, y, len * 1.4, (px, py) => {
+              ctx.fillStyle = fill;
+              blade(px, py, len, ang, w, curve);
             });
           }
         };
-        bladePass(count(r.blades[0]), r.bladeLen[0], r.bladeLen[1], 0.028, 0.34, 0.7);
-        bladePass(count(r.blades[1]), r.bladeLen[0] * 0.42, r.bladeLen[1] * 0.5, 0.016, 0.2, 0.46);
+        // Understorey: long, dark, low contrast. It is the floor the tufts stand on.
+        loose(count(r.filler[0] * 0.6), 1.15, 0.045, 0.02, 0.5, false);
+
+        // --- tufts. Each is one plant: a shaded floor blot, then blades built back to front so the
+        // dark rear of the crown is laid down first and the sunlit front blades sit over it.
+        const tuftCount = count(r.tuftsPerM2);
+        for (let i = 0; i < tuftCount; i++) {
+          const tx = rng.range(0, size);
+          const ty = rng.range(0, size);
+          const rad = ppm * rng.range(r.tuft[0], r.tuft[1]);
+          const z = zoneAt(tx, ty);
+          const dry = dryAt(tx, ty);
+          const n = rng.int(r.tuftBlades[0], r.tuftBlades[1]);
+          const spin = rng.range(0, Math.PI * 2);
+          const fan = r.fan * Math.PI * 2;
+          const vigour = rng.range(-0.13, 0.13) + z * 0.45;
+          const lenLo = ppm * r.bladeLen[0];
+          const lenHi = ppm * r.bladeLen[1];
+
+          // Precomputed so the whole plant can be replayed at each wrapped position — a tuft drawn
+          // only where it fell would be chopped in half at the sheet edge.
+          const spec: Array<{
+            ox: number;
+            oy: number;
+            len: number;
+            ang: number;
+            w: number;
+            curve: number;
+            fill: string;
+          }> = [];
+          for (let k = 0; k < n; k++) {
+            const depth = k / Math.max(1, n - 1);
+            const ang = spin + (rng.next() - 0.5) * fan;
+            const spread = rad * rng.range(0, 0.45);
+            const sa = rng.range(0, Math.PI * 2);
+            const len = rng.range(lenLo, lenHi) * (0.72 + depth * 0.5);
+            const t = 0.1 + depth * 0.76 + r.bias + vigour + facing(ang) + rng.range(-0.11, 0.11);
+            spec.push({
+              ox: Math.cos(sa) * spread,
+              oy: Math.sin(sa) * spread,
+              len,
+              ang,
+              w: Math.max(0.7, len * rng.range(0.032, 0.06)),
+              curve: rng.range(-0.34, 0.34),
+              fill: pigment(t, dry),
+            });
+          }
+
+          const reach = rad + lenHi * 1.3;
+          wrapped(size, tx, ty, reach, (x, y) => {
+            // Contact shadow: the plant sits ON something, and without this the tufts float.
+            const grad = ctx.createRadialGradient(x, y, 0, x, y, rad * 1.15);
+            grad.addColorStop(0, css(c.deep, 0.32));
+            grad.addColorStop(1, css(c.deep, 0));
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.arc(x, y, rad * 1.15, 0, Math.PI * 2);
+            ctx.fill();
+            for (const b of spec) {
+              ctx.fillStyle = b.fill;
+              blade(x + b.ox, y + b.oy, b.len, b.ang, b.w, b.curve);
+            }
+          });
+        }
+
+        // Canopy: the blades that catch the sun, over the top of everything.
+        loose(count(r.filler[0]), 1, 0.045, 0.26, 0.8, false);
+        // Fine grain, half length and translucent: it never resolves as a blade, it only ever
+        // contributes the variance the stochastic tiling then preserves.
+        loose(count(r.filler[1]), 0.5, 0.055, 0.14, 0.9, true);
+        /**
+         * Shadow blades, on top of everything.
+         *
+         * Without them the last thing painted is always the lightest thing painted and the sheet
+         * comes out evenly lit: measured, three variants all landed within 6 luma of each other with
+         * a p5 of 71-76 against the reference's 53-64. In real turf a proportion of the blades the
+         * eye sees ARE the ones lying in another blade's shadow, and they are on top. This pass is
+         * where a third of the sheet's value spread comes from.
+         */
+        loose(Math.round(count(r.filler[0]) * 0.34), 0.95, 0.05, 0.05, 0.26, true);
+
+        /**
+         * Broad-leaved weeds — plantain, dock, dandelion rosettes.
+         *
+         * Every reference sheet in the supplied set has them, including the gravel and the scree, and
+         * they are what stops a lawn reading as a single species. A rosette of six to ten fat leaves
+         * at a slightly different green is cheap and instantly legible against the fine blades.
+         */
+        const weeds = count(r.weedsPerM2);
+        for (let i = 0; i < weeds; i++) {
+          const x = rng.range(0, size);
+          const y = rng.range(0, size);
+          const rad = ppm * rng.range(0.07, 0.16);
+          const leaves = rng.int(6, 11);
+          const spin = rng.range(0, Math.PI * 2);
+          const t = 0.32 + rng.range(-0.1, 0.2) + zoneAt(x, y) * 0.2;
+          const dry = dryAt(x, y) * 0.4;
+          // Rolled BEFORE the wrapped replay. Drawing random leaves inside the callback gives the
+          // copy at the far edge a different plant from the one it is supposed to be the other half
+          // of, which is a wrap seam with extra steps.
+          const rosette: Array<[number, number, number, string]> = [];
+          for (let k = 0; k < leaves; k++) {
+            const a = spin + (k / leaves) * Math.PI * 2 + rng.range(-0.2, 0.2);
+            rosette.push([
+              a,
+              rad * rng.range(0.7, 1.15),
+              rng.range(-0.12, 0.12),
+              pigment(t + Math.max(0, facing(a)) * 1.2, dry),
+            ]);
+          }
+          wrapped(size, x, y, rad * 1.5, (px, py) => {
+            for (const [a, len, curve, fill] of rosette) {
+              ctx.fillStyle = fill;
+              blade(px, py, len, a, rad * 0.3, curve);
+            }
+          });
+        }
 
         if (p.flowers.length && p.flowerDensity > 0) {
           /**
-           * Wildflowers arrive in drifts, and each one is a rosette rather than a dot.
+           * Wildflowers arrive in drifts, and each head is a rosette of real petals around a centre.
            *
-           * A flat speck is what a flower looks like after the mipmap has had it; painting five
-           * petals around a paler centre at 0.05 m across means the thing that survives to mip 4 is
-           * a soft warm point with a light core, which is what the reference's flower drifts read as
-           * from above. The spec caps wildflower area at 2%, and drifts of nine at this size sit
-           * well under it.
+           * They were three times too small. At 0.018-0.034 m a head is 3-6 px on a sheet authored at
+           * 186 px per metre, which is a speck: the mipmap has it by level 2 and at texture scale it
+           * cannot show a petal, let alone a centre. The reference sheet's flowers are readable
+           * rosettes, so these are painted at 0.05-0.09 m — daisy and ox-eye scale — with a dark ring
+           * under the petals so the head has a silhouette against grass of similar value, and a
+           * contrasting centre. The spec caps wildflower area at 2%; drifts of nine heads at this
+           * size sit around 1%.
            */
           const drifts = Math.round(22 * p.flowerDensity * r.flowers);
           for (let d = 0; d < drifts; d++) {
             const dx = rng.range(0, size);
             const dy = rng.range(0, size);
-            const spread = ppm * rng.range(0.35, 1.1);
+            const spread = ppm * rng.range(0.35, 1.2);
             const hue = rng.pick(p.flowers);
+            const heart = rng.chance(0.55) ? 0xf2c73c : 0xe8dc9a;
             const heads = rng.int(6, 14);
             for (let i = 0; i < heads; i++) {
               const ox = rng.range(-spread, spread);
               const oy = rng.range(-spread, spread);
-              const rad = ppm * rng.range(0.018, 0.034);
-              const petals = rng.int(4, 6);
+              const rad = ppm * rng.range(0.042, 0.075);
+              const petals = rng.int(5, 8);
               const spin = rng.range(0, Math.PI * 2);
-              const petalCss = css(hue, rng.range(0.7, 1));
-              wrapped(size, (dx + ox + size) % size, (dy + oy + size) % size, rad * 2, (x, y) => {
+              const petalCss = css(hue, rng.range(0.82, 1));
+              const rimCss = mixCss(hue, 0x2a3018, 0.55, 0.5);
+              const heartCss = css(heart, 0.92);
+              // A short stem, so a flower head is attached to the sward rather than lying on it.
+              const stemCss = css(c.shade, 0.8);
+              wrapped(size, (dx + ox + size) % size, (dy + oy + size) % size, rad * 2.4, (x, y) => {
+                ctx.fillStyle = stemCss;
+                blade(x, y + rad * 1.9, rad * 1.9, -Math.PI / 2, rad * 0.16, 0.1);
+                ctx.fillStyle = rimCss;
+                ctx.beginPath();
+                ctx.arc(x, y, rad * 1.06, 0, Math.PI * 2);
+                ctx.fill();
                 ctx.fillStyle = petalCss;
                 for (let k = 0; k < petals; k++) {
                   const a = spin + (k / petals) * Math.PI * 2;
                   ctx.beginPath();
                   ctx.ellipse(
-                    x + Math.cos(a) * rad * 0.55,
-                    y + Math.sin(a) * rad * 0.55,
-                    rad * 0.62,
-                    rad * 0.42,
+                    x + Math.cos(a) * rad * 0.52,
+                    y + Math.sin(a) * rad * 0.52,
+                    rad * 0.56,
+                    rad * 0.3,
                     a,
                     0,
                     Math.PI * 2
                   );
                   ctx.fill();
                 }
-                ctx.fillStyle = css(0xf6e9a8, 0.85);
+                ctx.fillStyle = heartCss;
                 ctx.beginPath();
-                ctx.arc(x, y, rad * 0.36, 0, Math.PI * 2);
+                ctx.arc(x, y, rad * 0.3, 0, Math.PI * 2);
                 ctx.fill();
               });
             }
@@ -1318,7 +1816,15 @@ export class TextureFactory {
     );
   }
 
-  /** Loose ground: gravel, dirt, sand or snow, depending on the palette passed in. */
+  /**
+   * Loose ground: gravel, dirt, sand or snow, depending on the palette passed in.
+   *
+   * The reference sheet's gravel is a bed of individually painted PEBBLES over sandy fines, three
+   * size classes deep, measuring a p5-to-p95 luma spread of 117 with an adjacent-pixel |dL| of 16.5.
+   * The previous generator was two mottle passes plus flat dots, which measured a spread of 34 and a
+   * |dL| of 3.2 — a beige wash. Every stone now gets the same treatment every other discrete element
+   * in this file gets: its own value, its own light-biased gradient and its own contact shadow.
+   */
   granular(
     key: string,
     p: { base: number; lit: number; shade: number; grain: number; sparkle?: number },
@@ -1330,16 +1836,74 @@ export class TextureFactory {
         const { canvas, ctx } = makeCanvas(size);
         ctx.fillStyle = css(p.base);
         ctx.fillRect(0, 0, size, size);
-        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.lit, 5, 0.55);
-        mottle(ctx, size, rng.int(0, 1e6), p.base, p.lit, 14, 0.25);
-        const grains = Math.round(size * size * 0.006 * p.grain);
-        for (let i = 0; i < grains; i++) {
-          const x = rng.range(0, size);
-          const y = rng.range(0, size);
-          const r = rng.range(size / 460, size / 200);
-          ctx.fillStyle = rng.chance(0.55) ? css(p.lit, 0.4) : css(p.shade, 0.35);
+        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.lit, 5, 0.75);
+        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.lit, 14, 0.4);
+
+        const lit = new Color(p.lit);
+        const shade = new Color(p.shade);
+        /** One class of stone: `n` of them at `rLo`..`rHi` texels, laid smallest first. */
+        const bed = (n: number, rLo: number, rHi: number, contact: number): void => {
+          for (let i = 0; i < n; i++) {
+            const r = rng.range(rLo, rHi);
+            // Biased toward the LIT end. A gravel bed is read by the stones catching light on their
+            // crowns, not by the shadows between them: an even spread about the base colour painted
+            // a field of dark spots that looked like holes in the sand rather than pebbles in it.
+            const v = rng.range(-0.45, 1);
+            const face = new Color(p.base);
+            if (v >= 0) face.lerp(lit, v);
+            else face.lerp(shade, -v);
+            face.offsetHSL(rng.range(-0.02, 0.02), rng.range(-0.35, 0.06), 0);
+            // `shadedBlob` runs its gradient out to 1.15 r, so the pebble's visible face only ever
+            // sees the band between the mid and outer stops — the same thing that flattened the old
+            // cobble sheet to a spread of 17. The stops are therefore opened past where the stone
+            // actually sits, so what lands ON the pebble is the full lit-to-shade run.
+            const faceLit = cssOf(face.clone().lerp(lit, 0.45).offsetHSL(0, 0, 0.06), 1);
+            const faceMid = cssOf(face, 1);
+            const faceShade = cssOf(face.clone().lerp(shade, 0.75), 1);
+            const squash = rng.range(0.62, 1);
+            const spin = rng.range(0, Math.PI * 2);
+            wrapped(size, rng.range(0, size), rng.range(0, size), r * 1.6, (x, y) =>
+              shadedBlob(
+                ctx,
+                x,
+                y,
+                r,
+                r * squash,
+                spin,
+                faceLit,
+                faceMid,
+                faceShade,
+                contact > 0 ? css(p.shade, contact) : null
+              )
+            );
+          }
+        };
+        /**
+         * Coverage, not sprinkle.
+         *
+         * The counts here were an order of magnitude short: at three beds totalling roughly 1700
+         * stones on a 1024 px sheet the pebbles covered about a fifth of it and the rest was the
+         * sandy wash, which is why the sheet measured a p5-to-p95 spread of 51 against the
+         * reference's 117. Reference gravel is stones ON stones — the fines are only ever glimpsed
+         * between them — so each bed is scaled to roughly its own area's worth of ground and the
+         * beds are laid coarse first so the small ones settle into the gaps.
+         */
+        const density = size * size * 0.0009 * p.grain;
+        bed(Math.round(density * 0.26), size / 90, size / 42, 0.3);
+        bed(Math.round(density * 1.5), size / 170, size / 85, 0.22);
+        bed(Math.round(density * 6), size / 340, size / 165, 0.14);
+        // Fines: the grit between the stones, too small to model but not too small to see.
+        const grit = Math.round(size * size * 0.002 * p.grain);
+        for (let i = 0; i < grit; i++) {
+          ctx.fillStyle = rng.chance(0.5) ? css(p.lit, 0.4) : css(p.shade, 0.38);
           ctx.beginPath();
-          ctx.arc(x, y, r, 0, Math.PI * 2);
+          ctx.arc(
+            rng.range(0, size),
+            rng.range(0, size),
+            rng.range(size / 900, size / 420),
+            0,
+            Math.PI * 2
+          );
           ctx.fill();
         }
         if (p.sparkle) {

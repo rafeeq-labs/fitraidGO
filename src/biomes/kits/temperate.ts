@@ -67,14 +67,33 @@ export const temperate: BiomeKit = {
       // Landed empirically, because the albedo-to-render relationship is not the simple 1.65x gain
       // a single lit surface suggests: the palette's own values rendered at luma 165, and scaling
       // all four by 0.67 overshot to 57. These are the midpoint, measured back at the target.
-      stone: 0x746458,
-      stoneLit: 0x887a69,
-      stoneShade: 0x554d42,
-      grout: 0x3f392f,
-      rows: 13,
+      // RE-JUDGED against the supplied ground-material sheet, which is the target art rather than
+      // an inference from a scene render. That sheet's cobble measures rgb(122,106,81) at luma 109,
+      // a WARM GREY-BROWN with a p5-to-p95 spread of 119 and green growth in the joints; the kit's
+      // previous four colours generated a sheet at luma 88 with a spread of 73 and a saturation of
+      // 0.24 against the sheet's 0.33, i.e. too dark, too brown and far too even.
+      //
+      // The albedo-to-render gain was measured directly rather than guessed, from captures of the
+      // same street: a sheet mean of luma 65 rendered at 84, and these colours generate a sheet at
+      // 90 which renders at 115, a slope of about 1.4. 115 is where the carriageway wants to sit —
+      // a little under the lit grass beside it (149) rather than 52 luma under it, and nowhere near
+      // the pale ashlar that has to stay the brightest albedo in the kit.
+      //
+      // Copying the sheet's own 109 outright would render the carriageway near 145 and put the
+      // street back to being the brightest surface in frame, the failure this palette was darkened
+      // to fix. The gain is the lever if a later pass wants it warmer or brighter still: every 7
+      // luma of albedo here is 10 on the street.
+      stone: 0x7d6d57,
+      stoneLit: 0xa8947a,
+      stoneShade: 0x4e4433,
+      grout: 0x2b241a,
+      // 26 setts over a 9 m tile is the same 0.35 m sett as 13 over 4.5 m, on twice the sheet, so
+      // the carriageway's repeat wavelength doubles for nothing but memory. See `sheetScale`.
+      rows: 26,
+      sheetScale: 2,
       jitter: 0.55,
-      creep: 0.25,
-      creepColor: 0x55603a,
+      creep: 0.3,
+      creepColor: 0x5c6b34,
     },
     // 10 stones across a 3 m tile lands at 0.30 m each, i.e. 11 per square metre — the middle of
     // the reference's 8-14 band. The forecourt module has to read smaller than the building's
@@ -93,7 +112,15 @@ export const temperate: BiomeKit = {
       lit: PALETTE.grassLit,
       mid: PALETTE.grassMid,
       shade: PALETTE.grassShade,
-      flowers: [PALETTE.flowerWhite, PALETTE.flowerViolet, PALETTE.flowerGold],
+      // Five colours, because the reference sheet's meadow carries white, yellow, blue and orange
+      // heads in separate drifts and three of them reads as one pigment scattered twice.
+      flowers: [
+        PALETTE.flowerWhite,
+        PALETTE.flowerViolet,
+        PALETTE.flowerGold,
+        0x6f93d6,
+        0xd8622e,
+      ],
       flowerDensity: 1,
       clump: 1,
     },
