@@ -1,0 +1,102 @@
+[
+  {
+    "name": "hero-temperate",
+    "path": "/dev/world.html",
+    "query": "biome=temperate&freeze=1&t=3&scrub=0.36&fog=preset&seed=7&stats=1",
+    "note": "The primary target frame. Compare against 13-gps-street-network-temperate.png."
+  },
+  {
+    "name": "hero-temperate-clean",
+    "path": "/dev/world.html",
+    "query": "biome=temperate&freeze=1&t=3&scrub=0.36&fog=off&seed=7",
+    "note": "Same frame without fog of war or the stats overlay, for palette and material judging."
+  },
+  {
+    "name": "survey-temperate",
+    "path": "/dev/world.html",
+    "query": "biome=temperate&freeze=1&t=3&scrub=0.36&fog=off&cam=survey&seed=7",
+    "note": "Near-plan view. Judges real-map fidelity: street continuity, junctions, block shapes."
+  },
+  {
+    "name": "street-temperate",
+    "path": "/dev/world.html",
+    "query": "biome=temperate&freeze=1&t=3&scrub=0.36&fog=off&cam=street&seed=7",
+    "note": "Low camera. Judges facades, roof silhouettes and material quality up close."
+  },
+  {
+    "name": "fog-frontier",
+    "path": "/dev/world.html",
+    "query": "biome=temperate&freeze=1&t=3&scrub=0.62&fog=preset&seed=7",
+    "note": "Explored-versus-unexplored boundary; the real street network must stay legible ahead."
+  },
+  {
+    "name": "route-nav",
+    "path": "/dev/world.html",
+    "query": "biome=temperate&freeze=1&t=3&scrub=0.14&fog=off&seed=7",
+    "note": "Early on the route, so most of it is ahead of the player and reads as navigation."
+  },
+  {
+    "name": "ladder",
+    "path": "/dev/kit.html",
+    "query": "view=ladder&freeze=1&stats=1&seed=7",
+    "note": "Family x level grid. Compare against 09-temperate-building-tiers.png."
+  },
+  {
+    "name": "props",
+    "path": "/dev/kit.html",
+    "query": "view=props&freeze=1&seed=7",
+    "note": "Prop inventory. Compare against 05-modular-asset-kit.png."
+  },
+  {
+    "name": "trees",
+    "path": "/dev/kit.html",
+    "query": "view=trees&freeze=1&seed=7",
+    "note": "Vegetation archetypes. Judge canopy plan shape, since that is the read from above."
+  },
+  {
+    "name": "biome-temperate",
+    "path": "/dev/world.html",
+    "query": "biome=temperate&freeze=1&t=3&scrub=0.36&fog=off&seed=7"
+  },
+  {
+    "name": "biome-snow",
+    "path": "/dev/world.html",
+    "query": "biome=snow&freeze=1&t=3&scrub=0.36&fog=off&seed=7",
+    "note": "Compare against 16-snow-city-gps-sharp.png, the second fully specified biome."
+  },
+  {
+    "name": "biome-desert",
+    "path": "/dev/world.html",
+    "query": "biome=desert&freeze=1&t=3&scrub=0.36&fog=off&seed=7"
+  },
+  {
+    "name": "biome-coastal",
+    "path": "/dev/world.html",
+    "query": "biome=coastal&freeze=1&t=3&scrub=0.36&fog=off&seed=7"
+  },
+  {
+    "name": "biome-forest",
+    "path": "/dev/world.html",
+    "query": "biome=forest&freeze=1&t=3&scrub=0.36&fog=off&seed=7"
+  },
+  {
+    "name": "biome-alpine",
+    "path": "/dev/world.html",
+    "query": "biome=alpine&freeze=1&t=3&scrub=0.36&fog=off&seed=7"
+  },
+  {
+    "name": "biome-farmland",
+    "path": "/dev/world.html",
+    "query": "biome=farmland&freeze=1&t=3&scrub=0.36&fog=off&seed=7"
+  },
+  {
+    "name": "biome-autumn",
+    "path": "/dev/world.html",
+    "query": "biome=autumn&freeze=1&t=3&scrub=0.36&fog=off&seed=7"
+  },
+  {
+    "name": "biome-swamp",
+    "path": "/dev/world.html",
+    "query": "biome=swamp&freeze=1&t=3&scrub=0.36&fog=off&seed=7"
+  }
+]

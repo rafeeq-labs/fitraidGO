@@ -2,6 +2,7 @@ import {
   BufferAttribute,
   BufferGeometry,
   Color,
+  DoubleSide,
   Group,
   LineBasicMaterial,
   LineSegments,
@@ -115,7 +116,8 @@ class TriBatch {
     const g = new BufferGeometry();
     g.setAttribute('position', new BufferAttribute(new Float32Array(this.verts), 3));
     g.setIndex(this.idx);
-    const m = new MeshBasicMaterial({ color, transparent: opacity < 1, opacity });
+    // Compiler winding is not guaranteed CCW-from-above; the plan view must show every face.
+    const m = new MeshBasicMaterial({ color, transparent: opacity < 1, opacity, side: DoubleSide });
     return new Mesh(g, m);
   }
 }
@@ -263,7 +265,12 @@ export class DebugPlanView {
     const edges = new SegmentBatch();
     const n = this.tile.graph.nodes;
     for (const e of this.tile.graph.edges) {
-      edges.add(n[e.a * 2], n[e.a * 2 + 1], n[e.b * 2], n[e.b * 2 + 1], Y.graphEdge);
+      // An edge is a whole road, so trace its centreline rather than the end-to-end chord.
+      const road = this.tile.roads[e.road];
+      const traced =
+        road && ((road.from === e.a && road.to === e.b) || (road.from === e.b && road.to === e.a));
+      if (traced) edges.addPolyline(road.centerline, Y.graphEdge);
+      else edges.add(n[e.a * 2], n[e.a * 2 + 1], n[e.b * 2], n[e.b * 2 + 1], Y.graphEdge);
     }
     add(g, edges.build(COLOR.graphEdge));
 
