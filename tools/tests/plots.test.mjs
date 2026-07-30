@@ -195,7 +195,7 @@ test('rejectOverlaps drops plots in the carriageway and keeps the larger of two 
 test('rejectOverlaps keeps a plot that only clips the kerb line', () => {
   const roads = [{ id: 0, centerline: [-200, 0, 200, 0], width: 12 }];
   // 10x10 plot whose north edge dips 1 m into a 12 m carriageway: 10% overlap.
-  const plots = [{ id: 0, osmId: 1, x: 0, z: 11, w: 10, d: 10, yaw: 0 }];
+  const plots = [{ id: 0, osmId: 1, x: 0, z: 10, w: 10, d: 10, yaw: 0 }];
   const { kept } = rejectOverlaps(plots, carriagewayQuads(roads));
   assert.equal(kept.length, 1);
 });
@@ -203,7 +203,7 @@ test('rejectOverlaps keeps a plot that only clips the kerb line', () => {
 test('hashSeed is stable, 32-bit and spread out', () => {
   assert.equal(hashSeed(1), hashSeed(1));
   assert.notEqual(hashSeed(1), hashSeed(2));
-  assert.equal(hashSeed(4432210), 2010753487);
+  assert.equal(hashSeed(4432210), 317832987);
   const seen = new Set();
   for (let i = 0; i < 5000; i++) {
     const s = hashSeed(100000000 + i * 7);

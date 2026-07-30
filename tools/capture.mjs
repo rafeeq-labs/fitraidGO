@@ -90,7 +90,8 @@ const browser = await chromium.launch({
 let failed = 0;
 for (const shot of shots) {
   const page = await browser.newPage({ viewport: VIEW, deviceScaleFactor: 1 });
-  const url = `${BASE}/?${shot.query}`;
+  const pagePath = shot.path ?? opt('path', '/');
+  const url = `${BASE}${pagePath}?${shot.query}`;
   const out = shot.file ?? (shot.name.endsWith('.png') ? shot.name : `shots/${shot.name}.png`);
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));

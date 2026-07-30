@@ -25,21 +25,33 @@ export interface TextureQuality {
 
 export const DEFAULT_QUALITY: TextureQuality = { size: 512, anisotropy: 4 };
 
-const css = (hex: number, alpha = 1): string => {
-  const c = new Color(hex);
-  const r = Math.round(c.r * 255);
-  const g = Math.round(c.g * 255);
-  const b = Math.round(c.b * 255);
-  return alpha >= 1 ? `rgb(${r},${g},${b})` : `rgba(${r},${g},${b},${alpha})`;
+/**
+ * Canvas colours must be written in sRGB.
+ *
+ * `Color` stores components in linear space — constructing one from a hex literal converts out of
+ * sRGB immediately. Writing `c.r * 255` into a canvas therefore darkens the colour once, and the
+ * resulting CanvasTexture (correctly tagged sRGB) is then linearised again at sample time. The
+ * double conversion is what turns warm pale stone into dark brown. `getStyle()` converts back to
+ * sRGB, so the round trip is neutral.
+ */
+const cssOf = (c: Color, alpha: number): string => {
+  if (alpha >= 1) return c.getStyle();
+  const m = /(\d+)\D+(\d+)\D+(\d+)/.exec(c.getStyle());
+  return m ? `rgba(${m[1]},${m[2]},${m[3]},${alpha})` : c.getStyle();
 };
 
-/** Mixes two hex colours in linear-ish space and returns a css string. */
+const css = (hex: number, alpha = 1): string => cssOf(new Color(hex), alpha);
+
+/** Mixes two colours in linear space — which is the correct space to interpolate in — then converts. */
 const mixCss = (a: number, b: number, t: number, alpha = 1): string => {
   const ca = new Color(a);
-  const cb = new Color(b);
-  ca.lerp(cb, t);
-  return css(ca.getHex(), alpha);
+  ca.lerp(new Color(b), t);
+  return cssOf(ca, alpha);
 };
+
+/** Lightens or darkens in linear space and returns an sRGB css string. */
+const shiftCss = (hex: number, lightness: number, saturation = 0, alpha = 1): string =>
+  cssOf(new Color(hex).offsetHSL(0, saturation, lightness), alpha);
 
 function makeCanvas(size: number): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
   const canvas = document.createElement('canvas');
@@ -92,9 +104,9 @@ function shadedBlob(
   rx: number,
   ry: number,
   rot: number,
-  lit: number,
-  mid: number,
-  shade: number,
+  lit: string,
+  mid: string,
+  shade: string,
   contact: string | null
 ): void {
   const r = Math.max(rx, ry);
@@ -106,9 +118,9 @@ function shadedBlob(
     cy,
     r * 1.15
   );
-  grad.addColorStop(0, css(lit));
-  grad.addColorStop(0.55, css(mid));
-  grad.addColorStop(1, css(shade));
+  grad.addColorStop(0, lit);
+  grad.addColorStop(0.55, mid);
+  grad.addColorStop(1, shade);
 
   ctx.save();
   ctx.translate(cx, cy);
@@ -234,8 +246,14 @@ export class TextureFactory {
     this.cache.clear();
   }
 
-  /** Road and forecourt paving. `repeatMetres` is the world size one tile covers. */
-  cobble(key: string, p: CobbleParams, repeatMetres = 1): Texture {
+  /**
+   * Road and forecourt paving.
+   *
+   * Tiling is driven by UVs, not by the texture's own repeat: MeshBuilder emits UVs in metres
+   * divided by `uvScale`, so a surface asks for the tile size it wants at authoring time. `repeat`
+   * stays 1 unless a caller supplies geometry with normalised UVs.
+   */
+  cobble(key: string, p: CobbleParams, repeat = 1): Texture {
     return this.memo(
       `cobble:${key}`,
       (rng, size) => {
@@ -257,9 +275,18 @@ export class TextureFactory {
             const rx = cell * rng.range(0.36, 0.5) * (1 - p.jitter * 0.12);
             const ry = cell * rng.range(0.32, 0.46) * (1 - p.jitter * 0.12);
             const v = rng.range(-p.jitter, p.jitter) * 0.18;
-            const lit = new Color(p.stoneLit).offsetHSL(0, 0, v).getHex();
-            const mid = new Color(p.stone).offsetHSL(0, rng.range(-0.03, 0.03), v).getHex();
-            shadedBlob(ctx, cx, cy, rx, ry, rng.range(-0.4, 0.4), lit, mid, p.stoneShade, contact);
+            shadedBlob(
+              ctx,
+              cx,
+              cy,
+              rx,
+              ry,
+              rng.range(-0.4, 0.4),
+              shiftCss(p.stoneLit, v),
+              shiftCss(p.stone, v, rng.range(-0.03, 0.03)),
+              css(p.stoneShade),
+              contact
+            );
           }
         }
 
@@ -278,7 +305,7 @@ export class TextureFactory {
         }
         return canvas;
       },
-      repeatMetres
+      repeat
     );
   }
 
@@ -303,11 +330,9 @@ export class TextureFactory {
           for (let col = -1; col <= cols; col++) {
             const x = (col + stagger) * tileW;
             const v = rng.range(-p.variance, p.variance);
-            const lit = new Color(p.lit).offsetHSL(0, rng.range(-0.02, 0.02), v).getHex();
-            const mid = new Color(p.mid).offsetHSL(0, 0, v * 0.6).getHex();
             const grad = ctx.createLinearGradient(x, y + rowH * 0.2, x, y + rowH * 1.05);
-            grad.addColorStop(0, css(lit));
-            grad.addColorStop(0.65, css(mid));
+            grad.addColorStop(0, shiftCss(p.lit, v, rng.range(-0.02, 0.02)));
+            grad.addColorStop(0.65, shiftCss(p.mid, v * 0.6));
             grad.addColorStop(1, css(p.shade));
             ctx.fillStyle = grad;
             ctx.beginPath();
@@ -389,8 +414,8 @@ export class TextureFactory {
             const h = rowH - joint;
             const v = rng.range(-0.05, 0.05);
             const grad = ctx.createLinearGradient(bx, y, bx + w * 0.5, y + h);
-            grad.addColorStop(0, css(new Color(p.lit).offsetHSL(0, 0, v).getHex()));
-            grad.addColorStop(0.6, css(new Color(p.mid).offsetHSL(0, 0, v * 0.5).getHex()));
+            grad.addColorStop(0, shiftCss(p.lit, v));
+            grad.addColorStop(0.6, shiftCss(p.mid, v * 0.5));
             grad.addColorStop(1, css(p.shade));
             ctx.fillStyle = grad;
             ctx.fillRect(bx, y, w, h);
@@ -416,7 +441,10 @@ export class TextureFactory {
         const { canvas, ctx } = makeCanvas(size);
         ctx.fillStyle = css(p.mid);
         ctx.fillRect(0, 0, size, size);
-        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.lit, 4, 0.55);
+        // Two mottle passes at very different scales. The low-frequency one is what stops a large
+        // lawn reading as flat felt under a high sun, where every fragment lands in the same band.
+        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.lit, 1.4, 0.7);
+        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.lit, 4, 0.45);
 
         const clumps = Math.round(180 / Math.max(p.clump, 0.2));
         for (let i = 0; i < clumps; i++) {
@@ -477,8 +505,8 @@ export class TextureFactory {
           const v = rng.range(-0.06, 0.06);
           const grad = ctx.createLinearGradient(x, 0, x + plankW, 0);
           grad.addColorStop(0, css(p.shade));
-          grad.addColorStop(0.25, css(new Color(p.mid).offsetHSL(0, 0, v).getHex()));
-          grad.addColorStop(0.7, css(new Color(p.lit).offsetHSL(0, 0, v).getHex()));
+          grad.addColorStop(0.25, shiftCss(p.mid, v));
+          grad.addColorStop(0.7, shiftCss(p.lit, v));
           grad.addColorStop(1, css(p.shade));
           ctx.fillStyle = grad;
           ctx.fillRect(x, 0, plankW - Math.max(1, size / 340), size);

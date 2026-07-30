@@ -44,7 +44,14 @@ export interface PlayerMaterials {
   metal: RampMaterial;
 }
 
-const SCALE = 1;
+/**
+ * Rendered height in metres, deliberately about 3.5 times life size.
+ *
+ * Measured from the references: the avatar occupies 2.5-2.8 % of frame height, which at the target
+ * ground scale works out to roughly 3.6 m of world height. A realistic 1.8 m figure would be about
+ * thirteen pixels tall and simply invisible. Do not "correct" this to a human height.
+ */
+const DEFAULT_HEIGHT = 3.6;
 /** Eye-height proportions, in metres. */
 const H = {
   total: 1.78,
@@ -189,7 +196,7 @@ export class Player {
   private readonly outlineMeshes: Mesh[] = [];
   private lastYaw = 0;
 
-  constructor(options: { clothTexture?: Texture; outline?: boolean } = {}) {
+  constructor(options: { clothTexture?: Texture; outline?: boolean; heightMetres?: number } = {}) {
     const geo = buildBody();
 
     this.materials = {
@@ -246,7 +253,7 @@ export class Player {
     torso.add(cloak);
     pelvis.add(torso, armL, armR, legL, legR);
     root.add(pelvis);
-    root.scale.setScalar(SCALE);
+    root.scale.setScalar((options.heightMetres ?? DEFAULT_HEIGHT) / H.total);
 
     this.parts = { root, pelvis, torso, head, armL, armR, legL, legR, cloak };
 

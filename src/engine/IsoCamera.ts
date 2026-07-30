@@ -4,17 +4,18 @@ import { PerspectiveCamera, Vector3, MathUtils } from 'three';
  * The RaidFit GPS camera: a high 3/4 view down onto the world, framed for a portrait phone,
  * with the player anchored low in the frame.
  *
- * A narrow-FOV perspective camera is used rather than an orthographic one because the benchmark
- * references show clear depth falloff — distant terraces read visibly smaller than near ones,
- * which is what makes the view feel like a world rather than a diagram. The FOV is kept small
- * (~30 degrees) so edge distortion stays imperceptible and the image still reads as isometric.
+ * Measured against the references: verticals stay parallel to screen-Y at the frame edges and the
+ * scale falloff from the bottom of the frame to the top is only about 16%, so the target projection
+ * is effectively orthographic. A perspective camera with a very narrow field of view is used rather
+ * than a true orthographic one because it reproduces exactly that small residual falloff — which
+ * reads as depth — while keeping edge distortion imperceptible.
  *
  * The player is placed at a chosen fraction down the screen by solving for the ground-space
  * target offset numerically, so the anchor holds for any elevation, FOV or aspect ratio.
  */
 
 export interface CameraPreset {
-  /** Degrees above the horizontal. The references sit around 55-62. */
+  /** Degrees above the horizontal. Measured at 52 in the primary references. */
   elevation: number;
   /** Degrees, world yaw of the view direction. 0 looks toward -z ("north up"). */
   azimuth: number;
@@ -28,15 +29,20 @@ export interface CameraPreset {
   followTau: number;
 }
 
+/**
+ * A portrait frame's horizontal field of view is much narrower than its vertical one, so a wide
+ * ground span puts the camera a long way out. That is fine and intended here: scene fog is expressed
+ * relative to the camera's focus distance, so pulling back does not fog the frame.
+ */
 export const CAMERA_PRESETS: Record<string, CameraPreset> = {
   /** The shipping GPS view, calibrated against shots/reference/13-gps-street-network-temperate.png. */
-  gps: { elevation: 58, azimuth: 0, fov: 30, viewSpan: 95, anchorY: 0.8, followTau: 0.55 },
-  /** Slightly lower and wider: better for showing building facades and roof silhouettes. */
-  street: { elevation: 48, azimuth: 28, fov: 32, viewSpan: 70, anchorY: 0.74, followTau: 0.55 },
+  gps: { elevation: 52, azimuth: 0, fov: 18, viewSpan: 82, anchorY: 0.865, followTau: 0.55 },
+  /** Lower and tighter: shows facades and roof silhouettes, for material review. */
+  street: { elevation: 40, azimuth: 28, fov: 22, viewSpan: 52, anchorY: 0.78, followTau: 0.55 },
   /** Near plan view for inspecting street layout without losing the fantasy read. */
-  survey: { elevation: 74, azimuth: 0, fov: 26, viewSpan: 190, anchorY: 0.6, followTau: 0.4 },
+  survey: { elevation: 70, azimuth: 0, fov: 16, viewSpan: 240, anchorY: 0.55, followTau: 0.4 },
   /** Tight on a single plot: the upgrade-ladder and asset-review framing. */
-  plot: { elevation: 42, azimuth: 35, fov: 30, viewSpan: 30, anchorY: 0.6, followTau: 0.3 },
+  plot: { elevation: 38, azimuth: 35, fov: 22, viewSpan: 26, anchorY: 0.62, followTau: 0.3 },
 };
 
 const SMOOTH_EPSILON = 1e-4;
@@ -145,6 +151,15 @@ export class IsoCamera {
   /** Ground-plane extents currently visible, for shadow-frustum and fog-stamp fitting. */
   visibleGroundRadius(): number {
     return this.preset.viewSpan * 1.35;
+  }
+
+  /**
+   * Distance from the camera to the point it is looking at. Scene fog must be expressed relative to
+   * this, not in absolute metres: a portrait frame at this elevation puts the camera well over a
+   * hundred metres out, so absolute fog distances tuned by eye put the whole frame inside the haze.
+   */
+  get focusDistance(): number {
+    return this.distanceForSpan();
   }
 
   get targetPoint(): Vector3 {

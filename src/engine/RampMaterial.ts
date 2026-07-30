@@ -2,7 +2,10 @@ import {
   Color,
   MeshLambertMaterial,
   type MeshLambertMaterialParameters,
+  type Texture,
+  Vector2,
   Vector3,
+  Vector4,
   type WebGLProgramParametersWithUniforms,
 } from 'three';
 import { PALETTE, RAMP } from './Palette.js';
@@ -41,6 +44,14 @@ export interface RampUniforms {
   /** Sun direction in view space, updated once per frame by the renderer. */
   uSunDirView: { value: Vector3 };
   uAOStrength: { value: number };
+  /** Fog-of-war explored mask, and the transform that maps world XZ into it. */
+  uFogMask: { value: Texture | null };
+  /** [minX, minZ, 1/width, 1/depth] of the tile. */
+  uFogTransform: { value: Vector4 };
+  /** [unexploredLevel, unexploredSaturation]. */
+  uFogParams: { value: Vector2 };
+  uFogEnabled: { value: number };
+  uFogFrontier: { value: Color };
 }
 
 /** Shared across every ramp material so one write per frame updates the whole scene. */
@@ -58,7 +69,27 @@ export const rampUniforms: RampUniforms = {
   uRimColor: { value: new Color(RAMP.rimColor) },
   uSunDirView: { value: new Vector3(0, 1, 0) },
   uAOStrength: { value: 1 },
+  uFogMask: { value: null },
+  uFogTransform: { value: new Vector4(0, 0, 1, 1) },
+  uFogParams: { value: new Vector2(0.42, 0.35) },
+  uFogEnabled: { value: 0 },
+  uFogFrontier: { value: new Color(PALETTE.shadowViolet) },
 };
+
+/** Points every ramp material at a fog-of-war mask. Pass null to disable the effect. */
+export function setFogOfWar(
+  source: { target: { texture: Texture }; transform: Vector4; params: Vector2 } | null
+): void {
+  if (!source) {
+    rampUniforms.uFogEnabled.value = 0;
+    rampUniforms.uFogMask.value = null;
+    return;
+  }
+  rampUniforms.uFogMask.value = source.target.texture;
+  rampUniforms.uFogTransform.value.copy(source.transform);
+  rampUniforms.uFogParams.value.copy(source.params);
+  rampUniforms.uFogEnabled.value = 1;
+}
 
 export interface RampMaterialOptions extends MeshLambertMaterialParameters {
   /** Set when the geometry supplies an `aAO` float attribute. */
@@ -84,6 +115,31 @@ uniform vec3 uRimColor;
 uniform vec3 uSunDirView;
 uniform float uAOStrength;
 uniform float uRimScale;
+uniform sampler2D uFogMask;
+uniform vec4 uFogTransform;
+uniform vec2 uFogParams;
+uniform float uFogEnabled;
+uniform vec3 uFogFrontier;
+`;
+
+/**
+ * Applied to the final colour. Unexplored ground is darkened and desaturated toward navy rather
+ * than hidden, with a violet frontier band where the explored area ends, so the real street network
+ * stays faintly legible ahead of the player.
+ */
+const FOG_OF_WAR = /* glsl */ `
+	if ( uFogEnabled > 0.5 ) {
+		vec2 fogUv = ( vWorldPosRF.xz - uFogTransform.xy ) * uFogTransform.zw;
+		float explored = texture2D( uFogMask, fogUv ).r;
+		explored *= step( 0.0, fogUv.x ) * step( fogUv.x, 1.0 ) * step( 0.0, fogUv.y ) * step( fogUv.y, 1.0 );
+		float level = mix( uFogParams.x, 1.0, explored );
+		float sat = mix( uFogParams.y, 1.0, explored );
+		float luma = dot( gl_FragColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
+		vec3 dimmed = mix( vec3( luma ) * vec3( 0.78, 0.85, 1.08 ), gl_FragColor.rgb, sat ) * level;
+		// Frontier band: a narrow violet lift exactly where the reveal falls off.
+		float frontier = ( 1.0 - abs( explored - 0.5 ) * 2.0 ) * ( 1.0 - explored ) * 0.5;
+		gl_FragColor.rgb = dimmed + uFogFrontier * frontier * 0.35;
+	}
 `;
 
 /** The line inside RE_Direct_Lambert that the ramp replaces. */
@@ -122,6 +178,7 @@ export class RampMaterial extends MeshLambertMaterial {
       .replace(
         '#include <common>',
         `#include <common>
+varying vec3 vWorldPosRF;
 #ifdef USE_VERTEX_AO
 attribute float aAO;
 varying float vAO;
@@ -133,6 +190,20 @@ varying float vAO;
 #ifdef USE_VERTEX_AO
 vAO = aAO;
 #endif`
+      )
+      // World position is computed here rather than relying on three's worldpos_vertex chunk,
+      // which is only emitted for certain feature combinations. Instance transforms must be
+      // folded in the same order project_vertex uses them.
+      .replace(
+        '#include <project_vertex>',
+        `{
+	vec4 rfWorld = vec4( transformed, 1.0 );
+	#ifdef USE_INSTANCING
+	rfWorld = instanceMatrix * rfWorld;
+	#endif
+	vWorldPosRF = ( modelMatrix * rfWorld ).xyz;
+}
+#include <project_vertex>`
       );
 
     shader.fragmentShader = shader.fragmentShader
@@ -140,6 +211,7 @@ vAO = aAO;
         '#include <common>',
         `#include <common>
 ${RAMP_DECLARATIONS}
+varying vec3 vWorldPosRF;
 #ifdef USE_VERTEX_AO
 varying float vAO;
 #endif`
@@ -171,6 +243,12 @@ diffuseColor.rgb *= mix( 1.0, vAO, uAOStrength );
 	float rimEdge = pow( 1.0 - saturate( dot( normal, normalize( vViewPosition ) ) ), uRimPower );
 	reflectedLight.directDiffuse += rimEdge * rimFacing * uRimStrength * uRimScale * uRimColor;
 }`
+      )
+      // Applied while still in linear space, before tone mapping, so the desaturation is correct.
+      .replace(
+        '#include <opaque_fragment>',
+        `#include <opaque_fragment>
+${FOG_OF_WAR}`
       );
   }
 

@@ -80,12 +80,16 @@ test('simplify keeps the endpoints and drops collinear points', () => {
   assert.deepEqual(simplify([], 0.8), []);
 });
 
+// `turn` is the deviation from straight ahead: 0 is straight, 180 is a full hairpin.
+const turnedLine = (turn) => {
+  const t = (turn * Math.PI) / 180;
+  return [0, 0, 50, 0, 50 + Math.cos(t) * 50, Math.sin(t) * 50];
+};
+
 test('mitre joins are clamped to 2*halfWidth on hairpins', () => {
   const halfWidth = 4;
-  for (const deg of [1, 0.5, 5, 15, 45, 90, 135, 170, 179, 179.9]) {
-    const a = (deg * Math.PI) / 180;
-    // A hairpin: out along +x, back at `deg` from the reverse direction.
-    const line = [0, 0, 50, 0, 50 - Math.cos(a) * 50, Math.sin(a) * 50];
+  for (const turn of [0, 1, 5, 15, 45, 90, 119, 120, 121, 150, 179, 179.9, 180]) {
+    const line = turnedLine(turn);
     const joins = offsetJoins(line, halfWidth);
     assert.equal(joins.length, 3);
     joins.forEach((jn, i) => {
@@ -96,7 +100,7 @@ test('mitre joins are clamped to 2*halfWidth on hairpins', () => {
           const d = Math.hypot(side[k] - vx, side[k + 1] - vz);
           assert.ok(
             d <= 2 * halfWidth + 1e-9,
-            `deg=${deg} vertex=${i} offset ${d.toFixed(3)} exceeds 2*halfWidth`
+            `turn=${turn} vertex=${i} offset ${d.toFixed(3)} exceeds 2*halfWidth`
           );
         }
       }
@@ -114,12 +118,16 @@ test('a straight line mitres to exactly halfWidth on both sides', () => {
   }
 });
 
-test('a 179.9 degree turn degrades to a bevel', () => {
-  const a = (179.9 * Math.PI) / 180;
-  const joins = offsetJoins([0, 0, 50, 0, 50 - Math.cos(a) * 50, Math.sin(a) * 50], 4);
-  assert.equal(joins[1].mitred, false);
-  assert.equal(joins[1].left.length, 4);
-  assert.equal(joins[1].right.length, 4);
+test('the mitre survives up to a 120 degree turn and bevels beyond it', () => {
+  // mitre = halfWidth / cos(turn/2), so the 2*halfWidth clamp bites at exactly 120 degrees.
+  assert.equal(offsetJoins(turnedLine(119), 4)[1].mitred, true);
+  assert.equal(offsetJoins(turnedLine(121), 4)[1].mitred, false);
+  for (const turn of [121, 179.9, 180]) {
+    const jn = offsetJoins(turnedLine(turn), 4)[1];
+    assert.equal(jn.mitred, false, `turn=${turn}`);
+    assert.equal(jn.left.length, 4);
+    assert.equal(jn.right.length, 4);
+  }
 });
 
 test('ribbon UVs are monotonic along the road and span 0..1 across it', () => {

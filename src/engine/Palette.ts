@@ -40,9 +40,9 @@ export const PALETTE = {
   dirt: hex('#8a6f52'),
 
   // --- vegetation
-  grassLit: hex('#8aa958'),
-  grassMid: hex('#6f8f4a'),
-  grassShade: hex('#4c6636'),
+  grassLit: hex('#87a35d'),
+  grassMid: hex('#6d8a50'),
+  grassShade: hex('#4a6139'),
   coniferLit: hex('#4c7350'),
   coniferDark: hex('#2c4634'),
   broadleafLit: hex('#7fa04a'),
@@ -93,18 +93,18 @@ export type PaletteRole = keyof typeof PALETTE;
  */
 export const RAMP = {
   /** Colour multiplied into fully shadowed surfaces. */
-  shadowTint: hex('#5a6a99'),
+  shadowTint: hex('#4a5c92'),
   /** Colour multiplied into the mid band. */
   midTint: hex('#c9cfd8'),
   /** Colour multiplied into fully lit surfaces. */
   litTint: hex('#fff4de'),
   /** NdotL positions of the two band transitions. */
-  edge0: 0.32,
-  edge1: 0.62,
+  edge0: 0.30,
+  edge1: 0.72,
   /** Half-width of each transition; larger reads painterly, smaller reads cel-shaded. */
-  softness: 0.16,
+  softness: 0.13,
   /** Floor on the shadow band so nothing crushes to black. */
-  shadowFloor: 0.34,
+  shadowFloor: 0.26,
   /** Rim light strength and colour on the sun-facing side. */
   rimStrength: 0.34,
   rimPower: 2.6,

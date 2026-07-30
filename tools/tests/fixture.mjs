@@ -68,6 +68,8 @@ export function makeOsmFixture() {
     npbE: [-95, 150],
     npbW: [-145, 155],
     henriettaE: [90, -100],
+    henriettaMid: [10, -70],
+    groveMid: [-150, -60],
   };
   const j = {};
   for (const [k, [x, z]] of Object.entries(J)) j[k] = node(x, z);
@@ -96,8 +98,10 @@ export function makeOsmFixture() {
     layer: '1',
     width: '9',
   });
-  line([j.bridgeW, [-150, -60], [-155, -130]], { highway: 'residential', name: 'Grove Street' });
-  line([j.laura, [10, -70], j.henriettaE], { highway: 'residential', name: 'Henrietta Street' });
+  line([j.bridgeW, j.groveMid, [-155, -130]], { highway: 'residential', name: 'Grove Street' });
+  line([j.groveMid, [-100, -66], [-60, -70]], { highway: 'residential', name: 'Beckford Road' });
+  line([j.laura, j.henriettaMid, j.henriettaE], { highway: 'residential', name: 'Henrietta Street' });
+  line([j.henriettaMid, [15, -160]], { highway: 'residential', name: 'Sunderland Street' });
   line([j.laura, [3, 55], j.johnstoneS], { highway: 'residential', name: 'Johnstone Street' });
   line([j.johnstoneS, [-40, 130], j.npbE], { highway: 'secondary', name: 'North Parade Road' });
   line([j.npbE, j.npbW], { highway: 'secondary', bridge: 'yes', name: 'North Parade Bridge' });

@@ -11,18 +11,19 @@ import { LAYER, PALETTE } from '../engine/Palette.js';
 /**
  * The GPS interaction radius: one very large, very thin luminous circle lying flat on the ground.
  *
- * The references are emphatic that this is a *drawn line*, not a glowing disc — roughly 90% of the
- * frame width, a couple of pixels thick, with at most a whisper of interior tint. Anything heavier
- * fights the world for attention and immediately looks like a mobile-game overlay.
+ * Measured from the references: the ring spans about 66 % of the frame width, its core is a constant
+ * 2-3 screen pixels wide with a soft 8-11 px glow, and the interior carries only about a 5 % additive
+ * blue tint. Anything heavier fights the world for attention and reads as a mobile-game overlay.
  *
- * It is depth-tested so buildings and trees occlude it, which is what makes it sit in the world
- * rather than on top of the image, but it does not write depth, so it never occludes anything else.
+ * It is drawn OVER all geometry rather than depth-tested: in both primary references the arc crosses
+ * roofs and fence posts unbroken. Occluding it looks more physically correct but loses the thing the
+ * ring is for, which is telling the player at a glance how far their reach extends.
  */
 
 export interface RadiusRingOptions {
-  /** Radius in metres. Sized so the ring spans most of the portrait frame's width. */
+  /** Radius in metres. 27 m spans ~66 % of the frame width at the shipping camera's 82 m span. */
   radius?: number;
-  /** Rim thickness in metres. */
+  /** Rim thickness in metres at the reference camera distance. */
   thickness?: number;
   color?: number;
   /** Interior fill opacity. The references sit near 0.05; above 0.12 it reads as a mobile overlay. */
@@ -35,7 +36,9 @@ export interface RadiusRingOptions {
 const VERT = /* glsl */ `
 varying vec2 vLocal;
 void main() {
-  vLocal = position.xy;
+  // The ring geometry is rotated flat at construction, so the ground-plane coordinates of a
+  // vertex are its local x and z, not x and y.
+  vLocal = vec2( position.x, position.z );
   gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
 }
 `;
@@ -59,11 +62,11 @@ void main() {
   // Crisp rim. Width is fixed in world units, then widened by the pixel derivative so the line
   // never aliases away when the camera is far out.
   float aa = max( fwidth( r ), 0.001 );
-  float half = max( uThickness * 0.5, aa );
-  float rim = 1.0 - smoothstep( 0.0, half, abs( r - R ) );
+  float halfW = max( uThickness * 0.5, aa );
+  float rim = 1.0 - smoothstep( 0.0, halfW, abs( r - R ) );
 
   // A second, much fainter rim just inside gives the line depth without thickening it.
-  float inner = ( 1.0 - smoothstep( 0.0, half * 2.5, abs( r - R * 0.985 ) ) ) * 0.22;
+  float inner = ( 1.0 - smoothstep( 0.0, halfW * 2.5, abs( r - R * 0.985 ) ) ) * 0.22;
 
   // Interior wash, strongest at the rim and fading to nothing at the centre.
   float fill = uFill * smoothstep( 0.0, 1.0, r / R ) * step( r, R );
@@ -80,8 +83,8 @@ export class RadiusRing {
   private radius: number;
 
   constructor(options: RadiusRingOptions = {}) {
-    this.radius = options.radius ?? 42;
-    const thickness = options.thickness ?? 0.42;
+    this.radius = options.radius ?? 27;
+    const thickness = options.thickness ?? 0.3;
 
     // The plane is generated with a hole so the fragment shader never runs over the empty middle;
     // the outer edge is padded so the pulse cannot clip the rim.
@@ -106,18 +109,15 @@ export class RadiusRing {
       transparent: true,
       blending: AdditiveBlending,
       depthWrite: false,
-      depthTest: true,
-      // Lifts the decal off coplanar road surfaces without a visible height offset.
-      polygonOffset: true,
-      polygonOffsetFactor: -2,
-      polygonOffsetUnits: -2,
+      // Drawn over the world, as the references do; see the note above.
+      depthTest: false,
     });
 
     this.mesh = new Mesh(geometry, this.material);
     this.mesh.name = 'gps-radius-ring';
     this.mesh.position.y = LAYER.ringDecal;
     this.mesh.frustumCulled = false;
-    this.mesh.renderOrder = 5;
+    this.mesh.renderOrder = 20;
   }
 
   setRadius(radius: number): void {

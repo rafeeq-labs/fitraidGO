@@ -132,8 +132,12 @@ export interface WaterStyle {
 
 export interface AtmosphereStyle {
   fogColor: number;
-  fogNear: number;
-  fogFar: number;
+  /**
+   * Fog distances as metres PAST the camera's focus point, not absolute distances. The GPS camera
+   * sits well over a hundred metres out, so absolute values tuned by eye fog the entire frame.
+   */
+  fogNearOffset: number;
+  fogFarOffset: number;
   sunColor: number;
   sunIntensity: number;
   sunElevation: number;

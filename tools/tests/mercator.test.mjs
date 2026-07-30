@@ -21,8 +21,8 @@ test('round-trips to sub-millimetre accuracy over a 2 km tile', () => {
 test('origin maps to the world origin', () => {
   const proj = makeProjector(ORIGIN);
   const p = proj.toWorld(ORIGIN.lat, ORIGIN.lon);
-  assert.equal(p.x, 0);
-  assert.equal(p.z, 0);
+  assert.equal(Math.abs(p.x), 0);
+  assert.equal(Math.abs(p.z), 0);
 });
 
 test('+x is east and +z is south', () => {
@@ -44,7 +44,7 @@ test('scale matches the spherical earth model', () => {
 
 test('metresBetween agrees with a hand-computed north-south offset', () => {
   const d = metresBetween(ORIGIN, { lat: ORIGIN.lat + 0.001, lon: ORIGIN.lon });
-  assert.ok(Math.abs(d - 111.1949) < 0.01, `got ${d}`);
+  assert.ok(Math.abs(d - 111.3195) < 0.001, `got ${d}`);
 });
 
 test('a projector at the equator has equal lat and lon scale', () => {

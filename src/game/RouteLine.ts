@@ -61,7 +61,7 @@ void main() {
 
   // Forward-scrolling chevrons. The V shape comes from offsetting the phase by the across-coord.
   float phase = ( vStation - uTime * uScroll ) * uDensity + abs( vUv.y - 0.5 ) * 1.4;
-  float chevron = smoothstep( 0.55, 0.95, fract( phase ) ) * 0.6;
+  float chevron = smoothstep( 0.55, 0.95, fract( phase ) ) * 0.38;
 
   // Behind the player the route dims to a trail rather than disappearing.
   float walked = step( vStation, uProgress );
@@ -70,9 +70,9 @@ void main() {
   // Fade the far end out so the route does not stop with a hard edge in the distance.
   float tail = 1.0 - smoothstep( uTotal - 14.0, uTotal, vStation );
 
-  float alpha = ( core * 0.75 + edge + chevron * ( 1.0 - walked ) ) * body * tail * uOpacity;
+  float alpha = ( core * 0.5 + edge * 0.8 + chevron * ( 1.0 - walked ) ) * body * tail * uOpacity;
   if ( alpha < 0.004 ) discard;
-  gl_FragColor = vec4( uColor * ( 0.7 + 0.6 * core ), alpha );
+  gl_FragColor = vec4( uColor * ( 0.55 + 0.5 * core ), alpha );
 }
 `;
 

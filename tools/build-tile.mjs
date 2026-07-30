@@ -7,7 +7,7 @@
 // one bad way can never break a build. Coordinates are rounded to 3 dp on write (millimetres).
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -937,6 +937,11 @@ function summarize(tile, bytes, warnings) {
   console.log('');
 }
 
+function show(p) {
+  const rel = relative(ROOT, p);
+  return rel.startsWith('..') || isAbsolute(rel) ? p : rel;
+}
+
 function main(argv) {
   const args = argv.slice(2);
   const flag = (name) => {
@@ -957,18 +962,18 @@ function main(argv) {
   const outPath = flag('out') ?? join(ROOT, 'public', 'tiles', `${place}.tile.json`);
 
   if (!existsSync(rawPath)) {
-    console.error(`build-tile: no source data at ${relative(ROOT, rawPath)}`);
+    console.error(`build-tile: no source data at ${show(rawPath)}`);
     console.error('  Overpass egress is blocked in this environment; the committed');
     console.error(`  data/raw/${place}.osm.json is the input. Run tools/fetch-osm.mjs where the network allows.`);
     process.exit(1);
   }
 
-  console.log(`build-tile: ${relative(ROOT, rawPath)} -> ${relative(ROOT, outPath)}`);
+  console.log(`build-tile: ${show(rawPath)} -> ${show(outPath)}`);
   let raw;
   try {
     raw = JSON.parse(readFileSync(rawPath, 'utf8'));
   } catch (err) {
-    console.error(`build-tile: ${relative(ROOT, rawPath)} is not valid JSON (${err.message})`);
+    console.error(`build-tile: ${show(rawPath)} is not valid JSON (${err.message})`);
     process.exit(1);
   }
 

@@ -121,6 +121,15 @@ export class Lighting {
     }
   }
 
+  /**
+   * Places fog relative to the camera's focus distance, so haze begins just beyond the player and
+   * saturates near the far edge of the visible ground rather than washing out the whole frame.
+   * `nearOffset` and `farOffset` are metres past the focus point.
+   */
+  fitFogToCamera(focusDistance: number, nearOffset: number, farOffset: number, scene: Scene): void {
+    this.setFog(this.config.fogColor, focusDistance + nearOffset, focusDistance + farOffset, scene);
+  }
+
   setPalette(sunColor: number, skyColor: number, groundColor: number, intensity?: number): void {
     this.sun.color = new Color(sunColor);
     this.fill.color = new Color(skyColor);
