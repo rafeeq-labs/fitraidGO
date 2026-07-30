@@ -776,7 +776,7 @@ export function buildWorldVegetation(
         mesh.instanceMatrix.needsUpdate = true;
         if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
         mesh.castShadow = true;
-        mesh.receiveShadow = true;
+        mesh.receiveShadow = !(proto.foliage && set.slot === 'conifer');
         // Canopies cast through the dapple mask; trunks cast solid.
         if (proto.foliage) {
           mesh.customDepthMaterial = set.slot === 'conifer' ? coniferDepth : canopyDepth;
