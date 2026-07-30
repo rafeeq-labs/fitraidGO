@@ -150,7 +150,10 @@ const cover = buildGroundCover(tile, kit, {
   centerX: focus.x,
   centerZ: focus.z,
   radius: Number(params.get('grassRadius') ?? 58),
-  density: Number(params.get('grass') ?? 1.1),
+  // Trimmed from 1.1 to pay for the kerb's block course. Ground cover is the largest consumer of
+  // the triangle budget and the one whose marginal blade nobody can see; the plot boundary is the
+  // most-repeated surface in the system and the one REFERENCE-SPEC 4.2 leans hardest on.
+  density: Number(params.get('grass') ?? 0.92),
   seed,
 });
 for (const mesh of cover.meshes) scene.add(mesh);

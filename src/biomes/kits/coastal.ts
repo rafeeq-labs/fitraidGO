@@ -27,7 +27,7 @@ export const coastal = deriveBiome(
     },
     roof: { material: 'tile', pitch: 0.55, overhang: 0.6 },
     walls: { primary: 'plaster', secondary: 'ashlar', framing: 0.2, baseCourse: 0.5 },
-    vegetation: { primary: 'palm', secondary: 'broadleaf', density: 4.0, hueJitter: 12, understory: 'fern', scale: [0.95, 1.5] },
+    vegetation: { primary: 'palm', secondary: 'broadleaf', archetypes: ['palm', 'broadleaf'], blossom: false, density: 4.0, hueJitter: 12, understory: 'fern', scale: [0.95, 1.5] },
     water: { flow: 0.5, bank: 'sand', foam: 0.95 },
     atmosphere: { fogColor: 0xbcd0d8, fogNearOffset: 22, fogFarOffset: 360, sunColor: 0xfff4dc, sunIntensity: 3.5, sunElevation: 65, skyFill: 0xa4c8e4, groundFill: 0x8e8a68, exposure: 1.08, particles: 'none' },
     ground: { material: 'sand', verge: 'sand', road: 'flagstone', litter: 0.3 },

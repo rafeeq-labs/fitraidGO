@@ -41,8 +41,9 @@ export interface LightingConfig {
 }
 
 export const DEFAULT_LIGHTING: LightingConfig = {
-  sunAzimuth: 315,
-  sunElevation: 42,
+  sunAzimuth: 112,
+  /** REFERENCE-SPEC 8.1: high afternoon, 58-65 degrees. Below that, shadows outrun their objects. */
+  sunElevation: 61,
   sunColor: PALETTE.sunWarm,
   sunIntensity: 2.5,
   skyColor: 0x9fc0e8,

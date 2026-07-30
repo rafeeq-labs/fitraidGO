@@ -97,7 +97,6 @@ const POST_SIZE = 0.46;
 const POST_HEIGHT = 1.15;
 /** Posts at every corner and every 4.5 m along each run, per REFERENCE-SPEC 4.2. */
 const POST_PITCH = 4.5;
-const FENCE_HEIGHT = 1.15;
 
 /**
  * How much plot the building may NOT take, per level.
@@ -124,6 +123,12 @@ const CLEARANCE = 1.3;
  * stopped reading as a plot.
  */
 const PLANTING_BAND = 1.5;
+
+/**
+ * Depth, front kerb to rear margin, that each level's recipe needs to stand inside its own plot.
+ * Below it the parcel takes the level under instead.
+ */
+const LEVEL_MIN_DEPTH: readonly number[] = [0, 4.6, 6.6, 9.2];
 
 const bucket = (v: number): number => Math.max(MODULE, Math.round(v / MODULE) * MODULE);
 const clamp = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v);
@@ -161,14 +166,30 @@ function boundaryRun(ctx: KitContext, length: number, height: number, fence: boo
   kerbRun(ctx, { length, height });
   if (!fence || length < 1.2) return;
   const t = ctx.channel.timber;
-  // Rails span BETWEEN the piers, from just above the capstone to the top of the post. Measured
-  // from the capstone instead they floated clear of the piers and read as a wire.
-  for (const ry of [FENCE_HEIGHT * 0.62, FENCE_HEIGHT * 0.93]) {
-    t.box(-length / 2, ry - 0.065, -0.065, length / 2, ry + 0.065, 0.065, {
-      uvScale: UV.timber,
-      uvRotate: true,
-      ao: 0.92,
-    });
+  /**
+   * Rails are cut into BAYS that die into the piers rather than running the whole side.
+   *
+   * As one continuous box the rails passed straight through every intermediate pier and, measured
+   * from the fence height alone, floated clear of the capstone with daylight under them — at
+   * thumbnail size two detached wires above a wall. The bay boundaries are solved from the same
+   * POST_PITCH the piers are placed on, so each rail terminates on stone at both ends, and the
+   * lower rail's underside sits ON the capstone.
+   */
+  const pierHalf = length / 2 + POST_SIZE / 2;
+  const bays = Math.max(1, Math.round((pierHalf * 2) / POST_PITCH));
+  const lower = height + 0.12;
+  const upper = POST_HEIGHT - 0.16;
+  for (let i = 0; i < bays; i++) {
+    const x0 = -pierHalf + (pierHalf * 2 * i) / bays + POST_SIZE / 2;
+    const x1 = -pierHalf + (pierHalf * 2 * (i + 1)) / bays - POST_SIZE / 2;
+    if (x1 - x0 < 0.3) continue;
+    for (const ry of [lower, upper]) {
+      t.box(x0, ry - 0.07, -0.07, x1, ry + 0.07, 0.07, {
+        uvScale: UV.timber,
+        uvRotate: true,
+        ao: 0.92,
+      });
+    }
   }
 }
 
@@ -222,8 +243,12 @@ export function buildPlotFoundation(ctx: KitContext, o: PlotFoundationSpec): voi
       piersAlong(ctx, -cx, cx, (u) => ({ x: u, z: cz }));
       piersAlong(ctx, -cz, cz, (u) => ({ x: -cx, z: u }));
       piersAlong(ctx, -cz, cz, (u) => ({ x: cx, z: u }));
-      withTransform(ctx, () => thresholdSlab(ctx, { w: gap, d: KERB_THICKNESS + 0.8 }), {
-        z: -(d / 2 - KERB_THICKNESS / 2),
+      // The threshold fills the frontage gap and stops flush with the plot edge. Overhanging it,
+      // as a doorstep would in life, puts stone on the carriageway and breaks the containment rule
+      // the other twelve pieces of the boundary keep.
+      const thresholdD = KERB_THICKNESS + 0.7;
+      withTransform(ctx, () => thresholdSlab(ctx, { w: gap, d: thresholdD }), {
+        z: -(d / 2 - thresholdD / 2),
       });
     },
     { y: LAYER.plotSlab }
@@ -354,7 +379,7 @@ function postedFace(ctx: KitContext, mass: Mass, face: WallFace, y: number, h: n
  * Yard ground. The reference progression is grass -> half paved -> fully paved forecourt, so the
  * paved fraction is a level property, not a decoration: it is measured from the frontage inward.
  */
-function yardSurface(ctx: KitContext, plotW: number, plotD: number, paved: number): void {
+export function yardSurface(ctx: KitContext, plotW: number, plotD: number, paved: number): void {
   // The fill stops at the kerb's INNER face plus the batter its taper adds at the base. At exactly
   // the nominal face it clipped through the wall and laid a hard green line over the ashlar.
   const iw = plotW - KERB_THICKNESS * 2 - 0.12;
@@ -387,7 +412,9 @@ function yardSurface(ctx: KitContext, plotW: number, plotD: number, paved: numbe
   // The paved area is a TARGET, measured inside a planting band that survives on all four sides at
   // every level. Paving whatever the building did not cover made the L2 and L3 yards one
   // untextured tan field and deleted the yard step from the ladder entirely.
-  const band = Math.min(PLANTING_BAND, Math.min(iw, id) * 0.16);
+  // The band narrows as the yard pavies over. Held at its full width on a 100%-cobbled L3 forecourt
+  // it left a 1.5 m lawn on all four sides and the top of the yard ladder measured at 60% paved.
+  const band = Math.min(PLANTING_BAND * (1 - Math.min(1, paved) * 0.6), Math.min(iw, id) * 0.16);
   const pw = iw - band * 2;
   const pd = id - band * 2;
   if (pw < 1.5 || pd < 1.5) return;
@@ -1083,6 +1110,22 @@ function stoneArcade(ctx: KitContext, mass: Mass, bays: number, archW: number, a
       archOpening(ctx, { w: archW, h: archH, depth: 0.45, thickness: 0.28, glow: true });
     }, { x, z: z - depth / 2, yaw: Math.PI });
   }
+  // The arcade's own lean-to roof, standing on the cornice: this is the SECOND ROOF LEVEL that
+  // REFERENCE-SPEC 5.2 gives the L3 trading house and 09's guild tile shows plainly. Without it
+  // merchant L3 is the L2 shop's single gable box made taller, and the two are not separable at
+  // thumbnail size in either silhouette or roof count.
+  withTransform(
+    ctx,
+    () =>
+      monoPitchRoof(ctx, {
+        w: span + 0.7,
+        d: depth + 0.3,
+        y: archH + 1.32,
+        rise: 0.5,
+        overhang: 0.16,
+      }),
+    { z, yaw: Math.PI }
+  );
 }
 
 /** A banner on a 5 m gallows bracket off the building face, as in reference 09's guild tile. */
@@ -1100,7 +1143,9 @@ function gallowsBanner(ctx: KitContext, y: number, reach: number): void {
 function merchantL3(ctx: KitContext, site: Site, v: number): void {
   const mass = placeMass(site, 11, 7.2, 1.1);
   const base = 0.9;
-  const eaves = 9.2;
+  // REFERENCE-SPEC 5.2 puts the trade hall's ridge at 12 m. At eaves 9.2 the ridge reached 13.3 and
+  // the mass read as a tower on a 14 m plot rather than as a two-storey hall behind an arcade.
+  const eaves = 8;
   const rise = (ctx.kit.roof.pitch * mass.d) / 2;
   const archH = 3.2;
 
@@ -1125,26 +1170,28 @@ function merchantL3(ctx: KitContext, site: Site, v: number): void {
       for (let i = 0; i < bays; i++) {
         const u = -((bays - 1) * step) / 2 + i * step;
         onWallFace(ctx, 'front', mass.w, mass.d, u, 0, () =>
-          mullionWindow(ctx, { w: 1.3, h: 2.1, y: archH + 1.7, lights: 2, arched: true })
+          mullionWindow(ctx, { w: 1.3, h: 2, y: archH + 2.2, lights: 2, arched: true })
         );
       }
-      // Blue-and-white striped awnings over the arcade. REFERENCE-SPEC 5.2 lists them for L3 as
-      // well as L2, and without them the trading house has no family cue at all: it reads as a
-      // chapel, indistinguishable in silhouette from the level-3 manor beside it.
+      // Blue-and-white striped awnings, the merchant family's one unmistakable cue — but hung LOW
+      // and only over the outer bays. Slung across the whole elevation at the springing line they
+      // covered the arcade completely, so the level-3 trading house had a stone arcade nobody could
+      // see and read as the level-2 shop made taller.
       for (let i = 0; i < bays; i++) {
+        if (bays > 2 && i === (bays - 1) / 2) continue;
         const u = -((bays - 1) * step) / 2 + i * step;
         withTransform(
           ctx,
           () =>
             awning(ctx, {
               w: 2.5,
-              reach: 1.5,
-              y: archH + 0.42,
-              drop: 0.42,
+              reach: 1.25,
+              y: 2.35,
+              drop: 0.34,
               striped: true,
               brackets: true,
             }),
-          { x: -u, z: -mass.d / 2 - 0.9, yaw: Math.PI }
+          { x: -u, z: -mass.d / 2 - 1.5, yaw: Math.PI }
         );
       }
       // Hanging trade sign on a gallows bracket, off the end pier of the arcade.
@@ -1152,13 +1199,13 @@ function merchantL3(ctx: KitContext, site: Site, v: number): void {
         hangingSign(ctx, { y: archH + 1.5, arm: 1.7, boardW: 1.05, boardH: 0.82 })
       );
       for (const sx of [-1, 1]) {
-        onWallFace(ctx, 'front', mass.w, mass.d, sx * (mass.w / 2 - 0.7), archH + 3.1, () =>
+        onWallFace(ctx, 'front', mass.w, mass.d, sx * (mass.w / 2 - 0.7), archH + 2.6, () =>
           gallowsBanner(ctx, 0, 1.7)
         );
       }
-      windowRow(ctx, mass, 'left', 2, { w: 1.1, h: 2.1, y: 5.6, timber: false }, 0.5);
-      windowRow(ctx, mass, 'right', 2, { w: 1.1, h: 2.1, y: 5.6, timber: false }, 0.5);
-      windowRow(ctx, mass, 'back', 3, { w: 1, h: 1.8, y: 5.6, timber: false }, 0.6);
+      windowRow(ctx, mass, 'left', 2, { w: 1.1, h: 2.1, y: 5.1, timber: false }, 0.5);
+      windowRow(ctx, mass, 'right', 2, { w: 1.1, h: 2.1, y: 5.1, timber: false }, 0.5);
+      windowRow(ctx, mass, 'back', 3, { w: 1, h: 1.8, y: 5.1, timber: false }, 0.6);
       if (v !== 0) {
         onWallFace(ctx, 'left', mass.w, mass.d, 0, 0, () =>
           archOpening(ctx, { w: 1.8, h: 2.8, depth: 0.45, thickness: 0.26 })
@@ -1169,7 +1216,9 @@ function merchantL3(ctx: KitContext, site: Site, v: number): void {
   );
 
   const frontZ = mass.z - mass.d / 2 - 0.85;
-  yardSurface(ctx, site.plotW, site.plotD, 0.85);
+  // REFERENCE-SPEC 5.2: the L3 trading house's yard is 100% cobbled. The planting band inside the
+  // kerb survives regardless, so this is "everything the band leaves", not "the whole plot".
+  yardSurface(ctx, site.plotW, site.plotD, 1);
   withTransform(ctx, () => crystalPair(ctx, site.hardX - 0.4, frontZ - 1.6), { y: LAYER.plotSlab });
   for (const sx of [-1, 1]) {
     placePiece(ctx, 'crateStack', {
@@ -1287,10 +1336,14 @@ function forgeShed(ctx: KitContext, w: number, d: number, postH: number, rise: n
       skip: { py: true, ny: true },
       groundAO: 0.78,
     });
+    // Both rafters run DOWN from the ridge to their own eave. Mirroring the pitch by negating the
+    // rotation sends the second one up and out instead of down and back, which is the dark beam
+    // that floated out of the workshop wall unsupported and off the plot.
+    const pitchAngle = Math.atan2(d / 2, rise);
     for (const sz of [-1, 1]) {
       t.push();
       t.translate(x, postH + rise, 0);
-      t.rotateX(sz * Math.atan2(d / 2, rise));
+      t.rotateX(sz > 0 ? pitchAngle : Math.PI - pitchAngle);
       t.box(-0.08, -0.18, 0, 0.08, 0, Math.hypot(d / 2, rise), {
         ...o,
         skip: { py: true },
@@ -1311,13 +1364,25 @@ function workshopL1(ctx: KitContext, site: Site, v: number): void {
   const postH = 2.6;
   // A gabled post-and-beam frame, as in reference 09's forge tile. A mono-pitch plate on four
   // sticks read as a carport, and gave the fire nothing to light.
-  const rise = (ctx.kit.roof.pitch * mass.d) / 2;
+  //
+  // The rise is explicit rather than taken from the biome's 49-degree pitch: at the house pitch the
+  // shed's ridge reached 5.2 m, which is REFERENCE-SPEC 5.3's figure for the L2 workshop, and the
+  // open forge stopped reading as the bottom of the family ladder. 4.1 m is the specified top.
+  const rise = 1.5;
 
   withTransform(
     ctx,
     () => {
       forgeShed(ctx, mass.w, mass.d, postH, rise);
-      gableRoof(ctx, { w: mass.w, d: mass.d, y: postH, ends: false, verge: false, segments: 3 });
+      gableRoof(ctx, {
+        w: mass.w,
+        d: mass.d,
+        y: postH,
+        rise,
+        ends: false,
+        verge: false,
+        segments: 3,
+      });
       // The specified 1.8 m stone forge, at one end of the frame so the fire lights the underside
       // of the roof, the posts and the working area in front of it.
       withTransform(ctx, () => forge(ctx, 1.8, 1.1, 1.15, postH + rise + 1.2 - 1.15), {
@@ -1652,7 +1717,18 @@ export function buildBuilding(ctx: KitContext, spec: BuildingSpec): void {
     level0(local, site, v);
     return;
   }
-  const level = Math.min(3, Math.round(spec.level));
+  // A parcel too shallow for its level is DOWNGRADED, not squeezed. placeMass will scale a
+  // footprint down to half its nominal size, but the wings, towers, arcades and entrance bays that
+  // make a level what it is are placed at fixed offsets from the mass, so on a 16 x 8 strip the
+  // level-3 manor put its rear wall a metre and a half outside its own kerb. What a parcel can
+  // carry is a property of the parcel; see the containment invariant in PlotBuilder.
+  let level = Math.min(3, Math.round(spec.level));
+  const buildable = site.rearLimit - site.frontLimit;
+  while (level > 0 && buildable < LEVEL_MIN_DEPTH[level]!) level--;
+  if (level <= 0) {
+    level0(local, siteOf(plotW, plotD, 0), v);
+    return;
+  }
   if (spec.family === 'residential') {
     if (level === 1) residentialL1(local, site, v);
     else if (level === 2) residentialL2(local, site, v);

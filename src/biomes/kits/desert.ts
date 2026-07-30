@@ -33,7 +33,7 @@ export const desert = deriveBiome(
     },
     roof: { material: 'flat', pitch: 0.18, overhang: 0.25, parapet: true, textureRows: 5, textureRound: 0.15 },
     walls: { primary: 'adobe', secondary: 'ashlar', framing: 0.05, baseCourse: 0.5, storey: 3.3 },
-    vegetation: { primary: 'palm', secondary: 'olive', density: 2.0, hueJitter: 5, understory: 'cactus', flowers: false, scale: [0.9, 1.35] },
+    vegetation: { primary: 'palm', secondary: 'olive', archetypes: ['palm', 'olive', 'bare'], blossom: false, density: 2.0, hueJitter: 5, understory: 'cactus', flowers: false, scale: [0.9, 1.35] },
     water: { flow: 0.12, bank: 'stone', foam: 0.15 },
     atmosphere: { fogColor: 0xd8c6a4, fogNearOffset: 24, fogFarOffset: 380, sunColor: 0xfff0cc, sunIntensity: 3.6, sunElevation: 68, skyFill: 0xa8c0dc, groundFill: 0x9c8258, fillIntensity: 1.15, exposure: 1.06, particles: 'none' },
     ground: { material: 'sand', verge: 'sand', road: 'sandstone', litter: 0.2 },

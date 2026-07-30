@@ -26,6 +26,7 @@ import type { FaceOptions, MeshBuilder } from './MeshBuilder.js';
 const LEAF: FaceOptions = tag({ uvScale: 1.6 }, TAG.canopy) as FaceOptions;
 const NEEDLE: FaceOptions = tag({ uvScale: 1.1 }, TAG.conifer) as FaceOptions;
 const ACCENT: FaceOptions = tag({ uvScale: 1.2 }, TAG.blossom) as FaceOptions;
+const WILLOW: FaceOptions = tag({ uvScale: 1.8 }, TAG.willow) as FaceOptions;
 const BARK: FaceOptions = { uvScale: 0.7 };
 
 export interface TreeOptions {
@@ -160,9 +161,14 @@ function broadleaf(ctx: KitContext, h: number, rng: Rng, blossom: boolean): void
   const t = ctx.channel.timber;
   const f = ctx.channel.foliage;
   // The trunk stops well inside the crown. Run past it and it pokes out of the top of the canopy.
-  trunk(t, h * 0.055, h * 0.4, 2, 6);
+  // A blossom tree carries a much smaller crown on a proportionally taller stem: with the crown
+  // sitting at the shade tree's height the whole thing was a low pink mass on the turf with no
+  // trunk visible at all, which is why the review named it a boulder cluster rather than a tree.
+  const stem = blossom ? 0.62 : 0.4;
+  const lift = blossom ? 0.28 : 0;
+  trunk(t, h * 0.055, h * stem, 2, 6);
   for (let i = 0; i < 2; i++) {
-    limb(t, h * 0.32, rng.range(0, Math.PI * 2), 0.6 + i * 0.12, h * 0.2, h * 0.03);
+    limb(t, h * (stem * 0.8), rng.range(0, Math.PI * 2), 0.6 + i * 0.12, h * 0.2, h * 0.03);
   }
   // Blossom takes over the WHOLE canopy rather than sitting on it as a separate cluster: at
   // thumbnail size a pink cap on a green ball is 85% green, and the accent is lost.
@@ -181,7 +187,7 @@ function broadleaf(ctx: KitContext, h: number, rng: Rng, blossom: boolean): void
   ];
   for (const [dx, dy, dz, k] of lobes) {
     f.push();
-    f.translate(dx * r, h * dy, dz * r);
+    f.translate(dx * r, h * (dy + lift), dz * r);
     f.rotateY(rng.range(0, Math.PI));
     canopyBlob(f, r * k, {
       ...skin,
@@ -304,22 +310,27 @@ function olive(ctx: KitContext, h: number, rng: Rng, blossom: boolean): void {
 function willow(ctx: KitContext, h: number, rng: Rng): void {
   const t = ctx.channel.timber;
   const f = ctx.channel.foliage;
-  trunk(t, h * 0.075, h * 0.34, 2, 6, 0.08);
+  trunk(t, h * 0.075, h * 0.42, 2, 6, 0.08);
   const r = h * 0.6;
-  // A dense hemisphere crown, then strands that reach most of the way to the ground. The archetype
-  // is a weeping MASS, not a stem with a spray on top: as six spiky fronds on a bare stick it read
-  // as a dead palm, which is the one thing a temperate canal bank must not contain.
+  /**
+   * A NARROW crown with the strands hung outside it, so the plan is an annulus.
+   *
+   * As one wide flat cap the crown covered its own strands from above and the archetype read as a
+   * green mushroom — the same convex disc as the broadleaf beside it, which is the only comparison
+   * that matters at the game camera. The strands are now the outer half of the plan and the crown
+   * is the hub they hang from.
+   */
   for (const [dx, dy, dz, k] of [
-    [0, 0.66, 0, 1],
-    [-0.42, 0.58, 0.28, 0.72],
-    [0.4, 0.6, -0.26, 0.7],
-    [0.1, 0.74, 0.36, 0.6],
+    [0, 0.7, 0, 0.62],
+    [-0.3, 0.63, 0.2, 0.46],
+    [0.28, 0.65, -0.18, 0.44],
+    [0.07, 0.78, 0.24, 0.38],
   ] as const) {
     f.push();
     f.translate(dx * r, h * dy, dz * r);
     canopyBlob(f, r * k, {
-      ...LEAF,
-      ry: 0.5,
+      ...WILLOW,
+      ry: 0.62,
       segments: 8,
       bands: 4,
       aoBottom: 0.24,
@@ -330,14 +341,14 @@ function willow(ctx: KitContext, h: number, rng: Rng): void {
   }
   for (let i = 0; i < 26; i++) {
     const a = (i / 26) * Math.PI * 2 * 1.6 + rng.range(-0.24, 0.24);
-    const d = r * rng.range(0.5, 1);
+    const d = r * rng.range(0.62, 1.05);
     f.push();
-    f.translate(Math.cos(a) * d, h * rng.range(0.46, 0.6), Math.sin(a) * d);
+    f.translate(Math.cos(a) * d, h * rng.range(0.52, 0.68), Math.sin(a) * d);
     f.rotateY(a + Math.PI / 2);
     // Pi tips the strand over so it grows downward; the residual curve lets it swing outward.
     f.rotateZ(Math.PI + rng.range(-0.16, 0.16));
     blade(f, h * rng.range(0.34, 0.5), 1.15, {
-      ...LEAF,
+      ...WILLOW,
       segments: 3,
       curve: -0.42,
       tilt: 0,

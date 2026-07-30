@@ -25,7 +25,7 @@ export const autumn = deriveBiome(
       wall: { base: 0xd2c0a2, warm: 0xb99878, cool: 0xc0bcae, weathering: 0.6 },
       water: { deep: 0x18293f, shallow: 0x243f5c, foam: 0xc4d4e2 },
     },
-    vegetation: { primary: 'broadleaf', secondary: 'conifer', density: 5.5, hueJitter: 16, understory: 'bush', scale: [0.9, 1.4] },
+    vegetation: { primary: 'broadleaf', secondary: 'conifer', archetypes: ['broadleaf', 'conifer', 'bare', 'willow'], blossom: false, density: 5.5, hueJitter: 16, understory: 'bush', scale: [0.9, 1.4] },
     water: { flow: 0.18, bank: 'boardwalk', foam: 0.3 },
     atmosphere: { fogColor: 0x9c8f86, fogNearOffset: 16, fogFarOffset: 300, sunColor: 0xffe0b0, sunIntensity: 3.0, sunElevation: 52, skyFill: 0x8ea0bc, groundFill: 0x7a5c3c, exposure: 1.14, particles: 'leaves' },
     ground: { material: 'moss', verge: 'grass', road: 'cobble', litter: 0.7 },

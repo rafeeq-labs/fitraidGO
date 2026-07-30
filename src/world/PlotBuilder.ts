@@ -18,6 +18,7 @@ import type { Material, Texture } from 'three';
 import { hash32, makeRng, mix } from '../engine/rng.js';
 import type { Plot, PlotSize, PlotUse } from '../map/types.js';
 import {
+  MODULE,
   buildBuilding,
   buildPlotFoundation,
   variantCount,
@@ -234,12 +235,56 @@ function dressYard(ctx: KitContext, spec: BuildingSpec): void {
 
 // --- geometry ----------------------------------------------------------------
 
+/**
+ * The plot containment invariant: no matter what a recipe does, nothing it builds may cross the
+ * outer edge of its own plot.
+ *
+ * REFERENCE-SPEC 4.2 and asset sheet 05 both state the rule the same way — one plot base, four
+ * states, and the plot never changes — and it is the single device that makes the system legible at
+ * GPS-camera scale. A recipe that lets an awning, a bench or a stack escape the kerb costs more
+ * than the feature is worth, so this is checked rather than trusted: identical keys produce
+ * identical geometry forever, so a key that passes once passes always.
+ *
+ * The glow channel is exempt. Halos and light pools are additive, write no depth and are light
+ * rather than matter; spill from a crystal lamp reaching a metre past the kerb is correct.
+ */
+function assertContained(
+  channels: Record<KitChannel, MeshBuilder>,
+  key: string,
+  w: number,
+  d: number
+): void {
+  // The foundation buckets its own dimensions, so the limit has to be measured on the bucketed plot.
+  const snap = (v: number): number => Math.max(MODULE, Math.round(v / MODULE) * MODULE);
+  // The tolerance is the kerb wall's own batter: its taper widens the base by ~1 cm, which is the
+  // hand-built look the whole kit is authored with rather than an escape.
+  const limitX = snap(w) / 2 + 0.05;
+  const limitZ = snap(d) / 2 + 0.05;
+  for (const name of KIT_CHANNELS) {
+    if (name === 'glow') continue;
+    const b = channels[name].bounds();
+    if (!b) continue;
+    if (b.min.x < -limitX || b.max.x > limitX || b.min.z < -limitZ || b.max.z > limitZ) {
+      throw new Error(
+        `PlotBuilder: ${key} escapes its ${w}x${d} plot in the ${name} channel — ` +
+          `x [${b.min.x.toFixed(2)}, ${b.max.x.toFixed(2)}] z [${b.min.z.toFixed(2)}, ${b.max.z.toFixed(2)}]`
+      );
+    }
+  }
+}
+
 /** Foundation, building and yard for one cache key, in plot space with the street at -z. */
 export function buildPlotChannels(kit: BiomeKit, spec: BuildingSpec): Record<KitChannel, MeshBuilder> {
   const ctx = createKitContext(kit, makeRng(spec.seed));
   buildPlotFoundation(ctx, { w: spec.plotW, d: spec.plotD });
   buildBuilding(ctx, spec);
   dressYard(ctx, spec);
+  assertContained(
+    ctx.channel,
+    `${spec.family}:${spec.level}:${spec.variant ?? 0}`,
+    spec.plotW,
+    spec.plotD
+  );
   return ctx.channel;
 }
 
@@ -318,10 +363,15 @@ export function createKitMaterials(kit: BiomeKit, textures: TextureFactory): Kit
     // The crystal is NOT unlit: its facets have to read, so it takes a strong emissive on top of a
     // shaded body. The emissive is the pale CORE hue over the saturated body colour, so the tip
     // reads white-hot cyan against a deep blue flank instead of one flat mid-blue chip.
+    // The emissive is deliberately WEAK. REFERENCE-SPEC 3.1 gives the crystal a `#8FD4FF` core over
+    // a saturated `#1E8FDB` body, and at 0.68 the pale core term swamped the body across every
+    // facet: the shard came out ice-white, indistinguishable from the gold lantern at thumbnail
+    // size, and the only blue left in the prop was its ground pool. The hue has to live in the
+    // OBJECT; the bloom supplies the core.
     glowCrystal: new RampMaterial({
       color: kit.landmark.crystalColor,
       emissive: PALETTE.crystalCore,
-      emissiveIntensity: 0.68,
+      emissiveIntensity: 0.34,
       vertexAO: true,
       rim: 1.8,
     }),
@@ -330,8 +380,13 @@ export function createKitMaterials(kit: BiomeKit, textures: TextureFactory): Kit
     // additive basic material carrying the radial falloff as its diffuse map. They deliberately do
     // NOT go through RampMaterial — an emissive map on a Lambert host is modulated after the ramp
     // patch and came out flat, which turned every bloom into a hard-edged translucent card.
+    // Halo strength is capped by what it does to the SOURCE, not by how far the pool reaches. An
+    // additive layer over the emissive it belongs to drives every channel together, and at 0.9 the
+    // crystal core measured `#e2ffff` and the lantern glass `#ffffdb`: two white dots where the
+    // palette's one cool accent and one warm accent are supposed to be. Both now sit under the
+    // spec's luma-220 cap with their hue intact.
     haloWarm: makeHalo(PALETTE.haloWarm, halo, 0.6),
-    haloCool: makeHalo(PALETTE.haloCool, halo, 0.9),
+    haloCool: makeHalo(PALETTE.haloCool, halo, 0.66),
     haloFire: makeHalo(PALETTE.haloFire, halo, 0.7),
     // Foliage splits four ways: the lawn keeps the ground texture, canopies take the leaf texture
     // at two very different values, and blossom is the one saturated accent vegetation gets.
@@ -350,6 +405,19 @@ export function createKitMaterials(kit: BiomeKit, textures: TextureFactory): Kit
     // one of a canopy's several hundred facet boundaries and tipped the whole tree blue-grey — the
     // rim is meant to catch a roof ridge and a kerb capstone, not to re-light a leaf mass.
     canopy: new RampMaterial({ map: textures.leaf(kit.id, t.leaf), vertexAO: true, rim: 0.3 }),
+    // The water-margin tree's own green. REFERENCE-SPEC 3.1 separates trees by value and hue before
+    // shape: sharing the deciduous map made the willow and the shade tree the same mark from above,
+    // whatever the drooping strands did to the profile.
+    willowLeaf: new RampMaterial({
+      map: textures.leaf(`${kit.id}:willow`, {
+        lit: new Color(p.foliagePale).lerp(new Color(0xffffff), 0.16).getHex(),
+        mid: p.foliagePale,
+        shade: new Color(p.foliagePale).multiplyScalar(0.45).getHex(),
+        clump: 1.4,
+      }),
+      vertexAO: true,
+      rim: 0.3,
+    }),
     conifer: new RampMaterial({
       map: textures.leaf(`${kit.id}:conifer`, {
         // The sunlit needle stop is lifted well above the palette's `foliageLit`, on purpose. The

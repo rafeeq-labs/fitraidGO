@@ -7,7 +7,13 @@ import { RampMaterial } from '../engine/RampMaterial.js';
 import { Renderer } from '../engine/Renderer.js';
 import { TextureFactory } from '../engine/TextureGen.js';
 import { makeRng, mix } from '../engine/rng.js';
-import { variantCount, type BuildingFamily } from '../world/BuildingKit.js';
+import { LAYER } from '../engine/Palette.js';
+import {
+  buildPlotFoundation,
+  variantCount,
+  yardSurface,
+  type BuildingFamily,
+} from '../world/BuildingKit.js';
 import { createKitContext } from '../world/KitPieces.js';
 import { placePiece } from '../world/KitPlacement.js';
 import { CHANNEL_SLOTS, KIT_CHANNELS, withTransform, type KitContext } from '../world/KitTypes.js';
@@ -244,34 +250,57 @@ function propCells(): Cell[] {
   }));
 }
 
+/** The tree sheet's plot module. Same construction as the ladder's, at 05 and 06's tile size. */
+const VEG_PLOT = 12;
+
+/**
+ * Every vegetation cell stands on the same kerbed grass plot the ladder uses.
+ *
+ * Two problems it solves at once, both of which made the round-3 tree sheet unjudgeable. A shadow
+ * cannot read against a void: on the bare backdrop the ground strip under every canopy measured one
+ * luma step off the backdrop itself, so the whole set floated. And with nothing of known size in
+ * the cell there was no scale reference, which is how a 1.2 m shrub came to be authored at three
+ * times its specified height and still look plausible. The kerb is 0.5 m and the piers 0.9 m; a
+ * canopy is now measurable against them.
+ */
+function onVegetationPlot(ctx: KitContext, build: () => void): void {
+  buildPlotFoundation(ctx, { w: VEG_PLOT, d: VEG_PLOT, frontageGap: 2.2 });
+  yardSurface(ctx, VEG_PLOT, VEG_PLOT, 0);
+  withTransform(ctx, build, { y: LAYER.plotSlab });
+}
+
 function treeCells(): Cell[] {
-  const archetypes: readonly TreeArchetype[] = [
-    'conifer',
-    'broadleaf',
-    'palm',
-    'cypress',
-    'bare',
-    'olive',
-    'willow',
-  ];
-  const understory: readonly VegetationKit['understory'][] = ['bush', 'reeds', 'cactus', 'tussock', 'fern'];
+  const archetypes: readonly TreeArchetype[] = kit.vegetation.archetypes;
   const cells: Cell[] = archetypes.map((archetype) => ({
     label: archetype,
-    faceViewer: false,
-    build: (ctx: KitContext) => buildTree(ctx, { archetype, seed: mix(seed, archetype.length) }),
+    build: (ctx: KitContext) =>
+      onVegetationPlot(ctx, () => buildTree(ctx, { archetype, seed: mix(seed, archetype.length) })),
   }));
-  cells.push({
-    label: 'broadleaf+blossom',
-    faceViewer: false,
-    build: (ctx) => buildTree(ctx, { archetype: 'broadleaf', seed: mix(seed, 3), blossom: true }),
-  });
+  if (kit.vegetation.blossom) {
+    cells.push({
+      label: 'broadleaf+blossom',
+      build: (ctx) =>
+        onVegetationPlot(ctx, () =>
+          buildTree(ctx, { archetype: 'broadleaf', seed: mix(seed, 3), blossom: true })
+        ),
+    });
+  }
+  const understory: readonly VegetationKit['understory'][] = [kit.vegetation.understory];
   for (const kind of understory) {
+    if (kind === 'none') continue;
     cells.push({
       label: kind,
-      faceViewer: false,
-      // Understory is under a metre tall; on a tree sheet it needs help to be visible at all.
+      // Authored at its real 1.2 m, not inflated to fill the cell. Ground cover three to five times
+      // its specified size buries the plot detail it is supposed to soften.
       build: (ctx) =>
-        withTransform(ctx, () => buildUnderstory(ctx, { kind, seed: mix(seed, kind.length), scale: 2.4 })),
+        onVegetationPlot(ctx, () => {
+          for (let i = 0; i < 3; i++) {
+            withTransform(ctx, () => buildUnderstory(ctx, { kind, seed: mix(seed, i * 31 + 7) }), {
+              x: (i - 1) * 1.3,
+              z: (i % 2) * 1.1 - 0.5,
+            });
+          }
+        }),
     });
   }
   return cells;
@@ -311,7 +340,8 @@ if (view === 'plots') {
 } else if (view === 'props') {
   layout(propCells(), Number(params.get('cols') ?? 8), 5, 8, 0.55);
 } else if (view === 'trees') {
-  layout(treeCells(), Number(params.get('cols') ?? 5), 9, 14, 0.6);
+  const pitch = VEG_PLOT * Math.SQRT2 + 3;
+  layout(treeCells(), Number(params.get('cols') ?? 4), pitch, pitch + 2, 0.58);
 } else {
   layout(ladderCells(), 4, Math.hypot(PLOT_W, PLOT_D) + 3.5, Math.hypot(PLOT_W, PLOT_D) + 5.5);
 }

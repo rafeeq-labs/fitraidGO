@@ -30,7 +30,13 @@ export interface TextureQuality {
   anisotropy: number;
 }
 
-export const DEFAULT_QUALITY: TextureQuality = { size: 512, anisotropy: 4 };
+/**
+ * Anisotropy is not a nicety here. Every long thin surface in the kit — a kerb run, a roof pitch, a
+ * street — is minified hard along one axis and barely at all along the other, so the mip level the
+ * hardware picks from the major axis averages the block joints, the tile joints and the grout out of
+ * existence. At 4 the kerb wall resolved as a smooth pale extrusion at any tile size.
+ */
+export const DEFAULT_QUALITY: TextureQuality = { size: 512, anisotropy: 12 };
 
 /**
  * Canvas colours must be written in sRGB.
@@ -208,6 +214,8 @@ export interface AshlarParams {
   courses: number;
   /** Stagger of the vertical joints, 0..1. */
   stagger: number;
+  /** Per-block lightness spread. REFERENCE-SPEC 8.2 asks for +/-12 luma. */
+  variance?: number;
 }
 
 export interface GrassParams {
@@ -446,45 +454,54 @@ export class TextureFactory {
       `roof:${key}`,
       (rng, size) => {
         const { canvas, ctx } = makeCanvas(size);
-        ctx.fillStyle = css(p.shade);
+        // The gap between slates is DARKER than the darkest slate. With the background at `shade`
+        // and every tile's own gradient ending on `shade` too, the vertical joints were invisible
+        // and a roof read as even horizontal stripes — corduroy, not tile.
+        const joint = shiftCss(p.shade, -0.07);
+        ctx.fillStyle = joint;
         ctx.fillRect(0, 0, size, size);
 
         const rowH = size / p.rows;
         const tileW = rowH * 1.35;
+        const gap = Math.max(1.5, size / 260);
         const cols = Math.ceil(size / tileW) + 1;
         for (let row = -1; row <= p.rows; row++) {
           const y = row * rowH;
           const stagger = (row % 2) * 0.5;
           // Shadow line cast by the course above onto this one.
-          ctx.fillStyle = css(p.shade, 0.85);
+          ctx.fillStyle = css(p.shade, 0.9);
           ctx.fillRect(0, y, size, rowH * 0.3);
           for (let col = -1; col <= cols; col++) {
             const x = (col + stagger) * tileW;
             const v = rng.range(-p.variance, p.variance);
+            const hue = rng.range(-0.025, 0.025);
             const grad = ctx.createLinearGradient(x, y + rowH * 0.2, x, y + rowH * 1.05);
-            grad.addColorStop(0, shiftCss(p.lit, v, rng.range(-0.02, 0.02)));
-            grad.addColorStop(0.65, shiftCss(p.mid, v * 0.6));
-            grad.addColorStop(1, css(p.shade));
+            grad.addColorStop(0, shiftCss(p.lit, v, hue));
+            grad.addColorStop(0.55, shiftCss(p.mid, v * 0.7, hue));
+            grad.addColorStop(1, shiftCss(p.shade, v * 0.4));
             ctx.fillStyle = grad;
             ctx.beginPath();
             const r = rowH * 0.45 * p.round;
             const top = y + rowH * 0.18;
             const h = rowH * 0.94;
-            ctx.moveTo(x + 1, top + h);
-            ctx.lineTo(x + 1, top + r);
-            ctx.quadraticCurveTo(x + 1, top, x + 1 + Math.min(r, tileW / 2), top);
-            ctx.lineTo(x + tileW - 1 - Math.min(r, tileW / 2), top);
-            ctx.quadraticCurveTo(x + tileW - 1, top, x + tileW - 1, top + r);
-            ctx.lineTo(x + tileW - 1, top + h);
+            ctx.moveTo(x + gap, top + h);
+            ctx.lineTo(x + gap, top + r);
+            ctx.quadraticCurveTo(x + gap, top, x + gap + Math.min(r, tileW / 2), top);
+            ctx.lineTo(x + tileW - gap - Math.min(r, tileW / 2), top);
+            ctx.quadraticCurveTo(x + tileW - gap, top, x + tileW - gap, top + r);
+            ctx.lineTo(x + tileW - gap, top + h);
             ctx.closePath();
             ctx.fill();
             // Bright catch along the tile's lower lip: what makes slate read as slate.
             ctx.strokeStyle = css(p.ridge, 0.3);
-            ctx.lineWidth = Math.max(1, size / 380);
+            ctx.lineWidth = Math.max(1.5, size / 340);
             ctx.beginPath();
-            ctx.moveTo(x + 2, top + h - 1);
-            ctx.lineTo(x + tileW - 2, top + h - 1);
+            ctx.moveTo(x + gap + 1, top + h - 1);
+            ctx.lineTo(x + tileW - gap - 1, top + h - 1);
             ctx.stroke();
+            // Hard shadow under the lip, so the course below is seen to be overlapped.
+            ctx.fillStyle = joint;
+            ctx.fillRect(x + gap, top + h, tileW - gap * 2, Math.max(1.5, rowH * 0.07));
           }
         }
         return canvas;
@@ -535,7 +552,11 @@ export class TextureFactory {
         ctx.fillRect(0, 0, size, size);
         const rowH = size / p.courses;
         const blockW = rowH * 2.1;
-        const joint = Math.max(1.5, size / 300);
+        // A wide joint, because a hairline one is the first thing minification eats: at size/300 the
+        // mortar between blocks was under half a texel by mip 3 and every ashlar wall in the kit
+        // came out as a continuous field. 5 cm of mortar on a 0.5 m course is also simply correct.
+        const joint = Math.max(3, size / 56);
+        const variance = p.variance ?? 0.055;
         for (let row = -1; row <= p.courses; row++) {
           const y = row * rowH;
           const offset = ((row * 0.5 * p.stagger + rng.next() * 0.1 * p.stagger) % 1) * blockW;
@@ -545,22 +566,31 @@ export class TextureFactory {
             const h = rowH - joint;
             // Per-block value variation, the spec's +/-12 luma. The gradient has to span the WHOLE
             // block: stopping half way across leaves most of its area sitting on the last stop,
-            // which is what turned dressed ashlar into a dark grey slab.
-            const v = rng.range(-0.055, 0.055);
+            // which is what turned dressed ashlar into a dark grey slab. The hue moves a little
+            // with it, because a course of blocks cut from the same bed still weathers unevenly —
+            // a pure lightness spread reads as one stone under a dimmer, which is exactly how the
+            // level-3 walls measured: a grid of identical squares with hairline seams.
+            const v = rng.range(-variance, variance);
+            const hue = rng.range(-0.03, 0.03);
             const grad = ctx.createLinearGradient(bx, y, bx + w, y + h);
-            grad.addColorStop(0, shiftCss(p.lit, v + 0.03));
-            grad.addColorStop(0.45, shiftCss(p.mid, v));
-            grad.addColorStop(1, shiftCss(p.shade, v * 0.5 + 0.04));
+            grad.addColorStop(0, shiftCss(p.lit, v + 0.03, hue));
+            grad.addColorStop(0.45, shiftCss(p.mid, v, hue));
+            grad.addColorStop(1, shiftCss(p.shade, v * 0.5 + 0.04, hue));
             ctx.fillStyle = grad;
             ctx.fillRect(bx, y, w, h);
-            // Chamfered top edge catches the light; bottom edge sits in contact shadow.
-            ctx.fillStyle = css(p.lit, 0.5);
-            ctx.fillRect(bx, y, w, Math.max(1, h * 0.1));
-            ctx.fillStyle = css(p.shade, 0.35);
-            ctx.fillRect(bx, y + h - Math.max(1, h * 0.09), w, Math.max(1, h * 0.09));
+            // Chamfered top edge catches the light; bottom edge sits in contact shadow, and the
+            // vertical joint on the shaded side is what makes a block resolve as a block.
+            ctx.fillStyle = css(p.lit, 0.55);
+            ctx.fillRect(bx, y, w, Math.max(1, h * 0.11));
+            ctx.fillStyle = css(p.shade, 0.5);
+            ctx.fillRect(bx, y + h - Math.max(1, h * 0.11), w, Math.max(1, h * 0.11));
+            ctx.fillStyle = css(p.mortar, 0.55);
+            ctx.fillRect(bx + w - Math.max(1, w * 0.035), y, Math.max(1, w * 0.035), h);
           }
         }
-        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.lit, 8, 0.12);
+        // Moss and dirt collecting in the joints, at the coarse scale a wall weathers on.
+        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.lit, 3, 0.16);
+        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.lit, 8, 0.1);
         return canvas;
       },
       repeat
@@ -763,12 +793,22 @@ export class TextureFactory {
         const { canvas, ctx } = makeCanvas(size);
         ctx.fillStyle = css(p.mid);
         ctx.fillRect(0, 0, size, size);
-        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.lit, 2.2, 0.8);
-        const clumps = Math.round(90 / Math.max(p.clump, 0.25));
+        /**
+         * BROAD value zones, not a leaf-by-leaf mottle.
+         *
+         * The previous recipe put adjacent-pixel |dL| of 4-7 across every canopy at ~19 px/m of
+         * authoring scale. That is literal camouflage pattern: at the game's 11.8 px/m it survives
+         * as 1-2 px shimmer and the plan silhouette — the only thing a canopy is read by from 52
+         * degrees up — is buried under it. References 05 and 06 build canopies out of a handful of
+         * flat value zones, and the modelling comes from the geometry's own AO instead.
+         */
+        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.lit, 0.9, 0.85);
+        mottle(ctx, size, rng.int(0, 1e6), p.shade, p.mid, 2.1, 0.35);
+        const clumps = Math.round(22 / Math.max(p.clump, 0.25));
         for (let i = 0; i < clumps; i++) {
           const cx = rng.range(0, size);
           const cy = rng.range(0, size);
-          const r = size * 0.055 * p.clump * rng.range(0.55, 1.6);
+          const r = size * 0.17 * p.clump * rng.range(0.7, 1.4);
           const t = rng.next();
           shadedBlob(
             ctx,
@@ -777,7 +817,7 @@ export class TextureFactory {
             r,
             r * rng.range(0.72, 1),
             rng.range(-0.6, 0.6),
-            mixCss(p.mid, p.lit, 0.5 + t * 0.5),
+            mixCss(p.mid, p.lit, 0.45 + t * 0.55),
             css(p.mid),
             css(p.shade),
             null

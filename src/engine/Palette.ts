@@ -67,6 +67,9 @@ export const PALETTE = {
   broadleafLit: hex('#6d8a44'),
   broadleafDark: hex('#3f5228'),
   canopyDeciduous: hex('#5a7038'),
+  /** Willows read as pale drooping fountains against the deciduous mid-green in reference 13. */
+  willowPale: hex('#89975a'),
+  willowDark: hex('#586b34'),
   blossom: hex('#c9a0b4'),
   flowerWhite: hex('#f2f0e0'),
   flowerViolet: hex('#b9a8d8'),
@@ -172,8 +175,8 @@ export const RAMP = {
    * `castFloorColor` x `castFloorLevel` lands a mid albedo at 26-53% of its lit value with the
    * blue channel carried highest, i.e. the spec's 35-45% shade at a blue-violet hue.
    */
-  castFloorColor: hex('#9db0d4'),
-  castFloorLevel: 0.14,
+  castFloorColor: hex('#7f96d2'),
+  castFloorLevel: 0.11,
   /**
    * Absolute term ADDED under the multiply, in linear scene units before tone mapping.
    *
@@ -182,13 +185,13 @@ export const RAMP = {
    * without stamping one flat plate over them. ACES crushes the toe hard, so this is the pre-tone
    * value that puts the darkest albedo in the kit ON 30.
    */
-  absoluteFloor: 0.03,
+  absoluteFloor: 0.037,
   /**
    * Rim light. Measured from the references as a 1-2 px COOL edge on roof ridges, wall tops and
    * kerb capstones — sky light catching an edge, not a warm backlight.
    */
-  rimStrength: 0.44,
-  rimPower: 2.4,
+  rimStrength: 0.56,
+  rimPower: 2.6,
   rimColor: hex('#8fa8c4'),
   /**
    * Fraction of the rim that survives on faces turned AWAY from the key.

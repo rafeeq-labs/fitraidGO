@@ -385,7 +385,7 @@ export class MeshBuilder {
       const r1 = ridgeY(t1);
       const run: FaceOptions = { ...opts, uvOffset: [off[0] + (x0 + hw) / s, off[1]] };
       // Two cells up the pitch: one quad from eave to ridge creases along its own diagonal.
-      const rows = Math.min(3, Math.max(1, Math.round(Math.hypot(hd, height) / 1.8)));
+      const rows = Math.min(3, Math.max(1, Math.round(Math.hypot(hd, height) / 2.6)));
       // +z slope
       this.quadGrid([x0, e, hd], [x1, e, hd], [x1, r1, 0], [x0, r0, 0], 1, rows, run, [0.88, 0.88, 1, 1]);
       // -z slope
@@ -584,6 +584,22 @@ export class MeshBuilder {
       else this.quad([bx, y0, bz], [ax, y0, az], [ax, y1, az], [bx, y1, bz], opts, [0.6, 0.6, 1, 1]);
     }
     return this;
+  }
+
+  /**
+   * Axis-aligned bounds of everything accumulated so far, in the builder's own space. Null when
+   * empty. The plot containment check reads this; nothing else should need it.
+   */
+  bounds(): { min: Vector3; max: Vector3 } | null {
+    if (this.pos.length === 0) return null;
+    const min = new Vector3(Infinity, Infinity, Infinity);
+    const max = new Vector3(-Infinity, -Infinity, -Infinity);
+    for (let i = 0; i < this.pos.length; i += 3) {
+      V0.set(this.pos[i]!, this.pos[i + 1]!, this.pos[i + 2]!);
+      min.min(V0);
+      max.max(V0);
+    }
+    return { min, max };
   }
 
   /** Appends another builder's geometry through the current transform. */

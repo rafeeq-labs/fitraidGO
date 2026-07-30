@@ -35,7 +35,7 @@ export const swamp = deriveBiome(
     },
     roof: { material: 'shingle', pitch: 0.95, overhang: 0.75, sag: 0.05 },
     walls: { primary: 'stilts', secondary: 'timber', framing: 0.85, baseCourse: 0, storey: 2.9 },
-    vegetation: { primary: 'cypress', secondary: 'bare', density: 6.5, hueJitter: 10, understory: 'reeds', scale: [0.9, 1.6] },
+    vegetation: { primary: 'cypress', secondary: 'bare', archetypes: ['cypress', 'bare', 'willow'], blossom: false, density: 6.5, hueJitter: 10, understory: 'reeds', scale: [0.9, 1.6] },
     water: { flow: 0.06, bank: 'reeds', foam: 0.1, opacity: 0.94 },
     atmosphere: { fogColor: 0x8a9a86, fogNearOffset: 8, fogFarOffset: 210, sunColor: 0xe8f0cc, sunIntensity: 2.5, sunElevation: 50, skyFill: 0x8ea094, groundFill: 0x4c4a30, fillIntensity: 1.2, exposure: 1.16, particles: 'fireflies' },
     ground: { material: 'mud', verge: 'reeds', road: 'boardwalk', litter: 0.8 },

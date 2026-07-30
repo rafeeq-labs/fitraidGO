@@ -71,6 +71,14 @@ export interface BiomePalette {
   foliageLit: number;
   foliageDark: number;
   foliageAccent: number;
+  /**
+   * The pale drooping green of a willow or an equivalent water-margin tree.
+   *
+   * A separate role because REFERENCE-SPEC 3.1 separates trees by VALUE and HUE before shape, and
+   * at the game camera an archetype that shares its neighbour's green is the same mark whatever
+   * its silhouette does.
+   */
+  foliagePale: number;
   waterDeep: number;
   waterShallow: number;
   waterFoam: number;
@@ -117,6 +125,13 @@ export type TreeArchetype = 'conifer' | 'broadleaf' | 'palm' | 'cypress' | 'bare
 export interface VegetationKit {
   primary: TreeArchetype;
   secondary: TreeArchetype;
+  /**
+   * Every archetype this biome may plant. Mixed-biome vegetation is an outright fail in
+   * REFERENCE-SPEC 10.7, and a kit that lists nothing is a kit that can be asked for a palm.
+   */
+  archetypes: readonly TreeArchetype[];
+  /** Whether this biome's deciduous trees may carry blossom. */
+  blossom: boolean;
   /** Trees per 1000 square metres of unbuilt ground. */
   density: number;
   /** Hue jitter applied per instance, in degrees. */

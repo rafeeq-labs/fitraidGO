@@ -31,7 +31,7 @@ export const farmland = deriveBiome(
     },
     roof: { material: 'thatch', pitch: 1.1, overhang: 0.7, sag: 0.05 },
     walls: { primary: 'plaster', secondary: 'timber', framing: 0.7, baseCourse: 0.4, storey: 2.9 },
-    vegetation: { primary: 'broadleaf', secondary: 'olive', density: 3.2, understory: 'tussock', scale: [0.85, 1.5] },
+    vegetation: { primary: 'broadleaf', secondary: 'olive', archetypes: ['broadleaf', 'olive', 'conifer'], blossom: true, density: 3.2, understory: 'tussock', scale: [0.85, 1.5] },
     water: { flow: 0.2, bank: 'reeds', foam: 0.2 },
     atmosphere: { fogColor: 0x9aa88e, fogNearOffset: 20, fogFarOffset: 340, sunColor: 0xfff2d0, sunIntensity: 3.1, sunElevation: 58, skyFill: 0x8fa8c8, groundFill: 0x6e6238, exposure: 1.13, particles: 'pollen' },
     ground: { material: 'crop', verge: 'hedge', road: 'packedDirt', litter: 0.35 },

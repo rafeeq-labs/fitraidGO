@@ -32,7 +32,7 @@ export const forest = deriveBiome(
     },
     roof: { material: 'shingle', pitch: 0.95, overhang: 0.6 },
     walls: { primary: 'plaster', secondary: 'timber', framing: 0.45, baseCourse: 0.6 },
-    vegetation: { primary: 'conifer', secondary: 'broadleaf', density: 9.0, hueJitter: 14, understory: 'fern', scale: [1.0, 1.8] },
+    vegetation: { primary: 'conifer', secondary: 'broadleaf', archetypes: ['conifer', 'broadleaf', 'bare'], blossom: false, density: 9.0, hueJitter: 14, understory: 'fern', scale: [1.0, 1.8] },
     water: { flow: 0.3, bank: 'reeds', foam: 0.35 },
     atmosphere: { fogColor: 0x8aa896, fogNearOffset: 10, fogFarOffset: 240, sunColor: 0xf4f6d8, sunIntensity: 2.8, sunElevation: 62, skyFill: 0x92b4a8, groundFill: 0x4e5c34, fillIntensity: 1.25, exposure: 1.14, particles: 'pollen' },
     ground: { material: 'moss', verge: 'hedge', road: 'flagstone', litter: 0.5 },

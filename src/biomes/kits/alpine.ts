@@ -31,7 +31,7 @@ export const alpine = deriveBiome(
     },
     roof: { material: 'slate', pitch: 1.0, overhang: 0.55 },
     walls: { primary: 'rubble', secondary: 'timber', framing: 0.5, baseCourse: 1.1 },
-    vegetation: { primary: 'conifer', secondary: 'bare', density: 2.6, understory: 'tussock', flowers: false, scale: [0.75, 1.2] },
+    vegetation: { primary: 'conifer', secondary: 'bare', archetypes: ['conifer', 'bare'], blossom: false, density: 2.6, understory: 'tussock', flowers: false, scale: [0.75, 1.2] },
     water: { flow: 0.9, bank: 'rock', foam: 0.85 },
     atmosphere: { fogColor: 0x8d97a4, fogNearOffset: 14, fogFarOffset: 290, sunIntensity: 3.2, sunElevation: 62, skyFill: 0x8ea4c0, groundFill: 0x5e5a50, exposure: 1.08, particles: 'none' },
     ground: { material: 'gravel', verge: 'gravel', road: 'flagstone', litter: 0.6 },

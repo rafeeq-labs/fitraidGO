@@ -39,6 +39,20 @@ import {
 export const UV = {
   /** 5 ashlar courses of 0.5 m. */
   stone: 2.5,
+  /**
+   * Short stone elements get their own tile size.
+   *
+   * UV tiling is in metres, so the tile size decides both the block module AND the texel density,
+   * and the two pull opposite ways. At the building's 2.5 m the 0.10 m coping sampled a
+   * twenty-fifth of one course and came out as a flat band; dropping straight to 0.6 m fixed the
+   * module but put 850 texels on every metre of a kerb that is 12 screen pixels tall, so the mip
+   * chain averaged the joints away before they ever reached the frame. These are the sizes at which
+   * the block reads AND survives minification: 2.5 m gives the 0.50 m kerb face exactly one course
+   * of 1.05 m blocks, and 1.2 m gives the coping and the piers a 0.5 m block at half that density.
+   */
+  kerb: 2.5,
+  coping: 1.2,
+  post: 1.2,
   wall: 3,
   /** 9 slate courses at the reference's 0.28 m pitch. */
   roof: 2.5,
@@ -361,9 +375,11 @@ export function slab(ctx: KitContext, o: SlabOptions = {}): void {
   const d = o.d ?? 14;
   const top = o.top ?? LAYER.plotSlab;
   const skirt = o.skirt ?? 0.6;
+  // The top face is skipped: the yard surface covers every square metre of it at every level, and
+  // on a real tile that is one wasted quad per plot on several hundred plots.
   ctx.channel.stone.box(-w / 2, top - skirt, -d / 2, w / 2, top, d / 2, {
     uvScale: UV.stone,
-    skip: { ny: true },
+    skip: { ny: true, py: true },
     groundAO: AO.ground,
   });
 }
@@ -377,18 +393,68 @@ export type KerbRunOptions = {
   capThickness?: number;
 };
 
+/**
+ * A course of individually shaded ashlar blocks standing proud of a wall face, along +x at depth z.
+ *
+ * The block rhythm is carried in the aAO channel, not in the texture, and that is the whole point.
+ * A kerb wall is 0.50 m tall and twelve screen pixels high at the GPS camera while being two
+ * hundred pixels long, so the mip level the hardware picks off the long axis averages any painted
+ * joint out of existence — which is exactly how the most-repeated surface in the system came to be
+ * a smooth pale extrusion with not one block joint on any of twelve plots. Vertex data survives
+ * minification. Reference 09's kerb is a chain of individually painted blocks, each with its own
+ * value; this is that chain.
+ */
+function blockCourse(
+  mb: MeshBuilder,
+  len: number,
+  y0: number,
+  y1: number,
+  z: number,
+  outward: number,
+  block: number,
+  seed: number,
+  opts: Opts
+): void {
+  const n = Math.max(1, Math.round(len / block));
+  const bw = len / n;
+  const joint = Math.min(0.06, bw * 0.09);
+  for (let i = 0; i < n; i++) {
+    const x0 = -len / 2 + i * bw + joint / 2;
+    const x1 = x0 + bw - joint;
+    // A stable per-block value: three steps of +/-12 luma, which is REFERENCE-SPEC 8.2's spread.
+    const v = ((seed + i * 2654435761) >>> 0) % 3;
+    const ao = (opts.ao ?? 1) * (0.86 + v * 0.07);
+    const o: Opts = { ...opts, ao };
+    if (outward > 0) mb.quad([x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z], o);
+    else mb.quad([x1, y0, z], [x0, y0, z], [x0, y1, z], [x1, y1, z], o);
+  }
+}
+
 /** A straight run of kerb wall along +x, with its capstone. Base at y = 0. */
 export function kerbRun(ctx: KitContext, o: KerbRunOptions = {}): void {
   const len = o.length ?? 4.5;
   const th = o.thickness ?? 0.34;
   const h = o.height ?? 0.5;
   if (len <= 0.02) return;
-  ctx.channel.stone.box(-len / 2, 0, -th / 2, len / 2, h, th / 2, {
-    uvScale: UV.stone,
-    taper: 0.06,
+  const st = ctx.channel.stone;
+  st.box(-len / 2, 0, -th / 2, len / 2, h, th / 2, {
+    uvScale: UV.kerb,
+    // No batter. `box` tapers a mass on BOTH horizontal axes, so on a 39 m run down the side of a
+    // park block a 3% batter pushed the wall 0.6 m past its own plot line — the hand-built lean is
+    // worth nothing on a wall whose only visible face is 0.5 m tall, and the block course above
+    // supplies the modelling it was there for.
+    taper: 0,
     skip: { ny: true, py: o.cap !== false },
-    groundAO: AO.contact,
+    // The box behind the blocks is the mortar bed, so the joints between them read as recesses.
+    groundAO: 0.6,
+    ao: 0.6,
   });
+  const proud = th / 2 + 0.02;
+  for (const sz of [-1, 1]) {
+    blockCourse(st, len, 0.05, h - 0.02, sz * proud, sz, 1.25, Math.round(len * 977) + sz, {
+      uvScale: UV.kerb,
+    });
+  }
   if (o.cap !== false) {
     capstone(ctx, {
       length: len,
@@ -408,11 +474,29 @@ export function capstone(ctx: KitContext, o: CapstoneOptions = {}): void {
   const t = o.thickness ?? 0.1;
   const y = o.y ?? 0.5;
   if (len <= 0.02) return;
-  ctx.channel.stone.box(-len / 2, y, -w / 2, len / 2, y + t, w / 2, {
-    uvScale: UV.stone,
-    skip: { ny: true },
-    groundAO: 0.92,
+  const st = ctx.channel.stone;
+  st.box(-len / 2, y, -w / 2, len / 2, y + t, w / 2, {
+    uvScale: UV.coping,
+    skip: { ny: true, py: true },
+    groundAO: 0.86,
   });
+  // The coping is laid in stones too, one step lighter than the wall under it. As one unbroken box
+  // its top face — the only part of it the GPS camera sees — was a flat pale band running the whole
+  // side of every plot, and the brightest large surface in the frame.
+  const n = Math.max(1, Math.round(len / 3.2));
+  const bw = len / n;
+  for (let i = 0; i < n; i++) {
+    const x0 = -len / 2 + i * bw + 0.02;
+    const x1 = x0 + bw - 0.04;
+    const v = (i * 2654435761) >>> 0;
+    st.quad(
+      [x0, y + t, w / 2],
+      [x1, y + t, w / 2],
+      [x1, y + t, -w / 2],
+      [x0, y + t, -w / 2],
+      { uvScale: UV.coping, ao: 0.94 + (v % 3) * 0.02 }
+    );
+  }
 }
 
 export type CornerPostOptions = { size?: number; height?: number; cap?: boolean };
@@ -424,7 +508,7 @@ export function cornerPost(ctx: KitContext, o: CornerPostOptions = {}): void {
   const st = ctx.channel.stone;
   const shaft = o.cap === false ? h : h - 0.12;
   st.box(-s / 2, 0, -s / 2, s / 2, shaft, s / 2, {
-    uvScale: UV.stone,
+    uvScale: UV.post,
     taper: 0.07,
     skip: { ny: true, py: o.cap !== false },
     groundAO: AO.contact,
@@ -432,11 +516,67 @@ export function cornerPost(ctx: KitContext, o: CornerPostOptions = {}): void {
   if (o.cap !== false) {
     const c = s + 0.08;
     st.box(-c / 2, shaft, -c / 2, c / 2, h, c / 2, {
-      uvScale: UV.stone,
+      uvScale: UV.coping,
       taper: -0.22,
       skip: { ny: true },
       groundAO: 0.95,
     });
+  }
+}
+
+export type QuoinOptions = {
+  w?: number;
+  d?: number;
+  h?: number;
+  y?: number;
+  /** Course height; blocks alternate long and short up the corner. */
+  course?: number;
+  proud?: number;
+};
+
+/**
+ * Alternating dressed blocks up each corner of an ashlar mass.
+ *
+ * Reference 10 puts quoins on every building corner and they do a job no texture can: they give
+ * the corner a hard vertical rhythm at a coarser module than the wall's own coursing, so a tall
+ * ashlar elevation stops reading as one grey slab. Emitted as flat quads standing proud of the
+ * two faces that meet at the corner — at this camera the block's return is under a pixel.
+ */
+export function quoins(ctx: KitContext, o: QuoinOptions = {}): void {
+  const w = o.w ?? 7;
+  const d = o.d ?? 5.6;
+  const h = o.h ?? 3;
+  const y = o.y ?? 0;
+  const course = o.course ?? 0.88;
+  const proud = o.proud ?? 0.05;
+  const rows = Math.max(2, Math.floor(h / course));
+  const s = ctx.channel.stone;
+  const hw = w / 2;
+  const hd = d / 2;
+  for (let i = 0; i < rows; i++) {
+    const y0 = y + i * course + 0.02;
+    const y1 = y0 + course - 0.05;
+    // Long face and short return swap every course, which is what makes the corner read as bonded.
+    const long = i % 2 === 0 ? 0.82 : 0.46;
+    const shortSide = i % 2 === 0 ? 0.46 : 0.82;
+    const ao = 0.86 + (i % 2) * 0.1;
+    const opts: Opts = { uvScale: UV.coping, ao };
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        // Face parallel to the x axis, on the +/-z elevation.
+        const x0 = sx > 0 ? hw - long : -hw;
+        const x1 = sx > 0 ? hw : -hw + long;
+        const fz = sz * (hd + proud);
+        if (sz > 0) faceQuad(s, x0, y0, x1, y1, fz, opts);
+        else s.quad([x1, y0, fz], [x0, y0, fz], [x0, y1, fz], [x1, y1, fz], opts);
+        // The return, on the +/-x elevation.
+        const za = sz > 0 ? hd - shortSide : -hd;
+        const zb = sz > 0 ? hd : -hd + shortSide;
+        const fx = sx * (hw + proud);
+        if (sx > 0) s.quad([fx, y0, zb], [fx, y0, za], [fx, y1, za], [fx, y1, zb], opts);
+        else s.quad([fx, y0, za], [fx, y0, zb], [fx, y1, zb], [fx, y1, za], opts);
+      }
+    }
   }
 }
 
@@ -467,6 +607,8 @@ export type WallBoxOptions = {
   timber?: boolean;
   /** Emit the top face. Off by default because a roof almost always covers it. */
   top?: boolean;
+  /** Suppress the corner quoins an ashlar mass otherwise gets. */
+  quoins?: boolean;
 };
 
 /** The primary mass of a building. Slightly battered, so it reads hand-built rather than extruded. */
@@ -483,6 +625,9 @@ export function wallBox(ctx: KitContext, o: WallBoxOptions = {}): void {
     skip: { ny: true, py: o.top !== true },
     groundAO: AO.contact,
   });
+  // Every ashlar mass gets quoined corners. Without them the level-3 elevations are the largest
+  // single-value surfaces in the kit whatever the texture does; see REFERENCE-SPEC 8.2's flat-colour ban.
+  if (o.ashlar === true && h > 1.6 && o.quoins !== false) quoins(ctx, { w, d, h, y });
 }
 
 export type BaseCourseOptions = { w?: number; d?: number; h?: number; overhang?: number };
@@ -1571,6 +1716,7 @@ register<SlabOptions>('slab', slab);
 register<KerbRunOptions>('kerbRun', kerbRun);
 register<CapstoneOptions>('capstone', capstone);
 register<CornerPostOptions>('cornerPost', cornerPost);
+register<QuoinOptions>('quoins', quoins);
 register<ThresholdSlabOptions>('thresholdSlab', thresholdSlab);
 register<WallBoxOptions>('wallBox', wallBox);
 register<BaseCourseOptions>('baseCourse', baseCourse);

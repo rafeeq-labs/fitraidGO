@@ -726,15 +726,19 @@ const crystalLamp: KitPiece = (ctx, o) => {
   // Two nested crystals: a shaded faceted body, and a small unlit core inside it. The core plus
   // the additive bloom is what makes the tip read white-hot against a saturated blue body — a
   // single flat chip measured the same value at tip and base and dimmer than plain daylit stone.
-  const cy = shaftTop + 0.26;
-  facetedCrystal(ctx.channel.glow, 0.17, 0.34, 0.28, { ...CRYSTAL, y: cy });
-  bloom(ctx, 1.3, { y: cy + 0.2 }, 'cool');
-  // Proof by what it touches. The pool goes on the GROUND under the emitter, not on the plinth top
-  // 0.42 m up where it read as a hard aliased ring around the base, and it is tinted by the emitter
-  // rather than left white — REFERENCE-SPEC 3.1 gives the crystal `#8FD4FF` over `#1E8FDB`.
-  groundSpill(ctx, 4, 0.03, 0, 'cool');
-  // A second, tight wash on the top plinth course, so the light is seen landing on stone.
-  groundSpill(ctx, 1.1, 0.41, 0, 'cool');
+  // A bigger shard with more facets. At 0.8 m on a 3.2 m post the crystal was a chip; reference 05
+  // gives it roughly a fifth of the post's height and eight faces, so adjacent planes catch
+  // visibly different values instead of blurring into one rounded blade.
+  const cy = shaftTop + 0.24;
+  facetedCrystal(ctx.channel.glow, 0.21, 0.44, 0.4, { ...CRYSTAL, y: cy, segments: 8 });
+  // The bloom belongs on the SOURCE. A wide halo centred on the crystal and a 4 m pool on the floor
+  // put the brightest pixel of the whole prop on the ground under it, and drove the shard itself to
+  // `#e2ffff` — the hue was entirely in the halo and none of it in the object.
+  // Sized so the falloff's bright core matches the shard and the wrap extends about a crystal's
+  // width past it. At 1.15 the core was narrower than the crystal, so the crystal occluded its own
+  // halo entirely and the only blue in the prop was the pool on the floor.
+  bloom(ctx, 2, { y: cy + 0.36 }, 'cool');
+  groundSpill(ctx, 3, 0.03, 0, 'cool');
   if (flag(o, 'banner', ctx.rng.chance(0.4))) banner(ctx, 0.44, 1, shaftTop - 0.2, 0.16);
 };
 
@@ -750,13 +754,14 @@ const streetLantern: KitPiece = (ctx, o) => {
   ctx.channel.glow.box(-0.15, top + 0.08, -0.15, 0.15, top + 0.5, 0.15, { ...GLOW, taper: -0.1 });
   m.box(-0.2, top + 0.5, -0.2, 0.2, top + 0.56, 0.2, METAL);
   pyramid(m, 0.2, 0.2, 0.19, { ...METAL, y: top + 0.56 });
-  bloom(ctx, 1.4, { y: top + 0.29 });
-  // The 2.5 m warm pool REFERENCE-SPEC 3.1 asks for. At 2.6 m and a tenth of this strength it
-  // measured three luma above the bare backdrop, i.e. the art direction's warm accent was simply
-  // not in the frame.
-  groundSpill(ctx, 5, 0.03);
-  // A tight wash on the plinth, so the light is seen landing on the stone it stands on.
-  groundSpill(ctx, 1.2, 0.31);
+  // Tight on the glass, not on the floor: the halo has to wrap the lantern head so the source is
+  // seen to be the source. At 1.4 m over a 0.42 m housing it washed the head to `#ffffdb` and the
+  // gold went out of the frame.
+  bloom(ctx, 1.7, { y: top + 0.29 });
+  // The 2.5 m warm pool REFERENCE-SPEC 3.1 asks for, as a soft low-contrast wash. One pool, not
+  // two: overlapping it with a second on the plinth made the base of the post brighter than the
+  // lantern glass, so the prop read as unlit geometry with a decal under it.
+  groundSpill(ctx, 3, 0.03);
 };
 
 /** Blue-crystal obelisk shrine on a stepped round plinth. Reference 05, right-hand piece. */
@@ -795,10 +800,11 @@ const crystalObelisk: KitPiece = (ctx, o) => {
     );
   }
   const cy = 0.66 + pedH;
-  facetedCrystal(g, 0.36, h * 0.32, h * 0.22, { ...CRYSTAL, y: cy });
-  // A halo two to three times the crystal's own width, and the whole stepped plinth washed cyan.
-  bloom(ctx, h * 0.7, { y: cy + h * 0.18 }, 'cool');
-  groundSpill(ctx, 3.4, 0.56, 0, 'cool');
+  facetedCrystal(g, 0.36, h * 0.32, h * 0.22, { ...CRYSTAL, y: cy, segments: 8 });
+  // A tight halo wrapping the shard, and a low-contrast wash on the steps. At 0.7 h it covered the
+  // whole obelisk and made the pale plinth the brightest thing in the prop sheet.
+  bloom(ctx, h * 0.52, { y: cy + h * 0.18 }, 'cool');
+  groundSpill(ctx, 2.6, 0.56, 0, 'cool');
 };
 
 /** L0 marker: a stake with a scrap of cloth — the "this parcel is buildable" read. */
@@ -886,7 +892,13 @@ const footbridge: KitPiece = (ctx, o) => {
   const r = span / 2;
   const yOf = (t: number): number => rise * Math.sin(Math.PI * t) * 0.6 + 0.42;
   const xOf = (t: number): number => -r - 0.7 + (span + 1.4) * t;
-  /** A vertical strip in the xy plane at depth z, wound so its normal points along `face`. */
+  /**
+   * A vertical strip in the xy plane at depth z, wound so its normal points along `face`.
+   *
+   * `yTop0` belongs to `x0` and `yTop1` to `x1`. Passing them the other way round — which is what
+   * both callers used to do — crosses the quad into a bowtie, and every segment of the parapet came
+   * out as a detached floating block with daylight either side of it.
+   */
   const strip = (
     x0: number,
     y0: number,
@@ -920,7 +932,7 @@ const footbridge: KitPiece = (ctx, o) => {
     const qx1 = xOf(t1);
     const qy1 = yOf(t1) + 0.5;
     for (const sz of [-1, 1]) {
-      strip(px0, py0, px1, py1, qy1, qy0, (sz * deck) / 2, sz, STONE);
+      strip(px0, py0, px1, py1, qy0, qy1, (sz * deck) / 2, sz, STONE);
     }
     // Deck over the ring, and the dark soffit under it.
     s.quad([qx0, qy0, deck / 2], [qx1, qy1, deck / 2], [qx1, qy1, -deck / 2], [qx0, qy0, -deck / 2], PAVING);
@@ -932,8 +944,8 @@ const footbridge: KitPiece = (ctx, o) => {
     for (const sz of [-1, 1]) {
       const outer = (sz * deck) / 2;
       const inner = sz * (deck / 2 - 0.14);
-      strip(qx0, qy0, qx1, qy1, qy1 + 0.7, qy0 + 0.7, outer, sz, STONE);
-      strip(qx0, qy0 + 0.2, qx1, qy1 + 0.2, qy1 + 0.7, qy0 + 0.7, inner, -sz, { ...STONE, ao: 0.62 });
+      strip(qx0, qy0, qx1, qy1, qy0 + 0.7, qy1 + 0.7, outer, sz, STONE);
+      strip(qx0, qy0 + 0.2, qx1, qy1 + 0.2, qy0 + 0.7, qy1 + 0.7, inner, -sz, { ...STONE, ao: 0.62 });
       s.quad(
         [qx0, qy0 + 0.7, sz > 0 ? outer : inner],
         [qx1, qy1 + 0.7, sz > 0 ? outer : inner],
@@ -1102,16 +1114,24 @@ const statue: KitPiece = (ctx, o) => {
   drum(s, 0.13, 0.13, 0.12, 6, { ...STONE, y: shoulder + 0.2, cap: false });
   mound(s, 0.21, 0.34, 7, { ...STONE, y: shoulder + 0.32 });
   s.box(-0.05, shoulder + 0.5, -0.2, 0.05, shoulder + 0.72, 0.2, { ...STONE, taper: -0.4 });
-  // Shield, offset clear of the body on the near side so the void between the two reads.
+  // Shield: a tall round shield standing on edge and held clear of the body, with a gold rim and
+  // boss. Laid flat as a 0.34 m disc it was seen edge-on from the game camera and merged into the
+  // cloak, which is how the knight came to read as a featureless lump with a gold stick.
+  const shieldY = foot + (shoulder - foot) * 0.5;
   s.push();
-  s.translate(-0.44, foot + (shoulder - foot) * 0.52, 0.2);
-  s.rotateY(0.22);
-  drum(s, 0.34, 0.3, 0.11, 7, { ...STONE, cap: true, aoBottom: 0.6 });
+  s.translate(-0.52, shieldY, 0.28);
+  s.rotateY(0.3);
+  s.rotateX(Math.PI / 2);
+  drum(s, 0.44, 0.4, 0.1, 8, { ...STONE, cap: true, aoBottom: 0.45 });
   s.pop();
   m.push();
-  m.translate(-0.44, foot + (shoulder - foot) * 0.52, 0.26);
-  drum(m, 0.11, 0.09, 0.06, 6, { ...METAL, cap: true });
+  m.translate(-0.52, shieldY, 0.28);
+  m.rotateY(0.3);
+  m.rotateX(Math.PI / 2);
+  drum(m, 0.13, 0.1, 0.16, 6, { ...METAL, cap: true });
   m.pop();
+  // The arm that carries it, so the shield is attached rather than floating beside the figure.
+  s.box(-0.5, shieldY - 0.02, 0.02, -0.16, shieldY + 0.16, 0.2, { ...STONE, ao: 0.62 });
   // Spear: shaft clear of the plinth edge, iron head above the helm.
   m.box(0.44, foot - 0.9, -0.045, 0.53, h + 0.34, 0.045, { ...METAL, skip: { py: true, ny: true } });
   m.push();

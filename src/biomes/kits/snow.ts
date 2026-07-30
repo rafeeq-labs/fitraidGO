@@ -49,7 +49,7 @@ export const snow = deriveBiome(
     },
     roof: { material: 'snowSlate', pitch: 1.05, snowCover: 0.8 },
     walls: { framing: 0.75, baseCourse: 0.8 },
-    vegetation: { primary: 'conifer', secondary: 'bare', density: 3.4, understory: 'none', flowers: false, scale: [0.9, 1.45] },
+    vegetation: { primary: 'conifer', secondary: 'bare', archetypes: ['conifer', 'bare'], blossom: false, density: 3.4, understory: 'none', flowers: false, scale: [0.9, 1.45] },
     water: { frozen: true, flow: 0.08, bank: 'ice', foam: 0.65 },
     atmosphere: { fogColor: 0xb9c6da, fogNearOffset: 12, fogFarOffset: 260, sunColor: 0xfff4e4, sunIntensity: 3.4, sunElevation: 58, skyFill: 0x9fb4d4, groundFill: 0x8c94a4, fillIntensity: 1.3, exposure: 1.04, particles: 'snow' },
     ground: { material: 'snow', verge: 'snowBank', road: 'iceCobble', litter: 0.2 },

@@ -82,7 +82,7 @@ export const CHANNEL_SLOTS: Record<KitChannel, readonly string[]> = {
   timber: ['timber'],
   metal: ['metal'],
   glow: ['glow', 'glowCrystal', 'glowFire', 'haloWarm', 'haloCool', 'haloFire'],
-  foliage: ['foliage', 'foliageAccent', 'canopy', 'conifer'],
+  foliage: ['foliage', 'foliageAccent', 'canopy', 'conifer', 'willowLeaf'],
   cloth: ['cloth'],
 };
 
@@ -99,6 +99,7 @@ export const TAG = {
   blossom: 1,
   canopy: 2,
   conifer: 3,
+  willow: 4,
 } as const;
 
 /** Where a caller wants a piece to stand, in the caller's own space. */

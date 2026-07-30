@@ -38,6 +38,7 @@ export const temperate: BiomeKit = {
     foliageLit: PALETTE.coniferLit,
     foliageDark: PALETTE.coniferDark,
     foliageAccent: PALETTE.blossom,
+    foliagePale: PALETTE.willowPale,
     waterDeep: PALETTE.waterDeep,
     waterShallow: PALETTE.waterShallow,
     waterFoam: PALETTE.waterFoam,
@@ -83,7 +84,9 @@ export const temperate: BiomeKit = {
       ridge: PALETTE.roofRidge,
       rows: 9,
       round: 0.45,
-      variance: 0.11,
+      // REFERENCE-SPEC 8.2 wants +/-14 luma per tile. Under 0.14 the slates all land in one band
+      // and the vertical joints stop resolving at the sheet's ~27 px/m.
+      variance: 0.14,
     },
     shingle: {
       lit: PALETTE.shingleLit,
@@ -109,6 +112,7 @@ export const temperate: BiomeKit = {
       mortar: PALETTE.mortar,
       courses: 5,
       stagger: 1,
+      variance: 0.1,
     },
     timber: {
       lit: PALETTE.timberLit,
@@ -161,6 +165,10 @@ export const temperate: BiomeKit = {
   vegetation: {
     primary: 'conifer',
     secondary: 'broadleaf',
+    // No palm: it belongs to desert and tropical, and REFERENCE-SPEC 10.7 auto-fails a frame that
+    // mixes biome vegetation.
+    archetypes: ['conifer', 'broadleaf', 'willow', 'cypress', 'olive', 'bare'],
+    blossom: true,
     density: 4.5,
     hueJitter: 8,
     scale: [0.85, 1.3],
@@ -181,21 +189,29 @@ export const temperate: BiomeKit = {
     fogNearOffset: 18,
     fogFarOffset: 330,
     sunColor: PALETTE.sunWarm,
-    sunIntensity: 4.4,
-    sunElevation: 59,
-    // Azimuth is measured against the game camera looking up the avenue. 105 puts the sun up and
-    // to the screen-right, so shadows fall screen-LEFT and about 15 degrees toward the viewer —
-    // REFERENCE-SPEC 8.1. At 70 they fell away from the camera instead, which is why no plot in
-    // the ladder sheet caught a shadow on its own interior.
-    sunAzimuth: 105,
+    // The lit/shade ratio IS the shadow. At key 4.4 against a 1.55 fill the darkest a cast shadow
+    // could reach was 54% of the lit grass beside it, which at thumbnail size is no shadow at all.
+    sunIntensity: 5.2,
+    sunElevation: 61,
+    // Azimuth is measured against the game camera looking up the avenue. 112 puts the sun up and
+    // to the screen-right, so shadows fall screen-LEFT and 20 degrees toward the viewer, landing on
+    // the visible half of each yard — REFERENCE-SPEC 8.1. At 70 they fell away from the camera
+    // instead, and at 105 the toward-viewer component was only 15 degrees, the bottom of the band.
+    sunAzimuth: 112,
     skyFill: 0x7c93b8,
     // The hemisphere's DOWN colour is what a vertical wall gets half of, so a dark warm brown here
     // starved every shadow-side elevation of fill and left it to the cast-shadow floor.
     groundFill: 0x82705a,
     // REFERENCE-SPEC 8.1 puts the cool sky fill at ~35% of key. Below that, albedo variation does
-    // not survive in shade and every shadow-side face measures as one flat value.
-    fillIntensity: 1.55,
-    exposure: 1.3,
+    // not survive in shade and every shadow-side face measures as one flat value; above it, a cast
+    // shadow cannot get dark enough to be seen.
+    fillIntensity: 1.3,
+    // Trimmed with the key. Pale ashlar is the most common albedo in the kit and at 1.3 every
+    // sun-facing stone plane clipped to the same `#e5ded0` at luma 220-224, which put loose rocks,
+    // steps and statues above the buildings they are meant to sit behind. At 1.06 a horizontal lit
+    // ashlar face lands near its own `#D2C2A8` and the only things over luma 220 are the three
+    // emissive families REFERENCE-SPEC 8.1 allows.
+    exposure: 1.06,
     particles: 'none',
   },
 
