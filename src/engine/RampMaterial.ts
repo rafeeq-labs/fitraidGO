@@ -149,9 +149,20 @@ export interface RampMaterialOptions extends MeshLambertMaterialParameters {
   rim?: number;
   /** Emissive surfaces (windows, crystals) skip the ramp entirely. */
   unlit?: boolean;
+  /**
+   * Large-scale value variation across world space, for big continuous surfaces.
+   *
+   * A texture tiling every few metres cannot break up a lawn the size of a city block: the eye
+   * integrates it into one flat field, and no amount of per-blade detail fixes that because the
+   * variation is all at the wrong frequency. This adds slow drifts of light and shade tens of metres
+   * across — the sunlit and shaded patches the benchmark ground has — as a multiply on albedo, so
+   * the texture underneath still reads. 0 disables it.
+   */
+  mottle?: number;
 }
 
 const RAMP_DECLARATIONS = /* glsl */ `
+uniform float uMottle;
 uniform float uRampEdge0;
 uniform float uRampEdge1;
 uniform float uRampSoft;
@@ -183,6 +194,20 @@ uniform vec4 uFogTransform;
 uniform vec2 uFogParams;
 uniform float uFogEnabled;
 uniform vec3 uFogFrontier;
+`;
+
+/**
+ * Slow light and shade across large surfaces. Two octaves at tens of metres, multiplied into the
+ * albedo before lighting so it reads as ground that varies rather than as a filter over the frame.
+ */
+const MOTTLE = /* glsl */ `
+	if ( uMottle > 0.0 ) {
+		vec2 mp = vWorldPosRF.xz;
+		float m = sin( mp.x * 0.031 + sin( mp.y * 0.023 ) * 1.7 )
+			+ sin( mp.y * 0.017 - sin( mp.x * 0.041 ) * 1.3 ) * 0.8
+			+ sin( ( mp.x + mp.y ) * 0.0071 ) * 1.1;
+		diffuseColor.rgb *= 1.0 + m * 0.09 * uMottle;
+	}
 `;
 
 /**
@@ -219,13 +244,22 @@ const RAMPED_IRRADIANCE = /* glsl */ `
 export class RampMaterial extends MeshLambertMaterial {
   private readonly vertexAO: boolean;
   private readonly sway: boolean;
+  private readonly mottle: number;
   private readonly rimScale: number;
 
   constructor(options: RampMaterialOptions = {}) {
-    const { vertexAO = false, sway = false, rim = 1, unlit = false, ...params } = options;
+    const {
+      vertexAO = false,
+      sway = false,
+      rim = 1,
+      unlit = false,
+      mottle = 0,
+      ...params
+    } = options;
     super(params);
     this.vertexAO = vertexAO;
     this.sway = sway;
+    this.mottle = mottle;
     this.rimScale = unlit ? 0 : rim;
     if (unlit) {
       // Emissive-only surfaces: kill the diffuse response so they read as light sources.
@@ -240,7 +274,10 @@ export class RampMaterial extends MeshLambertMaterial {
   }
 
   override onBeforeCompile(shader: WebGLProgramParametersWithUniforms): void {
-    Object.assign(shader.uniforms, rampUniforms, { uRimScale: { value: this.rimScale } });
+    Object.assign(shader.uniforms, rampUniforms, {
+      uRimScale: { value: this.rimScale },
+      uMottle: { value: this.mottle },
+    });
 
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -319,6 +356,7 @@ varying vec3 vColor;
       .replace(
         '#include <color_fragment>',
         `#include <color_fragment>
+${MOTTLE}
 #if defined( USE_INSTANCING_COLOR ) && !defined( USE_COLOR )
 diffuseColor.rgb *= vColor;
 #endif
@@ -369,6 +407,6 @@ ${FOG_OF_WAR}`
 
   /** Programs must not be shared between AO and non-AO or differing rim scales. */
   override customProgramCacheKey(): string {
-    return `ramp:${this.vertexAO ? 1 : 0}:${this.sway ? 1 : 0}:${this.rimScale.toFixed(2)}`;
+    return `ramp:${this.vertexAO ? 1 : 0}:${this.sway ? 1 : 0}:${this.rimScale.toFixed(2)}:${this.mottle > 0 ? 1 : 0}`;
   }
 }

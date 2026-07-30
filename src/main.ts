@@ -15,6 +15,8 @@ import type { Landmark, WorldTile } from './map/types.js';
  * URL parameters (in addition to everything the world view already reads):
  *   ?debug=plan   the flat plan drawing instead of the game
  *   ?gps=0|1      never ask for geolocation / ask and complain loudly when it fails
+ *   ?gpsTimeout=<ms>  how long to wait for the first usable fix before falling back
+ *   ?gpsStale=<ms>    how long a live fix stays valid before the simulation takes over again
  *   ?hud=0        hide the HUD
  */
 
@@ -118,17 +120,21 @@ async function bootPlan(): Promise<void> {
  */
 async function bootGame(): Promise<void> {
   const gpsParam = params.get('gps');
+  const ms = (name: string): number | undefined => {
+    const v = Number(params.get(name));
+    return Number.isFinite(v) && v > 0 ? v : undefined;
+  };
   const source = new PositionSource({
     prefer: gpsParam === '0' ? 'sim' : gpsParam === '1' ? 'gps' : 'auto',
+    // Shortening these is how the give-up paths get exercised without waiting out a real receiver.
+    firstFixTimeout: ms('gpsTimeout'),
+    staleTimeout: ms('gpsStale'),
     onStatus: (s) => console.info(`raidfit: position ${s.mode} (${s.gps}) — ${s.detail}`),
   });
   source.start();
   window.__RAIDFIT_POSITION = source;
 
-  const hud =
-    params.get('hud') === '0'
-      ? null
-      : new Hud({ topOffset: params.get('stats') === '1' ? 96 : 0, placeName: 'Locating…' });
+  const hud = params.get('hud') === '0' ? null : new Hud({ placeName: 'Locating…' });
 
   // Anything this throws is a failure to build the world at all, and is reported in the overlay
   // rather than left as a blank canvas.
@@ -143,6 +149,9 @@ async function bootGame(): Promise<void> {
   if (!hud) return;
 
   hud.setPlace(shortPlace(walker.tile.header.place));
+  const statsEl = document.getElementById('stats');
+  if (statsEl && statsEl.style.display !== 'none') hud.clearOf(statsEl);
+
   const landmarks = walker.tile.landmarks;
   const tick = (): void => {
     const pose = walker.pose;

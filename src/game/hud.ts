@@ -132,6 +132,30 @@ export class Hud {
     if (this.place.textContent !== text) this.place.textContent = text;
   }
 
+  /** Pushes the whole HUD down by `px`, to clear whatever else is in the top-left corner. */
+  setTopOffset(px: number): void {
+    this.root.style.setProperty('--hud-top', `${Math.max(0, Math.round(px))}px`);
+  }
+
+  /**
+   * Keeps the HUD below `el` for as long as `el` is visible.
+   *
+   * The debug stats overlay shares the top-left corner and changes height as lines are added to it,
+   * so a hard-coded offset is wrong the moment anything else is reported. Observing it costs nothing
+   * per frame — the callback only fires when the box actually resizes.
+   */
+  clearOf(el: HTMLElement, gap = 10): () => void {
+    const apply = (): void => {
+      const rect = el.getBoundingClientRect();
+      this.setTopOffset(rect.height > 0 ? rect.bottom + gap - 14 : 0);
+    };
+    apply();
+    if (typeof ResizeObserver === 'undefined') return () => undefined;
+    const observer = new ResizeObserver(apply);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }
+
   setVisible(visible: boolean): void {
     this.root.style.display = visible ? '' : 'none';
   }

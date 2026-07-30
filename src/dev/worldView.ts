@@ -71,7 +71,8 @@ lighting.fitFogToCamera(
   kit.atmosphere.fogFarOffset,
   scene
 );
-lighting.setShadowExtent(renderer.isoCamera.preset.viewSpan * 0.85);
+// Cover the whole visible ground, with a margin so geometry just off-frame still casts into it.
+lighting.setShadowExtent(renderer.isoCamera.groundRadius() * 1.15);
 
 const textures = new TextureFactory(seed);
 const surfaces = buildTileSurfaces(tile, kit, textures);
@@ -177,7 +178,7 @@ renderer.start((dt, t) => {
   player.update(dt > 0 ? dt : 1 / 60, pose.speed, pose.yaw);
 
   renderer.isoCamera.update(pose.x, 0, pose.z, dt > 0 ? dt : 1);
-  lighting.follow(pose.x, pose.z);
+  lighting.follow(renderer.isoCamera.target.x, renderer.isoCamera.target.z);
 
   ring.follow(focus);
   ring.update(t);

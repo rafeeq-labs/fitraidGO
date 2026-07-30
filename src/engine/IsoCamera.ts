@@ -52,7 +52,12 @@ export class IsoCamera {
   preset: CameraPreset;
 
   /** The ground point the camera looks at. Derived from the follow position plus the anchor offset. */
-  private readonly target = new Vector3();
+  /**
+   * The ground point the camera looks at. Public because the shadow camera must follow THIS, not
+   * the player: the player is anchored low in the frame, so most of the visible ground lies ahead
+   * of them, and centring the shadow budget on the avatar spends half of it behind the camera.
+   */
+  readonly target = new Vector3();
   /** The smoothed position being followed (normally the player). */
   private readonly follow = new Vector3();
   private readonly desiredFollow = new Vector3();
@@ -112,6 +117,25 @@ export class IsoCamera {
     // Horizontal half-angle, since viewSpan is measured across the portrait frame's short axis.
     const halfFovX = Math.atan(Math.tan(fovY / 2) * this.aspect);
     return halfSpanScreenAxis / Math.max(Math.tan(halfFovX), 1e-4);
+  }
+
+  /**
+   * Radius of a disc covering all the ground the frame can see, centred on the camera target.
+   *
+   * `viewSpan` is measured across the frame's SHORT axis, so on a 9:16 portrait the long axis shows
+   * `viewSpan * aspect` more, and the ground under it is stretched further still by the view
+   * elevation. Sizing anything to `viewSpan` alone therefore covers a fraction of what is actually
+   * on screen — which is how the shadow camera came to cover a 70 m radius of a frame showing about
+   * 185 m of street, leaving every building past the near blocks casting no shadow at all.
+   */
+  groundRadius(): number {
+    const across = this.preset.viewSpan;
+    const alongScreen = across / Math.max(this.aspect, 1e-4);
+    const el = MathUtils.degToRad(this.preset.elevation);
+    // Foreshortening: a metre of screen height maps to more than a metre of ground as the camera
+    // tilts toward the horizon.
+    const alongGround = alongScreen / Math.max(Math.sin(el), 1e-4);
+    return 0.5 * Math.hypot(across, alongGround);
   }
 
   /** Position the camera and choose the target offset that puts the follow point at anchorY. */

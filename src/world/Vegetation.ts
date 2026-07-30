@@ -36,6 +36,16 @@ export interface TreeOptions {
   seed?: number;
   /** Carry `palette.foliageAccent` blossom. Ignored by archetypes that cannot flower. */
   blossom?: boolean;
+  /**
+   * `distant` swaps in a ~60-triangle stand-in that keeps the archetype's PLAN shape and hue and
+   * throws away everything else.
+   *
+   * The far half of the frame is 100-150 m out, where a canopy is 12-25 px across and every lobe,
+   * frond and limb lands inside one pixel. Paying full price out there is what forced the covered
+   * radius down to a hard edge in the first place; at a fifth of the cost the same budget reaches
+   * twice as far, which is the difference between a world that fades and one that stops.
+   */
+  detail?: 'full' | 'distant';
 }
 
 export interface UnderstoryOptions {
@@ -49,7 +59,7 @@ export interface UnderstoryOptions {
  * the plan silhouette is all a viewer gets, so a narrow spike, a broad dome and a wide flat
  * pendulous mass have to be different numbers, not different textures.
  */
-const DEFAULT_HEIGHT: Record<TreeArchetype, number> = {
+export const DEFAULT_HEIGHT: Record<TreeArchetype, number> = {
   conifer: 8.5,
   broadleaf: 9,
   palm: 8,
@@ -138,17 +148,20 @@ function conifer(ctx: KitContext, h: number, rng: Rng): void {
     f.push();
     // Alternating rotation is what stops the tiers stacking into one smooth cone.
     f.rotateY(i * 0.62 + rng.range(-0.18, 0.18));
-    mound(f, r, th, 7, { ...NEEDLE, y, ao: 0.44 + t * 0.5 });
+    // Nine segments, not seven, and four hanging lobes rather than five: the tier ring is what the
+    // GPS camera reads as the tree's outline, and a 40-degree facet on it is visible at 8 m of
+    // canopy. Trading one lobe for two ring segments is triangle-neutral and rounder in plan.
+    mound(f, r, th, 9, { ...NEEDLE, y, ao: 0.56 + t * 0.44 });
     // Frond lobes hanging off the tier, breaking its silhouette in plan and in profile.
-    const lobes = 5;
+    const lobes = 4;
     for (let j = 0; j < lobes; j++) {
-      const a = (j / lobes) * Math.PI * 2 + rng.range(-0.2, 0.2);
+      const a = (j / lobes) * Math.PI * 2 + rng.range(-0.28, 0.28);
       const d = r * rng.range(0.72, 1.05);
       f.push();
       f.translate(Math.cos(a) * d, y + th * rng.range(0.1, 0.34), Math.sin(a) * d);
-      mound(f, r * rng.range(0.24, 0.4), th * rng.range(0.4, 0.66), 5, {
+      mound(f, r * rng.range(0.26, 0.44), th * rng.range(0.4, 0.66), 5, {
         ...NEEDLE,
-        ao: 0.4 + t * 0.5,
+        ao: 0.52 + t * 0.44,
       });
       f.pop();
     }
@@ -174,29 +187,44 @@ function broadleaf(ctx: KitContext, h: number, rng: Rng, blossom: boolean): void
   // thumbnail size a pink cap on a green ball is 85% green, and the accent is lost.
   const skin = blossom ? ACCENT : LEAF;
   const r = h * 0.45;
-  // FIVE overlapping lobes at four different radii, offset in all three axes. Four near-equal
-  // lobes on one centre still summed to a regular dome with a flat skirt — a beach umbrella — and
-  // the plan silhouette is the only thing the game camera gives a canopy to be read by.
-  const lobes: readonly (readonly [number, number, number, number])[] = [
-    [-0.1, 0.7, -0.04, 0.66],
-    [-0.55, 0.6, 0.34, 0.56],
-    [0.5, 0.64, -0.36, 0.52],
-    [0.2, 0.88, 0.3, 0.46],
-    [0.36, 0.52, 0.52, 0.42],
-    [-0.34, 0.5, -0.5, 0.4],
+  /**
+   * Six overlapping lobes at four radii, offset in all three axes — but spent on SEGMENTS rather
+   * than on latitude bands.
+   *
+   * `canopyBlob` costs `segments * (2 * bands - 2)` triangles, and from 52 degrees up the only
+   * thing a canopy is read by is its plan outline, which is governed entirely by `segments`. At
+   * 7 segments each facet spans 51 degrees of a 4 m radius crown — 24 px of straight edge at the
+   * GPS camera's 11.8 px/m, which is exactly the faceted-blob read the review named. Dropping from
+   * 4 bands to 3 pays for 12 segments on the main lobe at no extra cost: a 30-degree facet, plus a
+   * flatter, wider mass that is what a shade tree actually presents from above.
+   *
+   * Wobble comes down with it. At 0.3 the outline was jagged as well as polygonal; the irregularity
+   * has to be smaller than the facet or the two read as one defect.
+   */
+  const lobes: readonly (readonly [number, number, number, number, number])[] = [
+    // dx, dz (fractions of r), dy (fraction of h), radius k, segments
+    [-0.06, -0.02, 0.7, 0.7, 12],
+    [-0.52, 0.3, 0.61, 0.52, 10],
+    [0.48, -0.32, 0.65, 0.5, 10],
+    [0.18, 0.26, 0.85, 0.44, 9],
+    [0.34, 0.5, 0.53, 0.4, 8],
+    [-0.36, -0.48, 0.51, 0.4, 8],
   ];
-  for (const [dx, dy, dz, k] of lobes) {
+  for (const [dx, dz, dy, k, segments] of lobes) {
     f.push();
     f.translate(dx * r, h * (dy + lift), dz * r);
     f.rotateY(rng.range(0, Math.PI));
     canopyBlob(f, r * k, {
       ...skin,
-      ry: rng.range(0.68, 0.92),
-      segments: 7,
-      bands: 4,
+      ry: rng.range(0.6, 0.78),
+      segments,
+      bands: 3,
       aoTop: 1,
-      aoBottom: 0.22,
-      wobble: 0.3,
+      // The underside was crushed to 0.22 of albedo, which on a mid-green canopy is under the
+      // spec's luma floor and is half of why a whole tree read as one dark mass. The crown-to-
+      // underside gradient survives at 0.36; the tree stops being a hole in the lawn.
+      aoBottom: 0.36,
+      wobble: 0.16,
       rand: () => rng.next(),
     });
     f.pop();
@@ -236,7 +264,7 @@ function cypress(ctx: KitContext, h: number, rng: Rng): void {
     segments: 8,
     bands: 7,
     aoTop: 1,
-    aoBottom: 0.2,
+    aoBottom: 0.32,
     wobble: 0.22,
     rand: () => rng.next(),
   });
@@ -247,10 +275,10 @@ function cypress(ctx: KitContext, h: number, rng: Rng): void {
     canopyBlob(f, r * rng.range(0.5, 0.78), {
       ...NEEDLE,
       ry: 1.5,
-      segments: 6,
+      segments: 7,
       bands: 3,
       aoTop: 1,
-      aoBottom: 0.22,
+      aoBottom: 0.32,
       wobble: 0.24,
       rand: () => rng.next(),
     });
@@ -290,10 +318,10 @@ function olive(ctx: KitContext, h: number, rng: Rng, blossom: boolean): void {
     canopyBlob(f, r * rng.range(0.4, 0.6), {
       ...(blossom && i % 2 === 0 ? ACCENT : LEAF),
       ry: rng.range(0.6, 0.85),
-      segments: 6,
+      segments: 8,
       bands: 3,
       aoTop: 1,
-      aoBottom: 0.2,
+      aoBottom: 0.34,
       wobble: 0.3,
       rand: () => rng.next(),
     });
@@ -331,9 +359,9 @@ function willow(ctx: KitContext, h: number, rng: Rng): void {
     canopyBlob(f, r * k, {
       ...WILLOW,
       ry: 0.62,
-      segments: 8,
-      bands: 4,
-      aoBottom: 0.24,
+      segments: 10,
+      bands: 3,
+      aoBottom: 0.34,
       wobble: 0.22,
       rand: () => rng.next(),
     });
@@ -358,6 +386,72 @@ function willow(ctx: KitContext, h: number, rng: Rng): void {
   }
 }
 
+/** Which of the four foliage materials an archetype's canopy belongs to. */
+function skinFor(archetype: TreeArchetype, blossom: boolean): FaceOptions {
+  if (blossom) return ACCENT;
+  if (archetype === 'conifer' || archetype === 'cypress') return NEEDLE;
+  if (archetype === 'willow') return WILLOW;
+  return LEAF;
+}
+
+/**
+ * The far-field stand-in: the archetype's plan shape and hue in 40-80 triangles.
+ *
+ * Everything a full tree spends its budget on — tier lobes, limbs, frond strands, a tapered
+ * multi-section trunk — is sub-pixel past about 90 m at the GPS camera. What survives is the width
+ * of the mass, whether it is a spike or a dome, its hue, and the shadow under it, so that is all
+ * this builds.
+ */
+function distantTree(ctx: KitContext, archetype: TreeArchetype, h: number, rng: Rng): void {
+  const f = ctx.channel.foliage;
+  const t = ctx.channel.timber;
+  const skin = skinFor(archetype, false);
+  if (archetype === 'conifer' || archetype === 'cypress' || archetype === 'bare') {
+    // A spike: three stacked rings, no lobes. 8 + 8 + 8 + trunk 8 = 32 triangles.
+    const maxR = h * (archetype === 'cypress' ? 0.15 : 0.22);
+    trunk(t, h * 0.05, h * 0.22, 1, 4);
+    for (let i = 0; i < 3; i++) {
+      const k = i / 2;
+      const y = h * (0.16 + k * 0.5);
+      mound(f, maxR * (1 - k * 0.72), h * (0.42 - k * 0.1), 8, {
+        ...skin,
+        y,
+        ao: 0.62 + k * 0.38,
+      });
+    }
+    return;
+  }
+  // A dome: one wide lobe plus one offset shoulder, so the plan outline is not a circle.
+  const r = h * 0.45;
+  trunk(t, h * 0.055, h * 0.44, 1, 5);
+  f.push();
+  f.translate(0, h * 0.66, 0);
+  canopyBlob(f, r * 0.82, {
+    ...skin,
+    ry: 0.66,
+    segments: 10,
+    bands: 3,
+    aoTop: 1,
+    aoBottom: 0.4,
+    wobble: 0.2,
+    rand: () => rng.next(),
+  });
+  f.pop();
+  f.push();
+  f.translate(r * rng.range(-0.5, 0.5), h * 0.56, r * rng.range(-0.5, 0.5));
+  canopyBlob(f, r * 0.5, {
+    ...skin,
+    ry: 0.62,
+    segments: 7,
+    bands: 3,
+    aoTop: 1,
+    aoBottom: 0.4,
+    wobble: 0.24,
+    rand: () => rng.next(),
+  });
+  f.pop();
+}
+
 /**
  * Builds one tree at the current transform of every channel, trunk base at y = 0.
  * Trunks go into `timber`, canopies into `foliage`.
@@ -371,6 +465,7 @@ export function buildTree(ctx: KitContext, options: TreeOptions): void {
     options.height ??
     (blossom && options.archetype === 'broadleaf' ? 5 : DEFAULT_HEIGHT[options.archetype]);
   const rng = makeRng(mix(options.seed ?? 0, 0x7bee));
+  if (options.detail === 'distant') return distantTree(ctx, options.archetype, h, rng);
   switch (options.archetype) {
     case 'conifer':
       return conifer(ctx, h, rng);
@@ -401,13 +496,15 @@ export function buildUnderstory(ctx: KitContext, options: UnderstoryOptions): vo
     for (let i = 0; i < 2; i++) {
       f.push();
       f.translate(rng.range(-0.3, 0.3) * s, 0, rng.range(-0.3, 0.3) * s);
+      // Ten segments over three bands, not nine over five: same 40-triangle cost, but the spend
+      // goes into the plan outline the camera can see rather than into latitude rings it cannot.
       canopyBlob(f, rng.range(0.42, 0.62) * s, {
         ...LEAF,
         ry: 0.82,
         y: 0.4 * s,
-        segments: 9,
-        bands: 5,
-        aoBottom: 0.22,
+        segments: 10,
+        bands: 3,
+        aoBottom: 0.36,
         wobble: 0.2,
         rand: () => rng.next(),
       });

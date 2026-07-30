@@ -226,11 +226,11 @@ export function buildTileSurfaces(
   const waterTex: Texture = textures.water(kit.id, kit.textures.water);
 
   const materials = {
-    ground: new RampMaterial({ map: groundTex, vertexAO: true, rim: 0 }),
+    ground: new RampMaterial({ mottle: 1, map: groundTex, vertexAO: true, rim: 0 }),
     // Parks read as mown ground purely through a tighter texture tile and a very light tint.
     // Tinting with a mid-tone palette colour multiplies an already dark grass texture into near
     // black — a park must never be darker than the rough ground around it.
-    park: new RampMaterial({ map: groundTex, vertexAO: true, rim: 0, color: 0xd8e0c4 }),
+    park: new RampMaterial({ mottle: 0.8, map: groundTex, vertexAO: true, rim: 0, color: 0xd8e0c4 }),
     road: new RampMaterial({ map: roadTex, vertexAO: true, rim: 0 }),
     kerb: new RampMaterial({ map: stoneTex, vertexAO: true, rim: 0.6 }),
     water: new RampMaterial({ map: waterTex, vertexAO: true, rim: 0.4 }),
