@@ -3,7 +3,7 @@ import '../biomes/kits/index.js';
 import { getBiome, hasBiome, type BiomeId } from '../biomes/BiomeKit.js';
 import { CAMERA_PRESETS } from '../engine/IsoCamera.js';
 import { Lighting } from '../engine/Lighting.js';
-import { setFogOfWar } from '../engine/RampMaterial.js';
+import { rampUniforms, setFogOfWar } from '../engine/RampMaterial.js';
 import { Renderer } from '../engine/Renderer.js';
 import { TextureFactory } from '../engine/TextureGen.js';
 import { FakePlayers } from '../game/FakePlayers.js';
@@ -13,7 +13,9 @@ import { RadiusRing } from '../game/RadiusRing.js';
 import { RouteLine } from '../game/RouteLine.js';
 import { SimWalker } from '../game/SimWalker.js';
 import type { WorldTile } from '../map/types.js';
+import { buildGroundCover } from '../world/GroundCover.js';
 import { buildPlotMeshes } from '../world/PlotBuilder.js';
+import { buildWorldVegetation } from '../world/WorldVegetation.js';
 import { buildTileSurfaces } from '../world/TileSurfaces.js';
 
 /**
@@ -75,9 +77,7 @@ const textures = new TextureFactory(seed);
 const surfaces = buildTileSurfaces(tile, kit, textures);
 for (const mesh of surfaces.meshes) scene.add(mesh);
 
-// Every real building footprint becomes a persistent plot with its assigned family and level.
-const plots = buildPlotMeshes(tile.plots, kit, textures);
-for (const mesh of plots.meshes) scene.add(mesh);
+
 
 // --- movement along real streets
 const walker = new SimWalker(tile, { speed: 1.5, loop: true });
@@ -85,6 +85,17 @@ if (!walker.denseRoute(tile.plots)) {
   throw new Error('worldView: the tile graph yielded no walkable route');
 }
 walker.seek(scrub);
+
+// Every real building footprint becomes a persistent plot with its assigned family and level.
+// Only plots the camera can actually reach are built: the tile holds the whole district, but
+// rendering all of it costs several times the triangle budget for buildings nobody can see. A
+// shipping build would page these in and out; here one radius around the player is enough.
+const buildRadius = Number(params.get('buildRadius') ?? 190);
+const visiblePlots = tile.plots.filter(
+  (p) => (p.x - walker.pose.x) ** 2 + (p.z - walker.pose.z) ** 2 < buildRadius * buildRadius
+);
+const plots = buildPlotMeshes(visiblePlots, kit, textures);
+for (const mesh of plots.meshes) scene.add(mesh);
 
 const player = new Player();
 scene.add(player.object);
@@ -120,13 +131,37 @@ if (fogMode === 'off') {
 
 const focus = new Vector3(walker.pose.x, 0, walker.pose.z);
 renderer.isoCamera.snapTo(focus.x, 0, focus.z);
+
+// Vegetation and ground cover are placed around the player: there is no point paying for blades
+// and canopies out beyond the visible ground.
+const coverRadius = renderer.isoCamera.preset.viewSpan * 1.15;
+const trees = buildWorldVegetation(tile, kit, textures, {
+  centerX: focus.x,
+  centerZ: focus.z,
+  radius: coverRadius,
+  seed,
+});
+for (const mesh of trees.meshes) scene.add(mesh);
+
+// Ground cover is concentrated in the near field. Spreading the same instance budget over the whole
+// visible ground gives a thin scatter that reads as weeds; concentrating it where the camera
+// actually resolves detail gives continuous living grass for the same cost.
+const cover = buildGroundCover(tile, kit, {
+  centerX: focus.x,
+  centerZ: focus.z,
+  radius: Number(params.get('grassRadius') ?? 58),
+  density: Number(params.get('grass') ?? 1.1),
+  seed,
+});
+for (const mesh of cover.meshes) scene.add(mesh);
 others.freeze(scrub);
 
 renderer.setStatsExtra(
   `${kit.label}\n${tile.header.place}\n` +
     `${tile.roads.length} roads  ${tile.plots.length} plots\n` +
     `surfaces ${surfaces.stats.triangles} tris  ` +
-    `plots ${Math.round(plots.stats.triangles / 1000)}k tris`
+    `plots ${Math.round(plots.stats.triangles / 1000)}k tris\n` +
+    `${cover.stats.instances} cover  ${trees.stats.instances} trees`
 );
 
 renderer.start((dt, t) => {
@@ -141,6 +176,11 @@ renderer.start((dt, t) => {
 
   ring.follow(focus);
   ring.update(t);
+  rampUniforms.uTime.value = t;
+  for (const w of surfaces.water) {
+    w.update(t);
+    w.setSunDirection(lighting.sunDirection.x, lighting.sunDirection.y, lighting.sunDirection.z);
+  }
   route.update(t);
   route.setProgress(pose.station);
 

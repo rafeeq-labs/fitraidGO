@@ -115,25 +115,45 @@ function limb(
  * the black gaps put the darkest value in the frame inside the tree rather than under it.
  * Canopy diameter 0.4 x height — narrow, against the broadleaf's 0.9.
  */
+/**
+ * Five stacked tapering tiers with alternating rotation, each broken by a ring of frond lobes.
+ *
+ * REFERENCE-SPEC 6.4 and references 05/06/08 all show conifers as stacked branch layers with a
+ * BROKEN outline; as one smooth cone of skirts the archetype measured as a regular polygon in plan
+ * and was indistinguishable from a lathe dome in the game camera's only meaningful view.
+ */
 function conifer(ctx: KitContext, h: number, rng: Rng): void {
   const f = ctx.channel.foliage;
-  trunk(ctx.channel.timber, h * 0.05, h * 0.24, 1, 5);
-  const tiers = 8;
-  const maxR = h * 0.2;
-  const top = h * 0.97;
-  const bottom = h * 0.12;
+  trunk(ctx.channel.timber, h * 0.05, h * 0.26, 1, 5);
+  const tiers = 5;
+  const maxR = h * 0.21;
+  const top = h * 0.96;
+  const bottom = h * 0.14;
   for (let i = 0; i < tiers; i++) {
     const t = i / (tiers - 1);
-    const y = bottom + (top - bottom) * t * 0.86;
-    const r = maxR * (1 - t * 0.88) * rng.range(0.94, 1.06);
-    // Every skirt is deep enough to reach past the base of the skirt above it.
-    const th = (top - y) * 0.42 + h * 0.06;
+    const y = bottom + (top - bottom) * t * 0.84;
+    const r = maxR * (1 - t * 0.82) * rng.range(0.92, 1.08);
+    const th = (top - y) * 0.5 + h * 0.07;
     f.push();
-    f.rotateY(rng.range(0, Math.PI));
-    mound(f, r, th, 9, { ...NEEDLE, y, ao: 0.52 + t * 0.44 });
+    // Alternating rotation is what stops the tiers stacking into one smooth cone.
+    f.rotateY(i * 0.62 + rng.range(-0.18, 0.18));
+    mound(f, r, th, 7, { ...NEEDLE, y, ao: 0.44 + t * 0.5 });
+    // Frond lobes hanging off the tier, breaking its silhouette in plan and in profile.
+    const lobes = 5;
+    for (let j = 0; j < lobes; j++) {
+      const a = (j / lobes) * Math.PI * 2 + rng.range(-0.2, 0.2);
+      const d = r * rng.range(0.72, 1.05);
+      f.push();
+      f.translate(Math.cos(a) * d, y + th * rng.range(0.1, 0.34), Math.sin(a) * d);
+      mound(f, r * rng.range(0.24, 0.4), th * rng.range(0.4, 0.66), 5, {
+        ...NEEDLE,
+        ao: 0.4 + t * 0.5,
+      });
+      f.pop();
+    }
     f.pop();
   }
-  mound(f, maxR * 0.16, h * 0.1, 6, { ...NEEDLE, y: top - h * 0.02 });
+  mound(f, maxR * 0.16, h * 0.12, 6, { ...NEEDLE, y: top - h * 0.02, ao: 1 });
 }
 
 function broadleaf(ctx: KitContext, h: number, rng: Rng, blossom: boolean): void {
@@ -148,22 +168,29 @@ function broadleaf(ctx: KitContext, h: number, rng: Rng, blossom: boolean): void
   // thumbnail size a pink cap on a green ball is 85% green, and the accent is lost.
   const skin = blossom ? ACCENT : LEAF;
   const r = h * 0.45;
+  // FIVE overlapping lobes at four different radii, offset in all three axes. Four near-equal
+  // lobes on one centre still summed to a regular dome with a flat skirt — a beach umbrella — and
+  // the plan silhouette is the only thing the game camera gives a canopy to be read by.
   const lobes: readonly (readonly [number, number, number, number])[] = [
-    [0, 0.7, 0, 1],
-    [-0.4, 0.62, 0.28, 0.76],
-    [0.38, 0.6, -0.32, 0.72],
-    [0.1, 0.82, 0.18, 0.6],
+    [-0.1, 0.7, -0.04, 0.66],
+    [-0.55, 0.6, 0.34, 0.56],
+    [0.5, 0.64, -0.36, 0.52],
+    [0.2, 0.88, 0.3, 0.46],
+    [0.36, 0.52, 0.52, 0.42],
+    [-0.34, 0.5, -0.5, 0.4],
   ];
   for (const [dx, dy, dz, k] of lobes) {
     f.push();
     f.translate(dx * r, h * dy, dz * r);
+    f.rotateY(rng.range(0, Math.PI));
     canopyBlob(f, r * k, {
       ...skin,
-      ry: 0.76,
-      segments: 8,
+      ry: rng.range(0.68, 0.92),
+      segments: 7,
       bands: 4,
-      aoBottom: 0.3,
-      wobble: 0.16,
+      aoTop: 1,
+      aoBottom: 0.22,
+      wobble: 0.3,
       rand: () => rng.next(),
     });
     f.pop();
@@ -201,16 +228,26 @@ function cypress(ctx: KitContext, h: number, rng: Rng): void {
     ...NEEDLE,
     ry: 3.2,
     segments: 8,
-    bands: 6,
-    aoBottom: 0.28,
-    wobble: 0.12,
+    bands: 7,
+    aoTop: 1,
+    aoBottom: 0.2,
+    wobble: 0.22,
     rand: () => rng.next(),
   });
   f.pop();
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 4; i++) {
     f.push();
-    f.translate(rng.range(-r * 0.5, r * 0.5), h * rng.range(0.3, 0.78), rng.range(-r * 0.5, r * 0.5));
-    canopyBlob(f, r * rng.range(0.55, 0.8), { ...NEEDLE, ry: 1.4, segments: 6, bands: 3, aoBottom: 0.3 });
+    f.translate(rng.range(-r * 0.6, r * 0.6), h * rng.range(0.28, 0.8), rng.range(-r * 0.6, r * 0.6));
+    canopyBlob(f, r * rng.range(0.5, 0.78), {
+      ...NEEDLE,
+      ry: 1.5,
+      segments: 6,
+      bands: 3,
+      aoTop: 1,
+      aoBottom: 0.22,
+      wobble: 0.24,
+      rand: () => rng.next(),
+    });
     f.pop();
   }
 }
@@ -235,18 +272,23 @@ function olive(ctx: KitContext, h: number, rng: Rng, blossom: boolean): void {
   for (let i = 0; i < 3; i++) {
     limb(t, h * 0.3, (i / 3) * Math.PI * 2, 0.62, h * 0.24, h * 0.04);
   }
-  const r = h * 0.36;
-  for (let i = 0; i < 3; i++) {
-    const a = (i / 3) * Math.PI * 2 + rng.range(-0.3, 0.3);
+  // A low, wide, gappy crown of six small clumps — the opposite plan read to the broadleaf's one
+  // big mass and to the cypress's spike, so the three are tellable apart from directly above.
+  const r = h * 0.42;
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2 + rng.range(-0.4, 0.4);
+    const d = r * rng.range(0.42, 0.86);
     f.push();
-    f.translate(Math.cos(a) * r * 0.5, h * rng.range(0.6, 0.76), Math.sin(a) * r * 0.5);
-    canopyBlob(f, r * rng.range(0.62, 0.82), {
-      ...(blossom && i === 0 ? ACCENT : LEAF),
-      ry: 0.66,
-      segments: 7,
-      bands: 4,
-      aoBottom: 0.26,
-      wobble: 0.2,
+    f.translate(Math.cos(a) * d, h * rng.range(0.52, 0.78), Math.sin(a) * d);
+    f.rotateY(rng.range(0, Math.PI));
+    canopyBlob(f, r * rng.range(0.4, 0.6), {
+      ...(blossom && i % 2 === 0 ? ACCENT : LEAF),
+      ry: rng.range(0.6, 0.85),
+      segments: 6,
+      bands: 3,
+      aoTop: 1,
+      aoBottom: 0.2,
+      wobble: 0.3,
       rand: () => rng.next(),
     });
     f.pop();
@@ -262,40 +304,44 @@ function olive(ctx: KitContext, h: number, rng: Rng, blossom: boolean): void {
 function willow(ctx: KitContext, h: number, rng: Rng): void {
   const t = ctx.channel.timber;
   const f = ctx.channel.foliage;
-  trunk(t, h * 0.075, h * 0.36, 2, 6, 0.08);
-  const r = h * 0.62;
+  trunk(t, h * 0.075, h * 0.34, 2, 6, 0.08);
+  const r = h * 0.6;
+  // A dense hemisphere crown, then strands that reach most of the way to the ground. The archetype
+  // is a weeping MASS, not a stem with a spray on top: as six spiky fronds on a bare stick it read
+  // as a dead palm, which is the one thing a temperate canal bank must not contain.
   for (const [dx, dy, dz, k] of [
-    [0, 0.62, 0, 1],
-    [-0.44, 0.54, 0.3, 0.66],
-    [0.42, 0.55, -0.28, 0.64],
+    [0, 0.66, 0, 1],
+    [-0.42, 0.58, 0.28, 0.72],
+    [0.4, 0.6, -0.26, 0.7],
+    [0.1, 0.74, 0.36, 0.6],
   ] as const) {
     f.push();
     f.translate(dx * r, h * dy, dz * r);
     canopyBlob(f, r * k, {
       ...LEAF,
-      ry: 0.42,
-      segments: 9,
+      ry: 0.5,
+      segments: 8,
       bands: 4,
-      aoBottom: 0.26,
-      wobble: 0.14,
+      aoBottom: 0.24,
+      wobble: 0.22,
       rand: () => rng.next(),
     });
     f.pop();
   }
-  for (let i = 0; i < 16; i++) {
-    const a = (i / 16) * Math.PI * 2 + rng.range(-0.2, 0.2);
-    const d = r * rng.range(0.62, 0.98);
+  for (let i = 0; i < 26; i++) {
+    const a = (i / 26) * Math.PI * 2 * 1.6 + rng.range(-0.24, 0.24);
+    const d = r * rng.range(0.5, 1);
     f.push();
-    f.translate(Math.cos(a) * d, h * rng.range(0.5, 0.6), Math.sin(a) * d);
+    f.translate(Math.cos(a) * d, h * rng.range(0.46, 0.6), Math.sin(a) * d);
     f.rotateY(a + Math.PI / 2);
     // Pi tips the strand over so it grows downward; the residual curve lets it swing outward.
-    f.rotateZ(Math.PI + rng.range(-0.18, 0.18));
-    blade(f, h * rng.range(0.26, 0.4), 0.9, {
+    f.rotateZ(Math.PI + rng.range(-0.16, 0.16));
+    blade(f, h * rng.range(0.34, 0.5), 1.15, {
       ...LEAF,
       segments: 3,
-      curve: -0.5,
+      curve: -0.42,
       tilt: 0,
-      taper: 0.4,
+      taper: 0.35,
     });
     f.pop();
   }
@@ -306,9 +352,14 @@ function willow(ctx: KitContext, h: number, rng: Rng): void {
  * Trunks go into `timber`, canopies into `foliage`.
  */
 export function buildTree(ctx: KitContext, options: TreeOptions): void {
-  const h = options.height ?? DEFAULT_HEIGHT[options.archetype];
-  const rng = makeRng(mix(options.seed ?? 0, 0x7bee));
   const blossom = options.blossom ?? false;
+  // REFERENCE-SPEC 6.4: a blossom tree is 5 m against the broadleaf's 9. Rendering it at the
+  // broadleaf's height made it the largest tree in the frame and interpenetrate the shade tree it
+  // was supposed to accent.
+  const h =
+    options.height ??
+    (blossom && options.archetype === 'broadleaf' ? 5 : DEFAULT_HEIGHT[options.archetype]);
+  const rng = makeRng(mix(options.seed ?? 0, 0x7bee));
   switch (options.archetype) {
     case 'conifer':
       return conifer(ctx, h, rng);

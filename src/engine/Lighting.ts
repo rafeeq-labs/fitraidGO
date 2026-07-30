@@ -70,8 +70,10 @@ export class Lighting {
     this.sun = new DirectionalLight(c.sunColor, c.sunIntensity);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(c.shadowMapSize, c.shadowMapSize);
-    this.sun.shadow.bias = -0.0006;
-    this.sun.shadow.normalBias = 0.035;
+    // Normal offset rather than depth bias carries most of the acne fix: a depth bias large enough
+    // to clear the jagged wedges beside every level-3 window also detached the contact shadows.
+    this.sun.shadow.bias = -0.0004;
+    this.sun.shadow.normalBias = 0.045;
     this.sun.shadow.camera.near = 1;
     this.sun.shadow.camera.far = c.shadowRadius * 6;
     this.setShadowExtent(c.shadowRadius);

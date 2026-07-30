@@ -343,6 +343,103 @@ export class TextureFactory {
     );
   }
 
+  /**
+   * Large irregular flagstones — the paving in the benchmark close-ups.
+   *
+   * Distinct from `cobble` in the way that matters at this camera: the slabs are big enough to read
+   * individually from above, they are polygonal rather than rounded, and the joints between them
+   * are wide and filled with growth. Small rounded cobbles at this scale collapse into noise.
+   */
+  flagstone(key: string, p: CobbleParams, repeat = 1): Texture {
+    return this.memo(
+      `flagstone:${key}`,
+      (rng, size) => {
+        const { canvas, ctx } = makeCanvas(size);
+        ctx.fillStyle = css(p.grout);
+        ctx.fillRect(0, 0, size, size);
+        mottle(ctx, size, rng.int(0, 1e6), p.grout, p.stoneShade, 5, 0.6);
+
+        // Jittered lattice of sites; each slab is the cell around its site, drawn as a rounded
+        // polygon so neighbouring slabs leave a visible joint rather than tiling seamlessly.
+        const cells = Math.max(2, Math.round(p.rows * 0.55));
+        const cell = size / cells;
+        for (let row = -1; row <= cells; row++) {
+          for (let col = -1; col <= cells; col++) {
+            const cx = (col + 0.5) * cell + (rng.next() - 0.5) * cell * 0.5 * p.jitter;
+            const cy = (row + 0.5) * cell + (rng.next() - 0.5) * cell * 0.5 * p.jitter;
+            const sides = rng.int(5, 7);
+            const joint = cell * rng.range(0.07, 0.13);
+            const baseR = cell * 0.5 - joint;
+            const pts: Array<[number, number]> = [];
+            const spin = rng.range(0, Math.PI * 2);
+            for (let i = 0; i < sides; i++) {
+              const a = spin + (i / sides) * Math.PI * 2;
+              const r = baseR * rng.range(0.78, 1.16);
+              pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]);
+            }
+
+            const v = rng.range(-0.09, 0.09);
+            const grad = ctx.createLinearGradient(
+              cx + LIGHT.x * baseR,
+              cy + LIGHT.y * baseR,
+              cx - LIGHT.x * baseR,
+              cy - LIGHT.y * baseR
+            );
+            grad.addColorStop(0, shiftCss(p.stoneLit, v));
+            grad.addColorStop(0.55, shiftCss(p.stone, v * 0.6, rng.range(-0.02, 0.02)));
+            grad.addColorStop(1, css(p.stoneShade));
+
+            const trace = (): void => {
+              ctx.beginPath();
+              ctx.moveTo(pts[0]![0], pts[0]![1]);
+              for (let i = 1; i < pts.length; i++) {
+                const a = pts[i]!;
+                const b = pts[(i + 1) % pts.length]!;
+                ctx.quadraticCurveTo(a[0], a[1], (a[0] + b[0]) / 2, (a[1] + b[1]) / 2);
+              }
+              ctx.closePath();
+            };
+
+            // Contact shadow on the shaded side, then the slab over it.
+            ctx.save();
+            ctx.translate(-LIGHT.x * joint * 0.8, -LIGHT.y * joint * 0.8);
+            ctx.fillStyle = css(p.grout, 0.6);
+            trace();
+            ctx.fill();
+            ctx.restore();
+
+            ctx.fillStyle = grad;
+            trace();
+            ctx.fill();
+
+            // A bright chip along the lit edge: worn stone catches light on its arris.
+            ctx.strokeStyle = shiftCss(p.stoneLit, 0.1, 0, 0.35);
+            ctx.lineWidth = Math.max(1, size / 420);
+            trace();
+            ctx.stroke();
+          }
+        }
+
+        if (p.creep && p.creepColor !== undefined) {
+          // Growth in the joints, thickest where the noise says the paving is least walked.
+          const n2 = makeNoise2D(rng.int(0, 1e6));
+          const step = Math.max(2, Math.round(size / 200));
+          for (let y = 0; y < size; y += step) {
+            for (let x = 0; x < size; x += step) {
+              const n = fbm(n2, (x / size) * 7, (y / size) * 7, 3);
+              if (n > 1 - p.creep * 1.6) {
+                ctx.fillStyle = css(p.creepColor, 0.55 * p.creep);
+                ctx.fillRect(x, y, step, step);
+              }
+            }
+          }
+        }
+        return canvas;
+      },
+      repeat
+    );
+  }
+
   /** Roof slates or pantiles, laid in overlapping courses. */
   roof(key: string, p: RoofParams, repeat = 1): Texture {
     return this.memo(
@@ -500,16 +597,19 @@ export class TextureFactory {
           ctx.fill();
         }
         // Short directional blade strokes give the surface a nap.
-        const blades = Math.round(size * 1.6);
+        const blades = Math.round(size * 2.4);
         for (let i = 0; i < blades; i++) {
           const x = rng.range(0, size);
           const y = rng.range(0, size);
-          const len = rng.range(size / 200, size / 70);
-          ctx.strokeStyle = rng.chance(0.5) ? css(p.lit, 0.28) : css(p.shade, 0.24);
-          ctx.lineWidth = Math.max(1, size / 512);
+          const len = rng.range(size / 46, size / 20);
+          const lean = rng.range(-0.45, 0.45);
+          ctx.strokeStyle = rng.chance(0.45) ? css(p.lit, 0.4) : css(p.shade, 0.34);
+          ctx.lineWidth = Math.max(1.2, size / 300);
+          ctx.lineCap = 'round';
           ctx.beginPath();
           ctx.moveTo(x, y);
-          ctx.lineTo(x + rng.range(-len * 0.3, len * 0.3), y - len);
+          // A slight arc rather than a straight tick: straight strokes read as hatching.
+          ctx.quadraticCurveTo(x + lean * len * 0.4, y - len * 0.55, x + lean * len, y - len);
           ctx.stroke();
         }
         if (p.flowers.length && p.flowerDensity > 0) {

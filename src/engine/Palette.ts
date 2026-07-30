@@ -34,7 +34,9 @@ export const PALETTE = {
   timberLit: hex('#7a5c3f'),
 
   // --- stone: kerbs, plot walls, bridges, civic buildings
-  stoneLit: hex('#e0d3ba'),
+  // REFERENCE-SPEC 3.1's measured value. At `#e0d3ba` the capstones were the brightest thing in
+  // every frame and, under the cool sky fill, the frame's highlight population came out neutral.
+  stoneLit: hex('#d2c2a8'),
   stoneMid: hex('#c6b79e'),
   stoneShade: hex('#a4957e'),
   stoneCool: hex('#9aa0a4'),
@@ -78,6 +80,17 @@ export const PALETTE = {
   forgeCore: hex('#ffb066'),
   sunWarm: hex('#fff0d8'),
 
+  /**
+   * Halo hues, for the three additive light pools ONLY.
+   *
+   * Deliberately more saturated than the emissives they belong to. Additive blending adds to every
+   * channel, so a halo painted in the emissive's own pale core hue lifts R, G and B together and
+   * the pool comes out white — the frame then has no warm/cool axis at all, only white specks.
+   */
+  haloWarm: hex('#e0a24a'),
+  haloCool: hex('#2c9be8'),
+  haloFire: hex('#e8732a'),
+
   // --- crystal / route / UI: the cool counterpoint to all that warm gold
   crystal: hex('#1e8fdb'),
   crystalCore: hex('#8fd4ff'),
@@ -113,12 +126,19 @@ export type PaletteRole = keyof typeof PALETTE;
  * never to black; the lit stop carries a warm gold bias. Applied in RampMaterial.
  */
 export const RAMP = {
-  /** Colour multiplied into fully shadowed surfaces. */
-  shadowTint: hex('#75849e'),
+  /**
+   * Colour multiplied into fully shadowed surfaces.
+   *
+   * A TINT, so it sits near white with a cool bias and `shadowFloor` alone carries the level. At
+   * `#75849e` it was doing both jobs at once and the two multiplied out to 8-16% of key, far under
+   * the cast-shadow floor — so every shaded face in the kit was the floor's flat colour rather than
+   * its own shaded material.
+   */
+  shadowTint: hex('#c2cee0'),
   /** Colour multiplied into the mid band. */
   midTint: hex('#ded8c8'),
   /** Colour multiplied into fully lit surfaces. */
-  litTint: hex('#fff4de'),
+  litTint: hex('#ffeecb'),
   /**
    * NdotL positions of the two band transitions.
    *
@@ -133,33 +153,52 @@ export const RAMP = {
   softness: 0.16,
   /** Level of the mid band, as a fraction of full key. */
   midLevel: 0.9,
-  /** Floor on the shadow band so a surface turned away from the key never crushes to black. */
-  shadowFloor: 0.46,
   /**
-   * The CAST-shadow floor, which the band floor above cannot supply: three zeroes the direct
+   * Level of the shadow band, as a fraction of full key. Lands a face turned away from the sun at
+   * 38-50% of its own lit value — REFERENCE-SPEC's shade is darker than the lit face, never
+   * blanker, and stays above the cast-shadow response below so the two remain distinguishable.
+   */
+  shadowFloor: 0.58,
+  /**
+   * The CAST-shadow response, which the band floor above cannot supply: three zeroes the direct
    * light inside a shadow, so a lit-facing surface loses everything the moment it is occluded.
-   * Applied as a hard minimum on the final diffuse — the spec's luma floor of 30 with a
-   * blue-violet bias (B exceeds R), which is what makes shadow read as sky-lit rather than as
-   * absence of light. REFERENCE-SPEC 8.1 and 10.10 both auto-fail on pure black.
-   */
-  castFloorColor: hex('#7d90bd'),
-  castFloorLevel: 0.3,
-  /**
-   * Absolute floor, in linear scene units before tone mapping.
    *
-   * The albedo-relative floor above cannot rescue a dark material: 42% of a near-black backdrop is
-   * still near-black. ACES then crushes the toe hard — 0.013 linear, which is sRGB luma 30 on its
-   * own, comes out of the tone mapper at luma 13. 0.027 is the pre-ACES value that lands ON 30,
-   * which is the spec's hard floor.
+   * It is a MULTIPLY on the surface's own albedo, not a replacement colour. As a replacement it
+   * measured as one exact RGB covering 59% of a sampled shadow, which annihilated the cobble and
+   * grass texture wherever a shadow landed and turned every shadow-side wall into a single flat
+   * fill — REFERENCE-SPEC 8.2 bans any flat RGB over 1.5 m2. As a multiply the texture still
+   * modulates inside shadow, which is what 09 and 10 show: shade is darker, never blanker.
+   *
+   * `castFloorColor` x `castFloorLevel` lands a mid albedo at 26-53% of its lit value with the
+   * blue channel carried highest, i.e. the spec's 35-45% shade at a blue-violet hue.
    */
-  absoluteFloor: 0.027,
+  castFloorColor: hex('#9db0d4'),
+  castFloorLevel: 0.14,
+  /**
+   * Absolute term ADDED under the multiply, in linear scene units before tone mapping.
+   *
+   * A multiply alone cannot rescue the darkest material in the frame: 37% of conifer `#22302C` is
+   * still below the spec's luma floor of 30. Added rather than max()'d, so it lifts the darks
+   * without stamping one flat plate over them. ACES crushes the toe hard, so this is the pre-tone
+   * value that puts the darkest albedo in the kit ON 30.
+   */
+  absoluteFloor: 0.03,
   /**
    * Rim light. Measured from the references as a 1-2 px COOL edge on roof ridges, wall tops and
    * kerb capstones — sky light catching an edge, not a warm backlight.
    */
-  rimStrength: 0.4,
-  rimPower: 2.2,
+  rimStrength: 0.44,
+  rimPower: 2.4,
   rimColor: hex('#8fa8c4'),
+  /**
+   * Fraction of the rim that survives on faces turned AWAY from the key.
+   *
+   * With the rim gated entirely on sun facing, the shadow half of every mass had no edge at all and
+   * dissolved into whatever stood behind it — REFERENCE-SPEC 8.1 asks for the cool rim on wall tops
+   * and corners, not only on the sunlit ones, and it is the only thing that separates a shaded
+   * silhouette from a shaded backdrop.
+   */
+  rimAmbient: 0.42,
   /**
    * Warm bounce into downward-facing surfaces: eave soffits, arch intrados, balcony undersides.
    * Without it every soffit in the frame is the same navy as a cast shadow.

@@ -122,16 +122,33 @@ function banner(ctx: KitContext, w: number, h: number, y: number, z = 0): void {
   c.quad([-hw, y - h, z + g], [hw, y - h, z + g], [hw, y, z + g], [-hw, y, z + g], CLOTH, fade);
   c.quad([hw, y - h, z - g], [-hw, y - h, z - g], [-hw, y, z - g], [hw, y, z - g], CLOTH, fade);
   c.tri([-hw, y - h, z], [0, y - h - h * 0.16, z], [hw, y - h, z], null, { ...CLOTH, ao: 0.55 });
+  // The gold device is a LIGHT-VALUE shape, and big enough to survive 20 px: a four-pointed star
+  // over a disc, on both faces. A small dark square on navy cloth read as a maroon smear.
   const m = ctx.channel.metal;
-  const d = hw * 0.42;
-  const yc = y - h * 0.42;
-  m.quad(
-    [-d, yc - d, z + g * 2],
-    [d, yc - d, z + g * 2],
-    [d, yc + d, z + g * 2],
-    [-d, yc + d, z + g * 2],
-    METAL
-  );
+  const d = hw * 0.62;
+  const yc = y - h * 0.44;
+  for (const sz of [z - g * 2, z + g * 2]) {
+    const n = 4;
+    for (let i = 0; i < n; i++) {
+      const a0 = (i / n) * Math.PI * 2;
+      const a1 = ((i + 0.5) / n) * Math.PI * 2;
+      const a2 = ((i + 1) / n) * Math.PI * 2;
+      m.tri(
+        [Math.cos(a0) * d, yc + Math.sin(a0) * d, sz],
+        [Math.cos(a1) * d * 0.34, yc + Math.sin(a1) * d * 0.34, sz],
+        [Math.cos(a2) * d, yc + Math.sin(a2) * d, sz],
+        null,
+        METAL
+      );
+      m.tri(
+        [Math.cos(a2) * d, yc + Math.sin(a2) * d, sz],
+        [Math.cos(a1) * d * 0.34, yc + Math.sin(a1) * d * 0.34, sz],
+        [Math.cos(a0) * d, yc + Math.sin(a0) * d, sz],
+        null,
+        METAL
+      );
+    }
+  }
 }
 
 /**
@@ -408,15 +425,18 @@ const well: KitPiece = (ctx, o) => {
   drum(s, r * 1.08, r * 1.05, 0.12, 10, { ...STONE, y: h - 0.12, cap: false });
   disc(s, r * 0.9, h - 0.02, 10, RECESS);
   const t = ctx.channel.timber;
+  // Posts thick enough to be seen at all, standing on the coping rather than inside the shaft.
   for (const sx of [-1, 1]) {
-    t.box(sx * r * 0.82 - 0.07, h - 0.2, -0.07, sx * r * 0.82 + 0.07, 1.95, 0.07, TIMBER);
+    t.box(sx * r * 0.86 - 0.11, h - 0.2, -0.11, sx * r * 0.86 + 0.11, 1.95, 0.11, TIMBER);
   }
-  t.box(-r, 1.78, -0.05, r, 1.9, 0.05, { ...TIMBER, uvRotate: true });
+  t.box(-r, 1.78, -0.06, r, 1.9, 0.06, { ...TIMBER, uvRotate: true });
   t.box(-0.16, 1.35, -0.16, 0.16, 1.62, 0.16, { ...TIMBER, taper: 0.1 });
-  ctx.channel.roof.gableRoof(r * 2.3, 1.25, 0.5, {
+  // The canopy clears the coping by 0.3 m, no more. Overhanging the shaft by more than its own
+  // diameter on all sides, the well read as a slab floating over a barrel.
+  ctx.channel.roof.gableRoof(r * 2 + 0.3, r * 2 + 0.3, 0.62, {
     ...ROOF,
     y: 1.9,
-    overhang: 0.16,
+    overhang: 0.14,
     segments: 2,
     sag: 0.03,
     kick: 0.12,
@@ -509,9 +529,11 @@ const forge: KitPiece = (ctx, o) => {
   s.box(-w, 0, -d, w, h, d, { ...STONE, taper: 0.05, skip: NO_FLOOR });
   s.box(-w * 0.42, h, -d * 0.55, w * 0.42, h + 0.85, d * 0.55, { ...STONE, taper: 0.14 });
   const g = ctx.channel.glow;
-  g.box(-w * 0.6, h - 0.16, -d * 0.6, w * 0.6, h + 0.12, d * 0.6, {
+  // A bed of coals on the hearth and a mouth in its front face — not a glowing block bigger than
+  // the stone it sits in, which is what hid the forge and clipped the fire to white.
+  g.box(-w * 0.52, h - 0.06, -d * 0.5, w * 0.52, h + 0.3, d * 0.5, {
     ...FIRE,
-    taper: 0.2,
+    taper: 0.24,
     skip: NO_FLOOR,
   });
   g.quad(
@@ -521,8 +543,8 @@ const forge: KitPiece = (ctx, o) => {
     [-w * 0.55, h - 0.14, d + 0.01],
     FIRE
   );
-  bloom(ctx, w * 2.2, { y: h + 0.1 }, 'fire');
-  groundSpill(ctx, w * 2.2, 0.05, d * 1.2, 'fire');
+  bloom(ctx, w * 2, { y: h + 0.75 }, 'fire');
+  groundSpill(ctx, w * 3.4, 0.04, d * 1.4, 'fire');
 };
 
 const bellows: KitPiece = (ctx) => {
@@ -619,17 +641,40 @@ const washline: KitPiece = (ctx, o) => {
   for (const sx of [-1, 1]) {
     t.box(sx * hw - 0.06, 0, -0.06, sx * hw + 0.06, h, 0.06, { ...TIMBER, skip: NO_FLOOR });
   }
-  t.quad([-hw, h - 0.02, -0.02], [hw, h - 0.02, -0.02], [hw, h, -0.02], [-hw, h, -0.02], TIMBER);
+  // The line itself sags between the posts. Straight, it read as the top rail of a hoarding.
+  const lineSegs = 6;
+  for (let i = 0; i < lineSegs; i++) {
+    const x0 = -hw + (len * i) / lineSegs;
+    const x1 = -hw + (len * (i + 1)) / lineSegs;
+    const dip = (t0: number): number => h - 0.02 - 0.12 * Math.sin(Math.PI * t0);
+    const y0 = dip(i / lineSegs);
+    const y1 = dip((i + 1) / lineSegs);
+    t.quad([x0, y0 - 0.035, -0.02], [x1, y1 - 0.035, -0.02], [x1, y1, -0.02], [x0, y0, -0.02], TIMBER);
+  }
   // Linen, not heraldry: `cloth` is the biome's banner navy, so the sheets take pale plaster.
+  //
+  // Each sheet hangs in three folded panels with a sagging hem, because three flat rectangles on a
+  // line read as grey hoarding boards rather than as washing.
   const c = ctx.channel.wall;
-  const fade: [number, number, number, number] = [0.7, 0.7, 1, 1];
+  const fade: [number, number, number, number] = [0.66, 0.66, 1, 1];
+  const g = SHEET_GAP;
   for (let i = 0; i < 3; i++) {
-    const x = -hw + ((i + 0.5) / 3) * len;
-    const w = (len / 3) * 0.34;
-    const drop = ctx.rng.range(0.5, 0.8);
-    const g = SHEET_GAP;
-    c.quad([x - w, h - drop, g], [x + w, h - drop, g], [x + w, h - 0.04, g], [x - w, h - 0.04, g], CLOTH, fade);
-    c.quad([x + w, h - drop, -g], [x - w, h - drop, -g], [x - w, h - 0.04, -g], [x + w, h - 0.04, -g], CLOTH, fade);
+    const cx = -hw + ((i + 0.5) / 3) * len;
+    const w = (len / 3) * 0.36;
+    const drop = ctx.rng.range(0.55, 0.85);
+    const folds = 3;
+    for (let f = 0; f < folds; f++) {
+      const x0 = cx - w + (2 * w * f) / folds;
+      const x1 = cx - w + (2 * w * (f + 1)) / folds;
+      const z0 = g + (f % 2 === 0 ? 0 : 0.045);
+      const z1 = g + ((f + 1) % 2 === 0 ? 0 : 0.045);
+      // The hem sags between the pegs, deepest in the middle of the sheet.
+      const sag = (t: number): number => h - drop - 0.07 * Math.sin(Math.PI * t);
+      const t0 = f / folds;
+      const t1 = (f + 1) / folds;
+      c.quad([x0, sag(t0), z0], [x1, sag(t1), z1], [x1, h - 0.04, z1], [x0, h - 0.04, z0], CLOTH, fade);
+      c.quad([x1, sag(t1), -z1], [x0, sag(t0), -z0], [x0, h - 0.04, -z0], [x1, h - 0.04, -z1], CLOTH, fade);
+    }
   }
 };
 
@@ -683,9 +728,13 @@ const crystalLamp: KitPiece = (ctx, o) => {
   // single flat chip measured the same value at tip and base and dimmer than plain daylit stone.
   const cy = shaftTop + 0.26;
   facetedCrystal(ctx.channel.glow, 0.17, 0.34, 0.28, { ...CRYSTAL, y: cy });
-  bloom(ctx, 1.1, { y: cy + 0.24 }, 'cool');
-  // Proof by what it touches: the plinth and the cross-arms below take a cyan wash.
-  groundSpill(ctx, 1.5, 0.42, 0, 'cool');
+  bloom(ctx, 1.3, { y: cy + 0.2 }, 'cool');
+  // Proof by what it touches. The pool goes on the GROUND under the emitter, not on the plinth top
+  // 0.42 m up where it read as a hard aliased ring around the base, and it is tinted by the emitter
+  // rather than left white — REFERENCE-SPEC 3.1 gives the crystal `#8FD4FF` over `#1E8FDB`.
+  groundSpill(ctx, 4, 0.03, 0, 'cool');
+  // A second, tight wash on the top plinth course, so the light is seen landing on stone.
+  groundSpill(ctx, 1.1, 0.41, 0, 'cool');
   if (flag(o, 'banner', ctx.rng.chance(0.4))) banner(ctx, 0.44, 1, shaftTop - 0.2, 0.16);
 };
 
@@ -701,8 +750,13 @@ const streetLantern: KitPiece = (ctx, o) => {
   ctx.channel.glow.box(-0.15, top + 0.08, -0.15, 0.15, top + 0.5, 0.15, { ...GLOW, taper: -0.1 });
   m.box(-0.2, top + 0.5, -0.2, 0.2, top + 0.56, 0.2, METAL);
   pyramid(m, 0.2, 0.2, 0.19, { ...METAL, y: top + 0.56 });
-  bloom(ctx, 1.1, { y: top + 0.29 });
-  groundSpill(ctx, 2.6, 0.04);
+  bloom(ctx, 1.4, { y: top + 0.29 });
+  // The 2.5 m warm pool REFERENCE-SPEC 3.1 asks for. At 2.6 m and a tenth of this strength it
+  // measured three luma above the bare backdrop, i.e. the art direction's warm accent was simply
+  // not in the frame.
+  groundSpill(ctx, 5, 0.03);
+  // A tight wash on the plinth, so the light is seen landing on the stone it stands on.
+  groundSpill(ctx, 1.2, 0.31);
 };
 
 /** Blue-crystal obelisk shrine on a stepped round plinth. Reference 05, right-hand piece. */
@@ -779,19 +833,115 @@ const scaffoldPole: KitPiece = (ctx, o) => {
   t.box(-0.5, h * 0.62 + 0.09, -0.22, 0.5, h * 0.62 + 0.15, 0.22, TIMBER);
 };
 
-/** Heap of dressed stone and rubble waiting to be built with. */
+/**
+ * Heap of dressed stone waiting to be built with: a stacked course of blocks with rubble round it.
+ *
+ * As a smooth cone it was a flat cream splat well over the 1.5 m2 single-RGB limit and named
+ * nothing; the read has to come from the individual blocks, which is also what says "building site".
+ */
 const materialPile: KitPiece = (ctx, o) => {
   const r = opt(o, 'radius', 0.8);
   const s = ctx.channel.stone;
-  mound(s, r, opt(o, 'height', 0.5), 6, { ...STONE, ao: 0.8 });
-  for (let i = 0; i < 3; i++) {
+  const bw = r * 0.46;
+  for (let layer = 0; layer < 3; layer++) {
+    const n = 3 - layer;
+    const y = layer * 0.24;
+    for (let i = 0; i < n; i++) {
+      s.push();
+      s.translate(
+        (i - (n - 1) / 2) * bw * 2.1 + ctx.rng.range(-0.04, 0.04),
+        y,
+        ctx.rng.range(-0.08, 0.08) + (layer % 2 === 0 ? 0 : bw * 0.5)
+      );
+      s.rotateY(ctx.rng.range(-0.12, 0.12));
+      s.box(-bw, 0, -bw * 0.62, bw, 0.24, bw * 0.62, {
+        ...STONE,
+        skip: layer === 0 ? NO_FLOOR : {},
+        groundAO: layer === 0 ? 0.5 : 0.82,
+      });
+      s.pop();
+    }
+  }
+  for (let i = 0; i < 4; i++) {
     const a = ctx.rng.range(0, Math.PI * 2);
-    const d = r * ctx.rng.range(0.75, 1.15);
+    const d = r * ctx.rng.range(0.95, 1.35);
     s.push();
     s.translate(Math.cos(a) * d, 0, Math.sin(a) * d);
     s.rotateY(ctx.rng.range(0, Math.PI));
-    s.box(-0.28, 0, -0.16, 0.28, 0.2, 0.16, { ...STONE, skip: NO_FLOOR });
+    s.box(-0.22, 0, -0.14, 0.22, 0.17, 0.14, { ...STONE, skip: NO_FLOOR, groundAO: 0.5 });
     s.pop();
+  }
+};
+
+/**
+ * Stone footbridge: the spec's 5 m span, 1.8 m rise, 2.5 m deck, with a parapet either side so the
+ * arch void reads as a void. Runs along x; the water passes under it along z.
+ */
+const footbridge: KitPiece = (ctx, o) => {
+  const span = opt(o, 'span', 5);
+  const rise = opt(o, 'rise', 1.8);
+  const deck = opt(o, 'width', 2.5);
+  const s = ctx.channel.stone;
+  const segs = 9;
+  const r = span / 2;
+  const yOf = (t: number): number => rise * Math.sin(Math.PI * t) * 0.6 + 0.42;
+  const xOf = (t: number): number => -r - 0.7 + (span + 1.4) * t;
+  /** A vertical strip in the xy plane at depth z, wound so its normal points along `face`. */
+  const strip = (
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+    yTop0: number,
+    yTop1: number,
+    z: number,
+    face: number,
+    opts: FaceOptions
+  ): void => {
+    if (face > 0) {
+      s.quad([x0, y0, z], [x1, y1, z], [x1, yTop1, z], [x0, yTop0, z], opts, [0.72, 0.72, 1, 1]);
+    } else {
+      s.quad([x1, y1, z], [x0, y0, z], [x0, yTop0, z], [x1, yTop1, z], opts, [0.72, 0.72, 1, 1]);
+    }
+  };
+  // Voussoirs: each ring segment is its own block, so the arch reads per stone rather than as one
+  // cream splat, and the soffit under it stays an open void.
+  for (let i = 0; i < segs; i++) {
+    const t0 = i / segs;
+    const t1 = (i + 1) / segs;
+    const a0 = (Math.PI * i) / segs;
+    const a1 = (Math.PI * (i + 1)) / segs;
+    const px0 = -r * Math.cos(a0);
+    const py0 = rise * Math.sin(a0) * 0.9;
+    const px1 = -r * Math.cos(a1);
+    const py1 = rise * Math.sin(a1) * 0.9;
+    const qx0 = xOf(t0);
+    const qy0 = yOf(t0) + 0.5;
+    const qx1 = xOf(t1);
+    const qy1 = yOf(t1) + 0.5;
+    for (const sz of [-1, 1]) {
+      strip(px0, py0, px1, py1, qy1, qy0, (sz * deck) / 2, sz, STONE);
+    }
+    // Deck over the ring, and the dark soffit under it.
+    s.quad([qx0, qy0, deck / 2], [qx1, qy1, deck / 2], [qx1, qy1, -deck / 2], [qx0, qy0, -deck / 2], PAVING);
+    s.quad([px1, py1, deck / 2], [px0, py0, deck / 2], [px0, py0, -deck / 2], [px1, py1, -deck / 2], {
+      ...STONE,
+      ao: 0.34,
+    });
+    // Parapet: outer face, inner face and coping, following the deck.
+    for (const sz of [-1, 1]) {
+      const outer = (sz * deck) / 2;
+      const inner = sz * (deck / 2 - 0.14);
+      strip(qx0, qy0, qx1, qy1, qy1 + 0.7, qy0 + 0.7, outer, sz, STONE);
+      strip(qx0, qy0 + 0.2, qx1, qy1 + 0.2, qy1 + 0.7, qy0 + 0.7, inner, -sz, { ...STONE, ao: 0.62 });
+      s.quad(
+        [qx0, qy0 + 0.7, sz > 0 ? outer : inner],
+        [qx1, qy1 + 0.7, sz > 0 ? outer : inner],
+        [qx1, qy1 + 0.7, sz > 0 ? inner : outer],
+        [qx0, qy0 + 0.7, sz > 0 ? inner : outer],
+        { ...STONE, ao: 0.98 }
+      );
+    }
   }
 };
 
@@ -865,10 +1015,27 @@ const netRack: KitPiece = (ctx, o) => {
     }
   }
   t.box(-hw - 0.1, h - 0.12, -0.08, hw + 0.1, h + 0.02, 0.08, { ...TIMBER, uvRotate: true });
+  // The net hangs in scalloped swags off the head rail rather than as one taut rectangle, which is
+  // what made it read as a chalkboard on legs.
   const c = ctx.channel.cloth;
-  const fade: [number, number, number, number] = [0.6, 0.6, 1, 1];
-  c.quad([-hw, h * 0.3, 0.02], [hw, h * 0.3, 0.02], [hw, h - 0.1, 0.02], [-hw, h - 0.1, 0.02], CLOTH, fade);
-  c.quad([hw, h * 0.3, -0.02], [-hw, h * 0.3, -0.02], [-hw, h - 0.1, -0.02], [hw, h - 0.1, -0.02], CLOTH, fade);
+  const fade: [number, number, number, number] = [0.55, 0.55, 1, 1];
+  const swags = 4;
+  for (let i = 0; i < swags; i++) {
+    const x0 = -hw + (len * i) / swags;
+    const x1 = -hw + (len * (i + 1)) / swags;
+    const dip = h * (i % 2 === 0 ? 0.42 : 0.3);
+    const yMid = h - 0.12 - dip;
+    for (const sz of [0.02, -0.02]) {
+      const a: [number, number, number] = [x0, h - 0.12, sz];
+      const b: [number, number, number] = [x1, h - 0.12, sz];
+      const m: [number, number, number] = [(x0 + x1) / 2, yMid, sz];
+      if (sz > 0) c.tri(a, b, m, null, { ...CLOTH, ao: fade[0] });
+      else c.tri(b, a, m, null, { ...CLOTH, ao: fade[0] });
+    }
+  }
+  // A short float line along the top so the swags read as one net, not four rags.
+  c.quad([-hw, h - 0.3, 0.03], [hw, h - 0.3, 0.03], [hw, h - 0.12, 0.03], [-hw, h - 0.12, 0.03], CLOTH, fade);
+  c.quad([hw, h - 0.3, -0.03], [-hw, h - 0.3, -0.03], [-hw, h - 0.12, -0.03], [hw, h - 0.12, -0.03], CLOTH, fade);
 };
 
 /**
@@ -909,18 +1076,48 @@ const fountain: KitPiece = (ctx, o) => {
   mound(s, 0.14, 0.34, 6, { ...STONE, y: 1.3 });
 };
 
-/** Guardian statue on a plinth: shield and spear, read as a silhouette. */
+/**
+ * Guardian statue on a plinth: helm, pauldrons, a shield held clear of the body and a spear that
+ * clears the plinth.
+ *
+ * Silhouette first. As a stack of four boxes with a cube head and a stick through its own plinth it
+ * named nothing at any zoom; reference 08's bottom row gives every loose prop an outline you can
+ * read at thumbnail size, and the knight is the clearest case in the sheet.
+ */
 const statue: KitPiece = (ctx, o) => {
   const h = opt(o, 'height', 3.5);
   const s = ctx.channel.stone;
-  const top = h - 0.4;
-  s.box(-0.62, 0, -0.62, 0.62, 0.26, 0.62, { ...STONE, taper: 0.1, skip: NO_FLOOR });
-  s.box(-0.48, 0.26, -0.48, 0.48, 1.1, 0.48, { ...STONE, taper: 0.06 });
-  s.box(-0.26, 1.1, -0.18, 0.26, top - 0.6, 0.18, { ...STONE, taper: 0.22 });
-  s.box(-0.38, top - 0.6, -0.22, 0.38, top - 0.34, 0.22, STONE);
-  s.box(-0.16, top - 0.34, -0.14, 0.16, top, 0.14, { ...STONE, taper: -0.1 });
-  s.box(-0.5, 1.5, -0.06, -0.24, 2.36, 0.06, { ...STONE, uvRotate: true });
-  ctx.channel.metal.box(0.28, 1.2, -0.04, 0.4, h, 0.04, { ...METAL, skip: { py: true, ny: true } });
+  const m = ctx.channel.metal;
+  // Stepped plinth.
+  s.box(-0.62, 0, -0.62, 0.62, 0.22, 0.62, { ...STONE, taper: 0.1, skip: NO_FLOOR });
+  s.box(-0.52, 0.22, -0.52, 0.52, 0.98, 0.52, { ...STONE, taper: 0.05 });
+  s.box(-0.58, 0.98, -0.58, 0.58, 1.12, 0.58, STONE);
+  const foot = 1.12;
+  const shoulder = h - 0.86;
+  // A tapering cloak from the plinth to the shoulders: one continuous bell, so the figure has a
+  // base wider than its head and reads as a standing body rather than a post.
+  drum(s, 0.42, 0.24, shoulder - foot, 8, { ...STONE, y: foot, cap: false, aoBottom: 0.5 });
+  // Pauldrons, then a narrower neck and a domed helm with a crest.
+  s.box(-0.46, shoulder, -0.24, 0.46, shoulder + 0.2, 0.24, { ...STONE, taper: -0.28 });
+  drum(s, 0.13, 0.13, 0.12, 6, { ...STONE, y: shoulder + 0.2, cap: false });
+  mound(s, 0.21, 0.34, 7, { ...STONE, y: shoulder + 0.32 });
+  s.box(-0.05, shoulder + 0.5, -0.2, 0.05, shoulder + 0.72, 0.2, { ...STONE, taper: -0.4 });
+  // Shield, offset clear of the body on the near side so the void between the two reads.
+  s.push();
+  s.translate(-0.44, foot + (shoulder - foot) * 0.52, 0.2);
+  s.rotateY(0.22);
+  drum(s, 0.34, 0.3, 0.11, 7, { ...STONE, cap: true, aoBottom: 0.6 });
+  s.pop();
+  m.push();
+  m.translate(-0.44, foot + (shoulder - foot) * 0.52, 0.26);
+  drum(m, 0.11, 0.09, 0.06, 6, { ...METAL, cap: true });
+  m.pop();
+  // Spear: shaft clear of the plinth edge, iron head above the helm.
+  m.box(0.44, foot - 0.9, -0.045, 0.53, h + 0.34, 0.045, { ...METAL, skip: { py: true, ny: true } });
+  m.push();
+  m.translate(0.485, h + 0.34, 0);
+  mound(m, 0.09, 0.32, 5, METAL);
+  m.pop();
 };
 
 // --- registration -------------------------------------------------------------------------------
@@ -962,6 +1159,7 @@ const PIECES: Record<string, KitPiece> = {
   scaffoldPole,
   materialPile,
   bannerPost,
+  footbridge,
   mooringPost,
   rowboat,
   netRack,

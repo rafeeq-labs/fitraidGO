@@ -262,15 +262,28 @@ export interface KitMaterials {
   channel: Record<KitChannel, Material>;
 }
 
+/**
+ * An additive halo.
+ *
+ * The colour is SATURATED, not the emissive's own pale core hue. Additive blending fills every
+ * channel it touches, so a pale warm halo drives R, G and B to 1 together and the light pool comes
+ * out pure white — which is how the whole kit measured: 906 of the 2000 brightest pixels neutral,
+ * against 1687 warm in reference 09. A saturated amber or a saturated cyan adds mostly to the two
+ * channels that carry its hue, so the pool stays warm gold or stays crystal blue.
+ *
+ * `strength` is applied in linear space and the Color is handed to the material as-is: round-
+ * tripping it through getHex() re-encodes to sRGB and quantises the scale away.
+ */
 function makeHalo(color: number, map: Texture, strength: number): MeshBasicMaterial {
-  return new MeshBasicMaterial({
-    color: new Color(color).multiplyScalar(strength).getHex(),
+  const m = new MeshBasicMaterial({
     map,
     blending: AdditiveBlending,
     transparent: true,
     depthWrite: false,
     fog: false,
   });
+  m.color = new Color(color).multiplyScalar(strength);
+  return m;
 }
 
 export function createKitMaterials(kit: BiomeKit, textures: TextureFactory): KitMaterials {
@@ -282,9 +295,15 @@ export function createKitMaterials(kit: BiomeKit, textures: TextureFactory): Kit
   // The cloth channel carries banners AND market awnings. Its hue comes entirely from the fold-
   // shaded generator now, so the material tint is neutral: tinting on top of the map as well drove
   // the heraldic navy so dark that every banner in the kit read as a hole cut in the frame.
-  const halo = textures.radial(`${kit.id}:halo`, { falloff: 4.6, core: 0.8 });
+  // A wider, gentler falloff with no bright overshoot at the centre: the old core spike put an
+  // 1.8x multiplier on the middle of every spill quad, which is what clipped window panes and the
+  // forge fire to white while the pool a metre away was still invisible.
+  const halo = textures.radial(`${kit.id}:halo`, { falloff: 3.4, core: 0.25 });
   const slot: Record<string, Material> = {
-    stone: new RampMaterial({ map: textures.ashlar(kit.id, t.stone), vertexAO: true, rim: 0.9 }),
+    // The cool rim is a 1-2 px edge on ridges and capstones, and every pale stone edge in the kit is
+    // a candidate for it. At 0.9 it put so much `#8FA8C4` on the brightest pixels in the frame that
+    // the sheet's highlight population came out neutral-cool where reference 09's is 59% warm.
+    stone: new RampMaterial({ map: textures.ashlar(kit.id, t.stone), vertexAO: true, rim: 0.55 }),
     paving: new RampMaterial({ map: textures.cobble(`${kit.id}:paving`, t.paving), vertexAO: true, rim: 0.25 }),
     wall: new RampMaterial({ map: textures.plaster(kit.id, t.wall), vertexAO: true, rim: 0.5 }),
     roof: new RampMaterial({ map: textures.roof(kit.id, t.roof), vertexAO: true, rim: 1.4 }),
@@ -292,27 +311,31 @@ export function createKitMaterials(kit: BiomeKit, textures: TextureFactory): Kit
     water: new RampMaterial({ map: textures.water(kit.id, t.water), vertexAO: true, rim: 0.8 }),
     timber: new RampMaterial({ map: textures.timber(kit.id, t.timber), vertexAO: true, rim: 0.4 }),
     metal: new RampMaterial({ color: PALETTE.emblemGold, vertexAO: true, rim: 1.6 }),
-    glow: new RampMaterial({ color: lantern.getHex(), unlit: true, emissiveIntensity: 0.78 }),
+    // Clamped to a warm ceiling: at 0.78 the pane came out of the ACES shoulder at luma 226 with
+    // R, G and B within 30 of each other, i.e. a white sticker. 0.72 against the gold-shifted core
+    // lands it near `#F6E4B6` with a real 60-point spread between R and B, under the spec's 226 cap.
+    glow: new RampMaterial({ color: lantern.getHex(), unlit: true, emissiveIntensity: 0.64 }),
     // The crystal is NOT unlit: its facets have to read, so it takes a strong emissive on top of a
-    // shaded body. A flat unlit chip measured dimmer than a daylit paving slab in review.
+    // shaded body. The emissive is the pale CORE hue over the saturated body colour, so the tip
+    // reads white-hot cyan against a deep blue flank instead of one flat mid-blue chip.
     glowCrystal: new RampMaterial({
       color: kit.landmark.crystalColor,
-      emissive: kit.landmark.crystalColor,
-      emissiveIntensity: 0.62,
+      emissive: PALETTE.crystalCore,
+      emissiveIntensity: 0.68,
       vertexAO: true,
       rim: 1.8,
     }),
-    glowFire: new RampMaterial({ color: PALETTE.forgeEmber, unlit: true, emissiveIntensity: 0.95 }),
+    glowFire: new RampMaterial({ color: PALETTE.forgeEmber, unlit: true, emissiveIntensity: 0.92 }),
     // The two halos are the only materials in the game that are neither lit nor ramped: a plain
     // additive basic material carrying the radial falloff as its diffuse map. They deliberately do
     // NOT go through RampMaterial — an emissive map on a Lambert host is modulated after the ramp
     // patch and came out flat, which turned every bloom into a hard-edged translucent card.
-    haloWarm: makeHalo(PALETTE.lanternCore, halo, 0.8),
-    haloCool: makeHalo(PALETTE.crystalCore, halo, 0.9),
-    haloFire: makeHalo(PALETTE.forgeCore, halo, 1),
+    haloWarm: makeHalo(PALETTE.haloWarm, halo, 0.6),
+    haloCool: makeHalo(PALETTE.haloCool, halo, 0.9),
+    haloFire: makeHalo(PALETTE.haloFire, halo, 0.7),
     // Foliage splits four ways: the lawn keeps the ground texture, canopies take the leaf texture
     // at two very different values, and blossom is the one saturated accent vegetation gets.
-    foliage: new RampMaterial({ map: textures.grass(kit.id, t.ground), vertexAO: true, rim: 0.35 }),
+    foliage: new RampMaterial({ map: textures.grass(kit.id, t.ground), vertexAO: true, rim: 0.25 }),
     foliageAccent: new RampMaterial({
       map: textures.leaf(`${kit.id}:blossom`, {
         lit: p.foliageAccent,
@@ -323,16 +346,28 @@ export function createKitMaterials(kit: BiomeKit, textures: TextureFactory): Kit
       vertexAO: true,
       rim: 0.5,
     }),
-    canopy: new RampMaterial({ map: textures.leaf(kit.id, t.leaf), vertexAO: true, rim: 0.7 }),
+    // Foliage takes a much weaker rim than masonry. At 0.7 the cool `#8FA8C4` edge landed on every
+    // one of a canopy's several hundred facet boundaries and tipped the whole tree blue-grey — the
+    // rim is meant to catch a roof ridge and a kerb capstone, not to re-light a leaf mass.
+    canopy: new RampMaterial({ map: textures.leaf(kit.id, t.leaf), vertexAO: true, rim: 0.3 }),
     conifer: new RampMaterial({
       map: textures.leaf(`${kit.id}:conifer`, {
-        lit: p.foliageLit,
-        mid: new Color(p.foliageLit).lerp(new Color(p.foliageDark), 0.6).getHex(),
+        // The sunlit needle stop is lifted well above the palette's `foliageLit`, on purpose. The
+        // ACES toe crushes dark albedos hard — REFERENCE-SPEC's own `#45584E` renders at luma 40,
+        // barely over the shadow floor, so a whole conifer measured two luma of key-light modelling
+        // and read as a flat blue-black pill. Lifting the LIT stop keeps `foliageDark` as the
+        // darkest mass in the frame while restoring a real lit/shade split across the needles.
+        // Lifted toward a light SAGE, not toward white: the cool sky fill is 35% of key and it is
+        // albedo-modulated, so a desaturated needle stop comes back out of the renderer with more
+        // blue than green — which is exactly how the conifers measured, bluer than the temperate
+        // `#22302C` they are supposed to be.
+        lit: new Color(p.foliageLit).lerp(new Color(0x9ab488), 0.55).getHex(),
+        mid: new Color(p.foliageLit).lerp(new Color(p.foliageDark), 0.34).getHex(),
         shade: p.foliageDark,
         clump: 0.6,
       }),
       vertexAO: true,
-      rim: 0.75,
+      rim: 0.3,
     }),
     cloth: new RampMaterial({ map: textures.cloth(kit.id, t.cloth), vertexAO: true, rim: 0.35 }),
   };

@@ -100,29 +100,55 @@ export function bloom(
   const y = at.y ?? 0;
   const z = at.z ?? 0;
   const o = tag({ uvScale: size, ao: 1 }, HALO_TAG[kind]) as Opts;
+  // Two crossed VERTICAL sheets only. The horizontal pair presented its full area to a camera
+  // 38-52 degrees up and read as a flat white card lying on whatever was underneath it; the pool a
+  // light throws on the ground is groundSpill's job, and it belongs on the ground plane.
   g.quad([x - h, y - h, z], [x + h, y - h, z], [x + h, y + h, z], [x - h, y + h, z], o);
   g.quad([x - h, y - h, z], [x - h, y + h, z], [x + h, y + h, z], [x + h, y - h, z], o);
   g.quad([x, y - h, z - h], [x, y - h, z + h], [x, y + h, z + h], [x, y + h, z - h], o);
   g.quad([x, y - h, z - h], [x, y + h, z - h], [x, y + h, z + h], [x, y - h, z + h], o);
-  g.quad([x - h, y, z - h], [x + h, y, z - h], [x + h, y, z + h], [x - h, y, z + h], o);
-  g.quad([x - h, y, z - h], [x - h, y, z + h], [x + h, y, z + h], [x + h, y, z - h], o);
 }
 
 /**
- * The pool of light an emissive throws onto the surface it is mounted on: a single additive quad
- * in PANEL space, standing a millimetre proud of the wall. Spill is what proves a window is lit
- * rather than painted cream.
+ * The pool of light an emissive throws onto the surface around it: additive quads in PANEL space,
+ * standing a millimetre proud of the wall. Spill is what proves a window is lit rather than
+ * painted cream.
+ *
+ * `hole` leaves the pane itself uncovered. As one solid quad the spill was drawn OVER the emissive
+ * it belonged to and added its own value on top, which is what clipped every window in the kit to
+ * 255,255,255 and turned the forge fire white. The light has to land on the masonry, not on the
+ * glass.
  */
 export function spill(
   ctx: KitContext,
   size: number,
   y: number,
   z = 0.012,
-  kind: HaloKind = 'warm'
+  kind: HaloKind = 'warm',
+  hole: readonly [number, number] = [0, 0]
 ): void {
   const h = size / 2;
-  const o = tag({ uvScale: size, ao: 1 }, HALO_TAG[kind]) as Opts;
-  faceQuad(ctx.channel.glow, -h, y - h, h, y + h, z, o);
+  const g = ctx.channel.glow;
+  // The falloff map has to stay centred on the emitter across every band, so each band starts its
+  // uv run at its own offset into the parent square rather than at the band's own corner.
+  const band = (x0: number, y0: number, x1: number, y1: number): void => {
+    if (x1 - x0 < 1e-3 || y1 - y0 < 1e-3) return;
+    const o = tag(
+      { uvScale: size, ao: 1, uvOffset: [(x0 + h) / size, (y0 - y + h) / size] },
+      HALO_TAG[kind]
+    ) as Opts;
+    faceQuad(g, x0, y0, x1, y1, z, o);
+  };
+  const hx = Math.min(hole[0], size * 0.9) / 2;
+  const hy = Math.min(hole[1], size * 0.9) / 2;
+  if (hx <= 0 || hy <= 0) {
+    band(-h, y - h, h, y + h);
+    return;
+  }
+  band(-h, y + hy, h, y + h);
+  band(-h, y - h, h, y - hy);
+  band(-h, y - hy, -hx, y + hy);
+  band(hx, y - hy, h, y + hy);
 }
 
 /** The same pool cast down onto the ground under a lamp or a forge mouth. */
@@ -244,6 +270,21 @@ function reveal(
     ao: AO.recess,
   });
   mb.quad([-hw, y, 0], [-hw, y, depth], [hw, y, depth], [hw, y, 0], { ...opts, ao: AO.reveal });
+}
+
+/**
+ * The glazing bar cross that sits in front of a pane.
+ *
+ * Without it a lit window is an undivided rectangle of gold, and at 40 px it reads as a sticker
+ * rather than as glass — reference 09 and 10 put a dark mullion across every pane in the frame.
+ * The bars stand in the recess, in front of the emissive and behind the surround.
+ */
+function mullionBars(mb: MeshBuilder, w: number, h: number, y: number, uvScale: number): void {
+  const bar = Math.min(0.06, w * 0.09);
+  const o: Opts = { uvScale, ao: 0.82 };
+  faceQuad(mb, -bar, y + 0.02, bar, y + h - 0.02, 0.05, o);
+  const ty = y + h * 0.56;
+  faceQuad(mb, -w / 2 + 0.03, ty - bar, w / 2 - 0.03, ty + bar, 0.05, o);
 }
 
 /** A picture frame of four flat quads around an opening, on the plane z. */
@@ -1043,11 +1084,11 @@ export function archOpening(ctx: KitContext, o: ArchOpeningOptions = {}): void {
   }
   // A lit opening has to spend light on what surrounds it, or it reads as a coloured decal.
   if (fire) {
-    bloom(ctx, w * 0.85, { y: h * 0.3, z: depth + w * 0.2 }, 'fire');
-    groundSpill(ctx, w * 0.95, 0.03, depth + w * 0.25, 'fire');
-    spill(ctx, w * 1.5, h * 0.38, depth + 0.02, 'fire');
+    bloom(ctx, w * 0.8, { y: h * 0.26, z: depth + w * 0.3 }, 'fire');
+    groundSpill(ctx, w * 1.5, 0.03, depth + w * 0.4, 'fire');
+    spill(ctx, w * 2, h * 0.4, depth + 0.02, 'fire', [w + 0.5, h * 0.86]);
   } else if (o.glow) {
-    spill(ctx, w * 1.25, h * 0.45, depth + 0.02);
+    spill(ctx, w * 1.7, h * 0.45, depth + 0.02, 'warm', [w + 0.4, h * 0.85]);
   }
 }
 
@@ -1122,8 +1163,10 @@ export function windowBay(ctx: KitContext, o: WindowBayOptions = {}): void {
       ao: 1,
     });
     // The gold has to land on the stone around the opening, 1-2 m of it, or the pane reads as a
-    // cream rectangle painted on the wall — which is exactly how the kit measured in review.
-    spill(ctx, Math.max(w, h) * 1.9, y + h / 2, depth + 0.03);
+    // cream rectangle painted on the wall — which is exactly how the kit measured in review. The
+    // hole keeps the pool off the pane itself; over it, the two added up to pure white.
+    spill(ctx, Math.max(w, h) * 2.2, y + h / 2, depth + 0.03, 'warm', [w + 0.32, h + 0.32]);
+    mullionBars(surround, w, h, y, suv);
   }
   frameQuads(surround, w, h, y, 0.14, depth, { uvScale: suv });
   if (o.sill !== false) {
@@ -1163,7 +1206,7 @@ export function mullionWindow(ctx: KitContext, o: MullionWindowOptions = {}): vo
       uvScale: UV.glow,
       ao: 1,
     });
-    spill(ctx, Math.max(w, h) * 1.8, y + h / 2, depth + 0.03);
+    spill(ctx, Math.max(w, h) * 2.1, y + h / 2, depth + 0.03, 'warm', [w + 0.36, h + 0.36]);
   }
   frameQuads(s, w, h, y, 0.16, depth, opts);
   for (let i = 1; i < lights; i++) {

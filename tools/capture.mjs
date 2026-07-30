@@ -102,7 +102,7 @@ for (const shot of shots) {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
     await page.waitForFunction(() => window.__RAIDFIT_READY === true, null, { timeout: TIMEOUT });
     await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-    await page.screenshot({ path: join(root, out) });
+    await page.screenshot({ path: join(root, out), timeout: TIMEOUT });
     console.log(`captured ${out}  (${url})`);
     if (errors.length) console.log(`  page errors: ${errors.join(' | ').slice(0, 400)}`);
   } catch (e) {

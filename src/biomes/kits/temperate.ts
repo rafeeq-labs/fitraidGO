@@ -181,7 +181,7 @@ export const temperate: BiomeKit = {
     fogNearOffset: 18,
     fogFarOffset: 330,
     sunColor: PALETTE.sunWarm,
-    sunIntensity: 3.4,
+    sunIntensity: 4.4,
     sunElevation: 59,
     // Azimuth is measured against the game camera looking up the avenue. 105 puts the sun up and
     // to the screen-right, so shadows fall screen-LEFT and about 15 degrees toward the viewer —
@@ -189,9 +189,13 @@ export const temperate: BiomeKit = {
     // the ladder sheet caught a shadow on its own interior.
     sunAzimuth: 105,
     skyFill: 0x7c93b8,
-    groundFill: 0x6b5a42,
-    fillIntensity: 1.2,
-    exposure: 1.34,
+    // The hemisphere's DOWN colour is what a vertical wall gets half of, so a dark warm brown here
+    // starved every shadow-side elevation of fill and left it to the cast-shadow floor.
+    groundFill: 0x82705a,
+    // REFERENCE-SPEC 8.1 puts the cool sky fill at ~35% of key. Below that, albedo variation does
+    // not survive in shade and every shadow-side face measures as one flat value.
+    fillIntensity: 1.55,
+    exposure: 1.3,
     particles: 'none',
   },
 
@@ -203,10 +207,13 @@ export const temperate: BiomeKit = {
   },
 
   props: {
-    yard: ['barrel', 'crate', 'woodpile', 'bench', 'planter', 'well', 'cartwheel', 'washline'],
+    // Yard clutter only. The well and the washing line are 2 m tall with their own roofs and
+    // frames, and dropped into a 2 m planted margin they overlapped the building and read as
+    // structural damage rather than as dressing; both belong in a park or a village green.
+    yard: ['barrel', 'crate', 'woodpile', 'bench', 'planter', 'cartwheel', 'sackPile', 'waterButt'],
     street: ['crystalLamp', 'bannerPost', 'bollard', 'signpost', 'trough'],
     waterside: ['mooringPost', 'rowboat', 'crate', 'netRack'],
-    park: ['bench', 'flowerBed', 'hedge', 'fountain', 'statue', 'lantern'],
+    park: ['bench', 'flowerBed', 'hedge', 'fountain', 'statue', 'lantern', 'well', 'washline'],
   },
 
   landmark: {

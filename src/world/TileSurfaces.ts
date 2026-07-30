@@ -1,10 +1,11 @@
-import { Mesh, type Texture } from 'three';
+import { BufferAttribute, type Material, Mesh, type Texture } from 'three';
 import type { BiomeKit } from '../biomes/BiomeKit.js';
 import { LAYER } from '../engine/Palette.js';
 import { RampMaterial } from '../engine/RampMaterial.js';
 import type { TextureFactory } from '../engine/TextureGen.js';
 import type { FlatMesh, Polyline, WorldTile } from '../map/types.js';
 import { MeshBuilder } from './MeshBuilder.js';
+import { WaterMaterial } from './WaterMaterial.js';
 
 /**
  * Turns the compiled world tile's flat geography into 3D ground surfaces: terrain, parks, road
@@ -24,6 +25,8 @@ import { MeshBuilder } from './MeshBuilder.js';
 export interface TileSurfaceResult {
   meshes: Mesh[];
   stats: { triangles: number; draws: number };
+  /** Animated materials the frame loop must advance. */
+  water: WaterMaterial[];
 }
 
 /**
@@ -116,6 +119,26 @@ function emitKerb(
   }
 }
 
+/** Squared distance from a point to a closed ring, used to grade water depth from its bank. */
+function distanceToRingSq(x: number, z: number, ring: Polyline): number {
+  const n = ring.length / 2;
+  let best = Infinity;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const ax = ring[i * 2]!;
+    const az = ring[i * 2 + 1]!;
+    const dx = ring[j * 2]! - ax;
+    const dz = ring[j * 2 + 1]! - az;
+    const len2 = dx * dx + dz * dz;
+    const t = len2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / len2)) : 0;
+    const px = ax + dx * t;
+    const pz = az + dz * t;
+    const d = (x - px) * (x - px) + (z - pz) * (z - pz);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
 /** A ring of stone quay wall dropped from the bank down to the water, for rivers and canals. */
 function emitBank(b: MeshBuilder, ring: Polyline, topY: number, bottomY: number, uvScale: number): void {
   const n = ring.length / 2;
@@ -198,7 +221,7 @@ export function buildTileSurfaces(
   }
 
   const groundTex: Texture = textures.grass(kit.id, kit.textures.ground);
-  const roadTex: Texture = textures.cobble(kit.id, kit.textures.road);
+  const roadTex: Texture = textures.flagstone(kit.id, kit.textures.road);
   const stoneTex: Texture = textures.ashlar(kit.id, kit.textures.stone);
   const waterTex: Texture = textures.water(kit.id, kit.textures.water);
 
@@ -210,25 +233,38 @@ export function buildTileSurfaces(
     park: new RampMaterial({ map: groundTex, vertexAO: true, rim: 0, color: 0xd8e0c4 }),
     road: new RampMaterial({ map: roadTex, vertexAO: true, rim: 0 }),
     kerb: new RampMaterial({ map: stoneTex, vertexAO: true, rim: 0.6 }),
-    water: new RampMaterial({
-      map: waterTex,
-      vertexAO: true,
-      rim: 0.4,
-      transparent: kit.water.opacity < 1,
-      opacity: kit.water.opacity,
-    }),
+    water: new RampMaterial({ map: waterTex, vertexAO: true, rim: 0.4 }),
     stone: new RampMaterial({ map: stoneTex, vertexAO: true, rim: 0.8 }),
   };
 
   const meshes: Mesh[] = [];
+  const waterMaterials: WaterMaterial[] = [];
   let triangles = 0;
   for (const [name, builder] of Object.entries(b)) {
     if (builder.isEmpty) continue;
     triangles += builder.triangleCount;
-    const mesh = new Mesh(
-      builder.toGeometry(`surface-${name}`),
-      materials[name as keyof typeof materials]
-    );
+    const geometry = builder.toGeometry(`surface-${name}`);
+    let material: Material = materials[name as keyof typeof materials];
+    if (name === 'water') {
+      // Distance from the bank, normalised, so the water shader can grade shallow to deep and lap
+      // foam at the shore. Computed here because only this module knows where the bank rings are.
+      const pos = geometry.getAttribute('position');
+      const edge = new Float32Array(pos.count);
+      const rings = tile.water.flatMap((w) => w.rings);
+      for (let i = 0; i < pos.count; i++) {
+        let best = Infinity;
+        for (const ring of rings) {
+          const d = Math.sqrt(distanceToRingSq(pos.getX(i), pos.getZ(i), ring));
+          if (d < best) best = d;
+        }
+        edge[i] = Number.isFinite(best) ? Math.min(1, best / 14) : 1;
+      }
+      geometry.setAttribute('aEdge', new BufferAttribute(edge, 1));
+      const wm = new WaterMaterial({ kit });
+      waterMaterials.push(wm);
+      material = wm;
+    }
+    const mesh = new Mesh(geometry, material);
     mesh.name = `surface-${name}`;
     mesh.receiveShadow = true;
     // Ground surfaces never cast: a flat surface casting onto itself only produces acne, and the
@@ -239,5 +275,5 @@ export function buildTileSurfaces(
     meshes.push(mesh);
   }
 
-  return { meshes, stats: { triangles, draws: meshes.length } };
+  return { meshes, stats: { triangles, draws: meshes.length }, water: waterMaterials };
 }

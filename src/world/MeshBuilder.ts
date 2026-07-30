@@ -193,6 +193,63 @@ export class MeshBuilder {
   }
 
   /**
+   * A quad subdivided into `nu` x `nv` cells, with positions and AO both interpolated bilinearly.
+   *
+   * A single quad is two triangles, and a per-vertex value of the form [a, a, b, b] interpolates
+   * differently either side of their shared diagonal — which is exactly the 25-30 px cream wedge
+   * that ran down every storey-high wall and every roof pitch in the kit. Splitting the face means
+   * no triangle spans a whole storey and the gradient reads as a painted one. UVs stay continuous
+   * across the cells because each cell starts its own uv run at its offset along the parent.
+   */
+  quadGrid(
+    a: readonly [number, number, number],
+    b: readonly [number, number, number],
+    c: readonly [number, number, number],
+    d: readonly [number, number, number],
+    nu: number,
+    nv: number,
+    opts: FaceOptions = {},
+    aoPerVertex?: readonly [number, number, number, number]
+  ): this {
+    const cu = Math.max(1, Math.round(nu));
+    const cv = Math.max(1, Math.round(nv));
+    if (cu === 1 && cv === 1) return this.quad(a, b, c, d, opts, aoPerVertex);
+    const ao = aoPerVertex ?? [opts.ao ?? 1, opts.ao ?? 1, opts.ao ?? 1, opts.ao ?? 1];
+    const lerpP = (u: number, v: number): [number, number, number] => [
+      (1 - u) * (1 - v) * a[0] + u * (1 - v) * b[0] + u * v * c[0] + (1 - u) * v * d[0],
+      (1 - u) * (1 - v) * a[1] + u * (1 - v) * b[1] + u * v * c[1] + (1 - u) * v * d[1],
+      (1 - u) * (1 - v) * a[2] + u * (1 - v) * b[2] + u * v * c[2] + (1 - u) * v * d[2],
+    ];
+    const lerpA = (u: number, v: number): number =>
+      (1 - u) * (1 - v) * ao[0]! + u * (1 - v) * ao[1]! + u * v * ao[2]! + (1 - u) * v * ao[3]!;
+    const s = opts.uvScale ?? 1;
+    const off = opts.uvOffset ?? [0, 0];
+    // Edge lengths of the parent, in the transformed space the generated UVs are measured in.
+    V0.set(a[0], a[1], a[2]).applyMatrix4(this.xf);
+    V1.set(b[0], b[1], b[2]).applyMatrix4(this.xf);
+    V2.set(d[0], d[1], d[2]).applyMatrix4(this.xf);
+    const spanU = V1.distanceTo(V0);
+    const spanV = V2.distanceTo(V0);
+    for (let j = 0; j < cv; j++) {
+      for (let i = 0; i < cu; i++) {
+        const u0 = i / cu;
+        const u1 = (i + 1) / cu;
+        const v0 = j / cv;
+        const v1 = (j + 1) / cv;
+        this.quad(
+          lerpP(u0, v0),
+          lerpP(u1, v0),
+          lerpP(u1, v1),
+          lerpP(u0, v1),
+          { ...opts, uvOffset: [off[0] + (spanU * u0) / s, off[1] + (spanV * v0) / s] },
+          [lerpA(u0, v0), lerpA(u1, v0), lerpA(u1, v1), lerpA(u0, v1)]
+        );
+      }
+    }
+    return this;
+  }
+
+  /**
    * Axis-aligned box from (x0,y0,z0) to (x1,y1,z1) in local space.
    * `taper` widens the base by that fraction, which is what gives the reference buildings their
    * slightly bottom-heavy, hand-built proportion. `skip` omits faces that will never be seen.
@@ -233,19 +290,29 @@ export class MeshBuilder {
     const gAO = opts.groundAO ?? 0.72;
     const top = opts.ao ?? 1;
     const wallAO: [number, number, number, number] = [gAO, gAO, top, top];
+    // No triangle may span a whole storey, or the AO gradient creases along its own diagonal and
+    // reads as a 25-30 px wedge smeared down the wall. Only faces that actually carry a gradient
+    // are split, and only into ~2.6 m cells: subdividing every box in the kit multiplied the
+    // tile's triangle count without changing anything a viewer can see.
+    const graded = top - gAO > 0.12;
+    const cells = (metres: number): number =>
+      graded ? Math.min(3, Math.max(1, Math.floor(metres / 2.6))) : 1;
+    const nh = cells(Math.abs(y1 - y0));
+    const nw = cells(hw * 2);
+    const nd = cells(hd * 2);
 
     // +z face (front)
     if (!skip.pz)
-      this.quad([bx0, y0, bz1], [bx1, y0, bz1], [tx1, y1, tz1], [tx0, y1, tz1], opts, wallAO);
+      this.quadGrid([bx0, y0, bz1], [bx1, y0, bz1], [tx1, y1, tz1], [tx0, y1, tz1], nw, nh, opts, wallAO);
     // -z face (back)
     if (!skip.nz)
-      this.quad([bx1, y0, bz0], [bx0, y0, bz0], [tx0, y1, tz0], [tx1, y1, tz0], opts, wallAO);
+      this.quadGrid([bx1, y0, bz0], [bx0, y0, bz0], [tx0, y1, tz0], [tx1, y1, tz0], nw, nh, opts, wallAO);
     // +x face (right)
     if (!skip.px)
-      this.quad([bx1, y0, bz1], [bx1, y0, bz0], [tx1, y1, tz0], [tx1, y1, tz1], opts, wallAO);
+      this.quadGrid([bx1, y0, bz1], [bx1, y0, bz0], [tx1, y1, tz0], [tx1, y1, tz1], nd, nh, opts, wallAO);
     // -x face (left)
     if (!skip.nx)
-      this.quad([bx0, y0, bz0], [bx0, y0, bz1], [tx0, y1, tz1], [tx0, y1, tz0], opts, wallAO);
+      this.quadGrid([bx0, y0, bz0], [bx0, y0, bz1], [tx0, y1, tz1], [tx0, y1, tz0], nd, nh, opts, wallAO);
     // +y face (top)
     if (!skip.py)
       this.quad([tx0, y1, tz0], [tx0, y1, tz1], [tx1, y1, tz1], [tx1, y1, tz0], opts);
@@ -317,10 +384,12 @@ export class MeshBuilder {
       const r0 = ridgeY(t0);
       const r1 = ridgeY(t1);
       const run: FaceOptions = { ...opts, uvOffset: [off[0] + (x0 + hw) / s, off[1]] };
+      // Two cells up the pitch: one quad from eave to ridge creases along its own diagonal.
+      const rows = Math.min(3, Math.max(1, Math.round(Math.hypot(hd, height) / 1.8)));
       // +z slope
-      this.quad([x0, e, hd], [x1, e, hd], [x1, r1, 0], [x0, r0, 0], run, [0.88, 0.88, 1, 1]);
+      this.quadGrid([x0, e, hd], [x1, e, hd], [x1, r1, 0], [x0, r0, 0], 1, rows, run, [0.88, 0.88, 1, 1]);
       // -z slope
-      this.quad([x1, e, -hd], [x0, e, -hd], [x0, r0, 0], [x1, r1, 0], run, [0.88, 0.88, 1, 1]);
+      this.quadGrid([x1, e, -hd], [x0, e, -hd], [x0, r0, 0], [x1, r1, 0], 1, rows, run, [0.88, 0.88, 1, 1]);
       // Fascia board standing on the eave line, and the soffit behind it. The fascia is what
       // actually casts the shadow line down the wall that the references show under every eave.
       this.quad([x1, e, hd], [x0, e, hd], [x0, e - fascia, hd], [x1, e - fascia, hd], {

@@ -87,6 +87,10 @@ const materials = createKitMaterials(kit, textures);
  * The asset-sheet backdrop: a flat, unlit-looking dark ground that takes cast shadows. The
  * reference sheets are shot on one, and it is the only honest way to judge a silhouette — grass
  * would put a second green next to every canopy and hide the plot kerb entirely.
+ *
+ * It has to be DARKER than anything standing on it. At luma 62 it was lighter than the shadow-side
+ * walls it was judging, so half of every building dissolved into it; reference 09 and 05 both sit
+ * their cells on a backdrop at luma 28-30 and every silhouette, lit or shaded, cuts cleanly.
  */
 const backdrop = new Mesh(
   (() => {
@@ -96,7 +100,7 @@ const backdrop = new Mesh(
     });
     return b.toGeometry('sheet-backdrop');
   })(),
-  new RampMaterial({ color: 0x39404f, vertexAO: true, rim: 0 })
+  new RampMaterial({ color: 0x1f2028, vertexAO: true, rim: 0 })
 );
 backdrop.receiveShadow = true;
 scene.add(backdrop);
@@ -195,8 +199,14 @@ function layout(
 
 // --- views -------------------------------------------------------------------
 
-/** The M standard plot, so every cell in the ladder stands on exactly the same base. */
-const PLOT_W = Number(params.get('w') ?? 15);
+/**
+ * The standard plot, so every cell in the ladder stands on exactly the same base.
+ *
+ * Square, and closer to the reference sheet's own ~12-14 m module than the 15 x 14 it was: on a
+ * plot that wide the L1 cottage's ridge did not clear the plot's own far corner post, and the
+ * L0 -> L1 step measured as a 7% change in the silhouette envelope.
+ */
+const PLOT_W = Number(params.get('w') ?? 14);
 const PLOT_D = Number(params.get('d') ?? 14);
 const LADDER_FAMILIES: readonly BuildingFamily[] = ['residential', 'merchant', 'workshop'];
 

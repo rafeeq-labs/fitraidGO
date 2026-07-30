@@ -98,9 +98,32 @@ const POST_HEIGHT = 1.15;
 /** Posts at every corner and every 4.5 m along each run, per REFERENCE-SPEC 4.2. */
 const POST_PITCH = 4.5;
 const FENCE_HEIGHT = 1.15;
-/** Front face of the building to the inner face of the frontage kerb. */
-const SETBACK = 2;
-const YARD_MARGIN = 0.75;
+
+/**
+ * How much plot the building may NOT take, per level.
+ *
+ * `SETBACK` is the frontage rule of REFERENCE-SPEC 4.3 — it grows with the level, because an L2
+ * shop and an L3 manor both stand behind a forecourt while a cottage sits close to its gate.
+ * `MARGIN` is the planted band down the sides and across the back, and it is the reason the plot
+ * frame still reads at L2 and L3: with it at 0.75 m the mass rose within a metre of the capstone
+ * and buried the corner piers, so the identical square base stopped being visible above L1.
+ *
+ * `CLEARANCE` is the hard limit no geometry may cross — an attached tower, flue or stack is
+ * allowed inside the planted margin, but never within this of the kerb's inner face.
+ */
+const SETBACK: readonly number[] = [0, 2.6, 3.2, 3];
+const MARGIN: readonly number[] = [0.8, 1.8, 1.8, 1.6];
+const CLEARANCE = 1.3;
+
+/**
+ * Grass left inside the kerb on all four sides at EVERY level, before any paving is laid.
+ *
+ * Reference 09 keeps a green planted margin inside the kerb wall on all four sides of every tile,
+ * including the L3 manor and the L3 guild house. Paving whatever the building did not cover put
+ * the measured green fraction at 0% from L2 up — 14 grass pixels in a whole frame — and the plot
+ * stopped reading as a plot.
+ */
+const PLANTING_BAND = 1.5;
 
 const bucket = (v: number): number => Math.max(MODULE, Math.round(v / MODULE) * MODULE);
 const clamp = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v);
@@ -219,19 +242,28 @@ interface Mass {
 interface Site {
   plotW: number;
   plotD: number;
-  /** The frontmost z any geometry may occupy. */
+  /** The frontmost z the primary mass may occupy. */
   frontLimit: number;
   rearLimit: number;
+  /** Half-width available to the primary mass, inside the planted margin. */
   halfX: number;
+  /** Half-width available to an ATTACHED feature — a tower, a flue, a stack. */
+  hardX: number;
+  /** Rearmost z any geometry may reach. */
+  hardRear: number;
 }
 
-function siteOf(plotW: number, plotD: number): Site {
+function siteOf(plotW: number, plotD: number, level: number): Site {
+  const i = clamp(Math.round(level), 0, 3);
+  const margin = MARGIN[i]!;
   return {
     plotW,
     plotD,
-    frontLimit: -plotD / 2 + KERB_THICKNESS + SETBACK,
-    rearLimit: plotD / 2 - KERB_THICKNESS - YARD_MARGIN,
-    halfX: plotW / 2 - KERB_THICKNESS - YARD_MARGIN,
+    frontLimit: -plotD / 2 + KERB_THICKNESS + SETBACK[i]!,
+    rearLimit: plotD / 2 - KERB_THICKNESS - margin,
+    halfX: plotW / 2 - KERB_THICKNESS - margin,
+    hardX: plotW / 2 - KERB_THICKNESS - CLEARANCE,
+    hardRear: plotD / 2 - KERB_THICKNESS - CLEARANCE,
   };
 }
 
@@ -242,24 +274,35 @@ function siteOf(plotW: number, plotD: number): Site {
  * `reserveW` is width set aside beside the mass for an attached feature (a furnace stack, a wing).
  * Without it the mass grows to the full plot and the feature ends up inside the building.
  */
-function placeMass(site: Site, nomW: number, nomD: number, projection = 0, reserveW = 0): Mass {
+function placeMass(
+  site: Site,
+  nomW: number,
+  nomD: number,
+  projection = 0,
+  reserveW = 0,
+  maxScale = 1.05
+): Mass {
   const availW = Math.max(2, site.halfX * 2 - reserveW);
-  const availD = site.rearLimit - site.frontLimit - projection;
-  const s = clamp(Math.min(availW / nomW, availD / nomD), 0.6, 1.2);
-  // Floor rather than round: a mass bucketed UP past the space it was fitted to overhangs its kerb.
-  const w = Math.max(MODULE, Math.floor((nomW * s) / MODULE) * MODULE);
-  const d = Math.max(MODULE, Math.floor((nomD * s) / MODULE) * MODULE);
+  const availD = Math.max(2, site.rearLimit - site.frontLimit - projection);
+  const s = clamp(Math.min(availW / nomW, availD / nomD), 0.5, maxScale);
+  // Floor rather than round, and hard-clamped to the space that was actually fitted: a mass
+  // bucketed UP past its site, or rescued by the scale clamp's lower bound, overhangs its kerb.
+  const w = clamp(Math.floor((nomW * s) / MODULE) * MODULE, MODULE, availW);
+  const d = clamp(Math.floor((nomD * s) / MODULE) * MODULE, MODULE, availD);
   return { w, d, z: site.frontLimit + projection + d / 2 };
 }
 
 /**
- * Where an attached mass (tower, wing, shed, stack) sits beside the main mass. Clamped so its own
- * half-width still lands inside the yard: a building that overhangs its kerb is an automatic fail
- * on plot clarity, and the real plots this runs on are never the nominal size.
+ * Where an attached mass (tower, wing, shed, stack) sits beside the main mass.
+ *
+ * Clamped against the site's HARD limit rather than the mass limit: the whole point of the level-3
+ * tower is that it breaks the rectangle, and clamping it to the planted margin buried it inside the
+ * mass it was supposed to stand beside. It may sit in the planted band; it may not come within
+ * CLEARANCE of the kerb, because a building that overhangs its kerb fails plot clarity outright.
  */
 function besideMass(site: Site, mass: Mass, side: number, gap: number, halfWidth: number): number {
   const wanted = mass.w / 2 + gap;
-  return side * Math.min(wanted, Math.max(0, site.halfX - halfWidth));
+  return side * Math.min(wanted, Math.max(0, site.hardX - halfWidth));
 }
 
 /** Places `count` windows evenly along one face of a mass. */
@@ -341,24 +384,31 @@ function yardSurface(ctx: KitContext, plotW: number, plotD: number, paved: numbe
     }
   }
   if (paved <= 0) return;
-  const depth = id * Math.min(1, paved);
-  const z1 = -id / 2 + depth;
+  // The paved area is a TARGET, measured inside a planting band that survives on all four sides at
+  // every level. Paving whatever the building did not cover made the L2 and L3 yards one
+  // untextured tan field and deleted the yard step from the ladder entirely.
+  const band = Math.min(PLANTING_BAND, Math.min(iw, id) * 0.16);
+  const pw = iw - band * 2;
+  const pd = id - band * 2;
+  if (pw < 1.5 || pd < 1.5) return;
+  const depth = clamp(pd * Math.min(1, paved), 1.2, pd);
+  const z0 = -id / 2 + band;
   if (
     placePiece(
       ctx,
       'forecourtPaving',
-      { z: (-id / 2 + z1) / 2 },
-      { w: iw, d: depth, y: LAYER.yard + 0.02, edge: paved >= 0.6 }
+      { z: z0 + depth / 2 },
+      { w: pw, d: depth, y: LAYER.yard + 0.02, edge: paved >= 0.5 }
     )
   ) {
     return;
   }
   const s = ctx.channel.stone;
   s.quad(
-    [-iw / 2, LAYER.yard + 0.02, z1],
-    [iw / 2, LAYER.yard + 0.02, z1],
-    [iw / 2, LAYER.yard + 0.02, -id / 2],
-    [-iw / 2, LAYER.yard + 0.02, -id / 2],
+    [-pw / 2, LAYER.yard + 0.02, z0 + depth],
+    [pw / 2, LAYER.yard + 0.02, z0 + depth],
+    [pw / 2, LAYER.yard + 0.02, z0],
+    [-pw / 2, LAYER.yard + 0.02, z0],
     TAGGED.paving
   );
 }
@@ -386,19 +436,76 @@ function entryPath(ctx: KitContext, plotD: number, doorZ: number, x = 0, width =
   );
 }
 
-/** Scatters yard clutter from the biome's own prop list into the rear yard only. */
+/**
+ * Yard clutter from the biome's own prop list, in the rear yard AND down both side yards.
+ *
+ * The side bands are the change that matters: 09's L2 and L3 yards are busy all round — crates,
+ * barrels, planting boxes, market tables, wood piles — so the yard is a hierarchy step between the
+ * building and the kerb rather than a blank. Confined to the rear only, the yard step vanished the
+ * moment the mass grew past half the plot depth.
+ */
+function yardSlots(site: Site, mass: Mass): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  const rear0 = mass.z + mass.d / 2 + 0.8;
+  // Props are small and belong in the planted margin, so they run to the HARD limit rather than to
+  // the mass limit: clamped to the latter, a plot whose building filled the buildable area had no
+  // slot left anywhere and its yard came out empty.
+  const rear1 = site.hardRear - 0.5;
+  if (rear1 - rear0 > 0.5) {
+    for (const t of [0.22, 0.5, 0.78]) {
+      out.push([(t - 0.5) * (site.halfX * 1.6), rear0 + (rear1 - rear0) * ((t * 7) % 1) * 0.8 + 0.2]);
+    }
+  }
+  const inner = mass.w / 2 + 0.7;
+  const outer = site.hardX - 0.5;
+  if (outer - inner > 0.3) {
+    for (const sx of [-1, 1]) {
+      for (const t of [0.18, 0.52, 0.86]) {
+        out.push([
+          sx * (inner + (outer - inner) * 0.55),
+          site.frontLimit + (site.rearLimit - site.frontLimit) * t,
+        ]);
+      }
+    }
+  }
+  return out;
+}
+
 function yardProps(ctx: KitContext, site: Site, mass: Mass, count: number): void {
   const names = ctx.kit.props.yard;
   if (names.length === 0) return;
-  const zMin = mass.z + mass.d / 2 + 0.9;
-  const zMax = site.rearLimit - 0.4;
-  if (zMax - zMin < 0.6) return;
-  for (let i = 0; i < count; i++) {
+  const slots = yardSlots(site, mass);
+  if (slots.length === 0) return;
+  for (let i = slots.length - 1; i > 0; i--) {
+    const j = ctx.rng.int(0, i);
+    const t = slots[i]!;
+    slots[i] = slots[j]!;
+    slots[j] = t;
+  }
+  for (let i = 0; i < Math.min(count, slots.length); i++) {
+    const [x, z] = slots[i]!;
     placePiece(ctx, ctx.rng.pick(names), {
-      x: ctx.rng.range(-site.halfX + 0.5, site.halfX - 0.5),
-      z: ctx.rng.range(zMin, zMax),
+      x: x + ctx.rng.range(-0.25, 0.25),
+      z: z + ctx.rng.range(-0.25, 0.25),
       yaw: ctx.rng.range(0, Math.PI * 2),
     });
+  }
+}
+
+/** Planting inside the band the paving leaves green: what makes the margin read as a garden. */
+function yardPlanting(ctx: KitContext, site: Site, count: number): void {
+  const y = LAYER.plotSlab;
+  const band = site.plotW / 2 - KERB_THICKNESS - 0.85;
+  const zBand = site.plotD / 2 - KERB_THICKNESS - 0.85;
+  for (let i = 0; i < count; i++) {
+    const along = ctx.rng.range(-zBand + 1.2, zBand - 1.2);
+    const sx = i % 2 === 0 ? -1 : 1;
+    placePiece(
+      ctx,
+      ctx.rng.chance(0.5) ? 'flowerBed' : 'planter',
+      { x: sx * band, y, z: along, yaw: ctx.rng.range(0, Math.PI * 2) },
+      { size: 1.6, w: 1, d: 1, h: 0.5 }
+    );
   }
 }
 
@@ -464,7 +571,10 @@ function formalForecourt(ctx: KitContext, site: Site, frontZ: number): void {
 function residentialL1(ctx: KitContext, site: Site, v: number): void {
   const acrossRidge = v === 2;
   const mirror = v % 2 === 1;
-  const mass = placeMass(site, acrossRidge ? 5.6 : 7, acrossRidge ? 7 : 5.6);
+  // The cottage is allowed to grow past its nominal footprint where the plot has the room. At the
+  // shared 1.05 cap it took a fifth of its plot and the L0 -> L1 step measured as a 7% change in
+  // silhouette height — an empty plot and a built one were the same envelope at thumbnail size.
+  const mass = placeMass(site, acrossRidge ? 5.6 : 7, acrossRidge ? 7 : 5.6, 0, 0, 1.15);
   const plinth = 0.35;
   const wallH = 3.1;
   const eaves = plinth + wallH;
@@ -489,12 +599,13 @@ function residentialL1(ctx: KitContext, site: Site, v: number): void {
       }
 
       const chimneyX = (mirror ? 0.2 : -0.2) * (acrossRidge ? 0 : mass.w);
-      const chimneyZ = acrossRidge ? (mirror ? 0.2 : -0.2) * mass.d : 0;
-      // The chimney is what lifts the L0 -> L1 step above a 3% change in silhouette height: it
-      // stands 1.9 m clear of the ridge and is built from the ground so it reads as a stack.
+      // The chimney is what lifts the L0 -> L1 step above a 7% change in silhouette height: it
+      // stands 2.6 m clear of the ridge, is built from the ground so it reads as a stack, and sits
+      // on the REAR quarter of the roof, which is the highest point on screen at this camera.
+      const chimneyZ = acrossRidge ? (mirror ? 0.24 : -0.24) * mass.d : mass.d * 0.26;
       withTransform(
         ctx,
-        () => squareChimney(ctx, { w: 0.78, height: ridge + 1.9 - (eaves - 2.4) }),
+        () => squareChimney(ctx, { w: 0.85, height: ridge + 2.6 - (eaves - 2.4) }),
         { x: chimneyX, y: eaves - 2.4, z: chimneyZ }
       );
 
@@ -539,11 +650,12 @@ function residentialL1(ctx: KitContext, site: Site, v: number): void {
   yardSurface(ctx, site.plotW, site.plotD, 0.12);
   entryPath(ctx, site.plotD, mass.z - mass.d / 2 - 0.7);
   yardProps(ctx, site, mass, 3);
+  yardPlanting(ctx, site, 1);
 }
 
 function residentialL2(ctx: KitContext, site: Site, v: number): void {
   const wingSide = v === 0 ? 0 : v === 1 ? -1 : 1;
-  const wingD = 4.6;
+  const wingD = 3.8;
   const projection = wingD - 1.4;
   const mass = placeMass(site, 8.4, 6, projection);
   const base = 0.7;
@@ -633,27 +745,33 @@ function residentialL2(ctx: KitContext, site: Site, v: number): void {
 
   yardSurface(ctx, site.plotW, site.plotD, 0.35);
   entryPath(ctx, site.plotD, mass.z - mass.d / 2 - wingD + 1.4);
-  yardProps(ctx, site, mass, 4);
+  yardProps(ctx, site, mass, 5);
+  yardPlanting(ctx, site, 2);
 }
 
 function residentialL3(ctx: KitContext, site: Site, v: number): void {
   const towerSide = v === 1 ? -1 : 1;
-  // The entrance bay and its five steps project 4.5 m in front of the mass; the setback is
-  // measured to the bottom step, so the depth has to be reserved before the mass is sized.
-  const mass = placeMass(site, 9.6, 7, 4.5, 1.6);
+  // The entrance bay projects 2.6 m in front of the mass and the round tower needs 2.6 m of width
+  // beside it; both have to be reserved before the mass is sized, or the mass grows to the whole
+  // plot and swallows them. The five steps stand on the forecourt inside the frontage setback.
+  // The round tower straddles the mass CORNER, as it does in reference 09, so only a fraction of
+  // its diameter has to be reserved beside the mass: reserving the whole of it starved the manor of
+  // width and the level-3 tile came out as a narrow slab under an oversized spire.
+  const mass = placeMass(site, 9.6, 6.2, 2.6, 1.2);
   const base = 0.9;
-  // REFERENCE-SPEC 5.1: eaves 8.4, ridge 14, tallest point 22. The L3 tile has to be the tallest
-  // AND the lightest thing in its row or the flagship building recedes into the backdrop.
-  const eaves = 8.4;
+  // The TOWER carries the level-3 height, not the hall. At eaves 8.4 over a 5.5 m deep mass the
+  // manor read as a church campanile rather than a house — reference 09's manor is roughly twice as
+  // wide as its eaves are high, and everything above that comes from the spire.
+  const eaves = 7;
   const towerR = 1.9;
-  const towerH = 12;
+  const towerH = 10.6;
 
   withTransform(
     ctx,
     () => {
       baseCourse(ctx, { w: mass.w, d: mass.d, h: base });
       wallBox(ctx, { w: mass.w, d: mass.d, h: eaves - base, y: base, ashlar: true });
-      stringCourse(ctx, { w: mass.w, d: mass.d, y: 3.4 });
+      stringCourse(ctx, { w: mass.w, d: mass.d, y: 3.1 });
       gableRoof(ctx, { w: mass.w, d: mass.d, y: eaves, ashlar: true });
       // A low parapeted wing opposite the tower. The parapet has to stand on a mass of its own,
       // or it reads as a rectangle floating over the roof.
@@ -718,20 +836,24 @@ function residentialL3(ctx: KitContext, site: Site, v: number): void {
         lights: 2,
         transoms: 1,
       };
-      const upper = { w: 1.2, h: 1.9, y: 4.1, lights: 2, transoms: 0, arched: true };
+      const upper = { w: 1.2, h: 1.7, y: 3.9, lights: 2, transoms: 0, arched: true };
       for (const sx of [-1, 1]) {
         onWallFace(ctx, 'front', mass.w, mass.d, sx * mass.w * 0.32, 0, () =>
           mullionWindow(ctx, ground)
         );
       }
-      onWallFace(ctx, 'right', mass.w, mass.d, 0, 0, () => mullionWindow(ctx, ground));
       for (let i = 0; i < 4; i++) {
         onWallFace(ctx, 'front', mass.w, mass.d, -mass.w * 0.33 + (mass.w * 0.66 * i) / 3, 0, () =>
           mullionWindow(ctx, upper)
         );
       }
-      onWallFace(ctx, 'left', mass.w, mass.d, 0, 0, () => mullionWindow(ctx, upper));
-      onWallFace(ctx, 'back', mass.w, mass.d, 0, 0, () => mullionWindow(ctx, upper));
+      // Both flanks carry two storeys of glazing. With one window a side, the 8.5 x 7 m ashlar
+      // elevations the camera actually sees at this angle were blank slabs.
+      for (const face of ['left', 'right'] as const) {
+        windowRow(ctx, mass, face, 2, ground, 0.52);
+        windowRow(ctx, mass, face, 2, upper, 0.52);
+      }
+      windowRow(ctx, mass, 'back', 2, upper, 0.5);
 
       withTransform(
         ctx,
@@ -743,7 +865,7 @@ function residentialL3(ctx: KitContext, site: Site, v: number): void {
   );
 
   const doorZ = mass.z - mass.d / 2 - 2.8 - 0.85;
-  yardSurface(ctx, site.plotW, site.plotD, 0.72);
+  yardSurface(ctx, site.plotW, site.plotD, 0.7);
   entryPath(ctx, site.plotD, doorZ, -towerSide * 1.2, 2.2);
   withTransform(ctx, () => crystalPair(ctx, 2.4, doorZ - 0.6), { y: LAYER.plotSlab });
   for (const sx of [-1, 1]) {
@@ -754,7 +876,8 @@ function residentialL3(ctx: KitContext, site: Site, v: number): void {
     });
   }
   formalForecourt(ctx, site, doorZ);
-  yardProps(ctx, site, mass, 3);
+  yardProps(ctx, site, mass, 4);
+  yardPlanting(ctx, site, 2);
 }
 
 // --- merchant ----------------------------------------------------------------
@@ -844,8 +967,9 @@ function merchantL1(ctx: KitContext, site: Site, v: number): void {
     { y: LAYER.plotSlab, z: mass.z }
   );
 
-  yardSurface(ctx, site.plotW, site.plotD, 0.5);
+  yardSurface(ctx, site.plotW, site.plotD, 0.25);
   yardProps(ctx, site, mass, 4);
+  yardPlanting(ctx, site, 1);
 }
 
 function merchantL2(ctx: KitContext, site: Site, v: number): void {
@@ -907,8 +1031,14 @@ function merchantL2(ctx: KitContext, site: Site, v: number): void {
     { y: LAYER.plotSlab, z: mass.z }
   );
 
-  yardSurface(ctx, site.plotW, site.plotD, 1);
-  yardProps(ctx, site, mass, 4);
+  yardSurface(ctx, site.plotW, site.plotD, 0.55);
+  yardProps(ctx, site, mass, 5);
+  yardPlanting(ctx, site, 2);
+  placePiece(ctx, 'stallCounter', {
+    x: signSide * (mass.w * 0.3),
+    y: LAYER.plotSlab,
+    z: mass.z - mass.d / 2 - 1.5,
+  }, { length: 2.4, depth: 0.7 });
 }
 
 /**
@@ -991,13 +1121,36 @@ function merchantL3(ctx: KitContext, site: Site, v: number): void {
 
       const bays = mass.w >= 10 ? 3 : 2;
       stoneArcade(ctx, mass, bays, 2.2, archH);
+      const step = 2.2 + 0.62;
       for (let i = 0; i < bays; i++) {
-        const step = 2.2 + 0.62;
         const u = -((bays - 1) * step) / 2 + i * step;
         onWallFace(ctx, 'front', mass.w, mass.d, u, 0, () =>
           mullionWindow(ctx, { w: 1.3, h: 2.1, y: archH + 1.7, lights: 2, arched: true })
         );
       }
+      // Blue-and-white striped awnings over the arcade. REFERENCE-SPEC 5.2 lists them for L3 as
+      // well as L2, and without them the trading house has no family cue at all: it reads as a
+      // chapel, indistinguishable in silhouette from the level-3 manor beside it.
+      for (let i = 0; i < bays; i++) {
+        const u = -((bays - 1) * step) / 2 + i * step;
+        withTransform(
+          ctx,
+          () =>
+            awning(ctx, {
+              w: 2.5,
+              reach: 1.5,
+              y: archH + 0.42,
+              drop: 0.42,
+              striped: true,
+              brackets: true,
+            }),
+          { x: -u, z: -mass.d / 2 - 0.9, yaw: Math.PI }
+        );
+      }
+      // Hanging trade sign on a gallows bracket, off the end pier of the arcade.
+      onWallFace(ctx, 'front', mass.w, mass.d, mass.w / 2 - 0.55, 0, () =>
+        hangingSign(ctx, { y: archH + 1.5, arm: 1.7, boardW: 1.05, boardH: 0.82 })
+      );
       for (const sx of [-1, 1]) {
         onWallFace(ctx, 'front', mass.w, mass.d, sx * (mass.w / 2 - 0.7), archH + 3.1, () =>
           gallowsBanner(ctx, 0, 1.7)
@@ -1016,8 +1169,8 @@ function merchantL3(ctx: KitContext, site: Site, v: number): void {
   );
 
   const frontZ = mass.z - mass.d / 2 - 0.85;
-  yardSurface(ctx, site.plotW, site.plotD, 1);
-  withTransform(ctx, () => crystalPair(ctx, site.halfX - 0.6, frontZ - 1.6), { y: LAYER.plotSlab });
+  yardSurface(ctx, site.plotW, site.plotD, 0.85);
+  withTransform(ctx, () => crystalPair(ctx, site.hardX - 0.4, frontZ - 1.6), { y: LAYER.plotSlab });
   for (const sx of [-1, 1]) {
     placePiece(ctx, 'crateStack', {
       x: sx * (site.halfX - 1.2),
@@ -1026,9 +1179,17 @@ function merchantL3(ctx: KitContext, site: Site, v: number): void {
       yaw: sx * 0.4,
     });
     placePiece(ctx, 'urn', { x: sx * 2.2, y: LAYER.plotSlab, z: site.frontLimit - 1.4 });
+    // Market tables of goods under the awnings: the other half of 09's merchant-row cue.
+    placePiece(
+      ctx,
+      'stallCounter',
+      { x: sx * 2.1, y: LAYER.plotSlab, z: frontZ - 1.85 },
+      { length: 2.2, depth: 0.7 }
+    );
   }
-  placePiece(ctx, 'produceRack', { x: 0, y: LAYER.plotSlab, z: frontZ - 1.9 });
-  yardProps(ctx, site, mass, 3);
+  placePiece(ctx, 'produceRack', { x: 0, y: LAYER.plotSlab, z: frontZ - 2.0 });
+  yardProps(ctx, site, mass, 4);
+  yardPlanting(ctx, site, 2);
 }
 
 // --- workshop ----------------------------------------------------------------
@@ -1046,61 +1207,132 @@ function forge(ctx: KitContext, w: number, d: number, h: number, flue: number): 
     skip: { ny: true },
     groundAO: AO.ground,
   });
-  const g = ctx.channel.glow;
-  g.box(-w * 0.34, h * 0.32, -d / 2 - 0.06, w * 0.34, h * 0.92, d / 2 + 0.06, {
-    ...TAGGED.fire,
-    taper: -0.25,
+  // A hood over the hearth, so the stack has something to spring from and the fire sits in a mouth
+  // rather than on an open slab.
+  const hood = h + Math.min(1.1, w * 0.6);
+  ctx.channel.stone.box(-w * 0.44, h, -d * 0.46, w * 0.44, hood, d * 0.46, {
+    uvScale: UV.stone,
+    taper: -0.18,
+    skip: { ny: true },
+    groundAO: 0.86,
   });
-  bloom(ctx, w * 1.4, { y: h * 0.7 }, 'fire');
-  groundSpill(ctx, w * 1.6, 0.05, -d * 0.9, 'fire');
-  if (flue > 0) squareChimney(ctx, { w: 0.5, height: flue, y: h });
+  const g = ctx.channel.glow;
+  // The fire is a MOUTH in the hearth's front face plus a bed of coals on top of it. As a box
+  // swallowing the whole hearth it read as a glowing brick — the stone it belongs to was invisible.
+  // The mouth faces -z, which is the street side of every plot and the side the camera sees.
+  g.quad(
+    [w * 0.34, h * 0.34, -d / 2 - 0.02],
+    [-w * 0.34, h * 0.34, -d / 2 - 0.02],
+    [-w * 0.34, h * 0.94, -d / 2 - 0.02],
+    [w * 0.34, h * 0.94, -d / 2 - 0.02],
+    TAGGED.fire
+  );
+  g.box(-w * 0.3, h - 0.04, -d * 0.28, w * 0.3, h + h * 0.34, d * 0.28, {
+    ...TAGGED.fire,
+    taper: 0.3,
+    skip: { ny: true },
+  });
+  // The bloom sits ABOVE the coals, not inside them: centred on the emissive, the additive halo
+  // added its own value on top and the flame clipped to 255,255,219 instead of reading as `#E8873A`.
+  bloom(ctx, w * 1.3, { y: h + h * 0.75, z: -d * 0.2 }, 'fire');
+  groundSpill(ctx, w * 2.2, 0.05, -d * 1.1, 'fire');
+  if (flue > 0) squareChimney(ctx, { w: w * 0.42, height: flue - (hood - h), y: hood });
+}
+
+/**
+ * The open forge shed: chunky post-and-beam, not a plane on four sticks.
+ *
+ * Posts 0.28 m square with a head beam and knee braces at every corner, a ridge beam, and rafters
+ * across the pitch. As a single thin roof plate on 0.22 m sticks it read as a carport, and the
+ * workshop L1 tile had no structure to catch the fire's light on.
+ */
+function forgeShed(ctx: KitContext, w: number, d: number, postH: number, rise: number): void {
+  const t = ctx.channel.timber;
+  const p = 0.15;
+  const o: FaceOptionsLike = { uvScale: UV.timber };
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      const px = sx * (w / 2 - p);
+      const pz = sz * (d / 2 - p);
+      t.box(px - p, 0, pz - p, px + p, postH, pz + p, {
+        ...o,
+        skip: { ny: true, py: true },
+        groundAO: AO.contact,
+      });
+      // Knee brace from the post into the head beam, in the plane of the long side.
+      const b = 0.65;
+      const by = postH - 0.26;
+      t.tri([px - sx * b, by, pz], [px, by, pz], [px, by - b, pz], null, { ...o, ao: 0.72 });
+      t.tri([px, by, pz], [px - sx * b, by, pz], [px, by - b, pz], null, { ...o, ao: 0.72 });
+    }
+  }
+  // Head beams down both long sides.
+  for (const sz of [-1, 1]) {
+    t.box(-w / 2, postH - 0.26, sz * (d / 2 - p) - 0.11, w / 2, postH, sz * (d / 2 - p) + 0.11, {
+      ...o,
+      skip: { ny: true, py: true },
+      groundAO: 0.8,
+    });
+  }
+  // Two gable trusses — tie beam, king post, paired rafters — and the ridge beam between them.
+  for (const sx of [-1, 1]) {
+    const x = sx * (w / 2 - p);
+    t.box(x - 0.09, postH - 0.24, -d / 2, x + 0.09, postH, d / 2, {
+      ...o,
+      skip: { py: true, ny: true },
+      groundAO: 0.75,
+    });
+    t.box(x - 0.08, postH, -0.1, x + 0.08, postH + rise, 0.1, {
+      ...o,
+      skip: { py: true, ny: true },
+      groundAO: 0.78,
+    });
+    for (const sz of [-1, 1]) {
+      t.push();
+      t.translate(x, postH + rise, 0);
+      t.rotateX(sz * Math.atan2(d / 2, rise));
+      t.box(-0.08, -0.18, 0, 0.08, 0, Math.hypot(d / 2, rise), {
+        ...o,
+        skip: { py: true },
+        groundAO: 0.72,
+      });
+      t.pop();
+    }
+  }
+  t.box(-w / 2 - 0.25, postH + rise - 0.2, -0.11, w / 2 + 0.25, postH + rise, 0.11, {
+    ...o,
+    skip: { ny: true },
+    groundAO: 0.85,
+  });
 }
 
 function workshopL1(ctx: KitContext, site: Site, v: number): void {
-  const mass = placeMass(site, 4.2, 3.4, 0.6);
+  const mass = placeMass(site, 5.6, 4.6, 0.6, 0, 1.1);
   const postH = 2.6;
-  const rise = 0.9;
+  // A gabled post-and-beam frame, as in reference 09's forge tile. A mono-pitch plate on four
+  // sticks read as a carport, and gave the fire nothing to light.
+  const rise = (ctx.kit.roof.pitch * mass.d) / 2;
 
   withTransform(
     ctx,
     () => {
-      for (const sx of [-1, 1]) {
-        for (const sz of [-1, 1]) {
-          const top = postH + (sz < 0 ? rise : 0);
-          ctx.channel.timber.box(
-            sx * (mass.w / 2 - 0.16) - 0.11,
-            0,
-            sz * (mass.d / 2 - 0.16) - 0.11,
-            sx * (mass.w / 2 - 0.16) + 0.11,
-            top,
-            sz * (mass.d / 2 - 0.16) + 0.11,
-            { uvScale: UV.timber, skip: { ny: true, py: true }, groundAO: AO.contact }
-          );
-        }
-      }
-      ctx.channel.timber.box(-mass.w / 2, postH - 0.2, -mass.d / 2, mass.w / 2, postH, mass.d / 2, {
-        uvScale: UV.timber,
-        skip: { ny: true, py: true },
-        groundAO: AO.soffit,
+      forgeShed(ctx, mass.w, mass.d, postH, rise);
+      gableRoof(ctx, { w: mass.w, d: mass.d, y: postH, ends: false, verge: false, segments: 3 });
+      // The specified 1.8 m stone forge, at one end of the frame so the fire lights the underside
+      // of the roof, the posts and the working area in front of it.
+      withTransform(ctx, () => forge(ctx, 1.8, 1.1, 1.15, postH + rise + 1.2 - 1.15), {
+        x: v === 1 ? -mass.w * 0.26 : mass.w * 0.26,
+        z: -mass.d * 0.16,
       });
-      monoPitchRoof(ctx, { w: mass.w, d: mass.d, y: postH, rise, ends: v === 2 });
-      withTransform(ctx, () => forge(ctx, 1.2, 1, 1.1, 1.9), {
-        x: v === 1 ? -mass.w * 0.28 : mass.w * 0.28,
-        z: -mass.d * 0.2,
-      });
+      placePiece(ctx, 'anvil', { x: v === 1 ? mass.w * 0.26 : -mass.w * 0.26, z: mass.d * 0.2 });
+      placePiece(ctx, 'toolRack', { x: 0, z: mass.d / 2 - 0.3, yaw: Math.PI }, { length: 1.6 });
     },
     { y: LAYER.plotSlab, z: mass.z }
   );
 
   yardSurface(ctx, site.plotW, site.plotD, 0.3);
-  for (const name of ['anvil', 'toolRack', 'barrel', 'woodpile']) {
-    placePiece(ctx, name, {
-      x: ctx.rng.range(-site.halfX + 0.6, site.halfX - 0.6),
-      y: LAYER.plotSlab,
-      z: ctx.rng.range(mass.z + mass.d / 2 + 0.6, site.rearLimit - 0.4),
-      yaw: ctx.rng.range(0, Math.PI * 2),
-    });
-  }
+  yardProps(ctx, site, mass, 4);
+  yardPlanting(ctx, site, 1);
 }
 
 function workshopL2(ctx: KitContext, site: Site, v: number): void {
@@ -1129,7 +1361,10 @@ function workshopL2(ctx: KitContext, site: Site, v: number): void {
           squareChimney(ctx, { w: 1.25, height: 10.4 });
           stringCourse(ctx, { w: 1.25, d: 1.25, y: 6.2, thickness: 0.2, overhang: 0.14 });
         },
-        { x: -shedSide * (mass.w / 2 + 0.5), z: -mass.d * 0.18 }
+        {
+          x: -shedSide * Math.min(mass.w / 2 + 0.5, site.hardX - 0.7),
+          z: -mass.d * 0.18,
+        }
       );
 
       const shedW = 3.6;
@@ -1162,7 +1397,8 @@ function workshopL2(ctx: KitContext, site: Site, v: number): void {
   );
 
   yardSurface(ctx, site.plotW, site.plotD, 0.7);
-  yardProps(ctx, site, mass, 4);
+  yardProps(ctx, site, mass, 5);
+  yardPlanting(ctx, site, 2);
 }
 
 function workshopL3(ctx: KitContext, site: Site, v: number): void {
@@ -1171,10 +1407,10 @@ function workshopL3(ctx: KitContext, site: Site, v: number): void {
   // The furnace stack is the level-3 silhouette, so the room for it is reserved BEFORE the hall is
   // sized. Previously the mass grew to the full plot width and swallowed the stack, which then
   // peeked a metre over the ridge instead of towering 12.5 m clear of it.
-  const mass = placeMass(site, 10, 7.4, 0.4, stackR * 2 + 0.5);
+  const mass = placeMass(site, 10, 7.4, 0.4, stackR * 1.6);
   const base = 0.9;
   const eaves = 6.4;
-  const stackX = stackSide * Math.min(mass.w / 2 + stackR + 0.2, site.halfX - stackR);
+  const stackX = stackSide * Math.min(mass.w / 2 + stackR + 0.2, site.hardX - stackR);
 
   withTransform(
     ctx,
@@ -1225,11 +1461,12 @@ function workshopL3(ctx: KitContext, site: Site, v: number): void {
     { y: LAYER.plotSlab, z: mass.z }
   );
 
-  yardSurface(ctx, site.plotW, site.plotD, 1);
-  withTransform(ctx, () => crystalPair(ctx, site.halfX - 0.8, mass.z - mass.d / 2 - 1.8), {
+  yardSurface(ctx, site.plotW, site.plotD, 0.85);
+  withTransform(ctx, () => crystalPair(ctx, site.hardX - 0.5, mass.z - mass.d / 2 - 1.8), {
     y: LAYER.plotSlab,
   });
-  yardProps(ctx, site, mass, 4);
+  yardProps(ctx, site, mass, 5);
+  yardPlanting(ctx, site, 2);
 }
 
 // --- civic -------------------------------------------------------------------
@@ -1312,7 +1549,8 @@ function civic(ctx: KitContext, site: Site, v: number): void {
     { y: LAYER.plotSlab, z: mass.z }
   );
 
-  yardSurface(ctx, site.plotW, site.plotD, 1);
+  yardSurface(ctx, site.plotW, site.plotD, 0.85);
+  yardPlanting(ctx, site, 2);
   for (const sx of [-1, 1]) {
     withTransform(ctx, () => bannerPole(ctx, { height: 6, clothW: 1.4, clothH: 3.6 }), {
       x: sx * (site.halfX - 1.2),
@@ -1335,36 +1573,48 @@ function civic(ctx: KitContext, site: Site, v: number): void {
 
 // --- level 0 -----------------------------------------------------------------
 
-/** A surveyed but unbuilt plot: mown grass, one fence panel, a survey stake. Buildable land. */
+/**
+ * A surveyed but unbuilt plot: mown grass, one fence stub, a survey stake. Buildable land.
+ *
+ * REFERENCE-SPEC 5 puts the L0 tallest point at 0.9 m against the L1 cottage's 7.5 m chimney, and
+ * that ratio is the whole L0 -> L1 read. A 1.15 m fence panel standing at the REAR of the plot — the
+ * highest point on screen at this camera — was adding as much to the empty plot's silhouette as the
+ * cottage added to the built one.
+ */
 function level0(ctx: KitContext, site: Site, v: number): void {
   yardSurface(ctx, site.plotW, site.plotD, 0);
   const at: KitPlacement = {
     x: site.halfX * (v === 1 ? -0.5 : 0.5),
     y: LAYER.plotSlab,
-    z: site.rearLimit - 1.2,
+    z: 0,
   };
-  if (!placePiece(ctx, 'fencePanel', at, { length: 3 })) {
+  if (!placePiece(ctx, 'fencePanel', at, { length: 2.6, height: 0.9 })) {
     withTransform(ctx, () => {
       for (const sx of [-1, 1]) {
-        ctx.channel.timber.box(sx * 1.4 - 0.09, 0, -0.09, sx * 1.4 + 0.09, 1.15, 0.09, {
+        ctx.channel.timber.box(sx * 1.2 - 0.09, 0, -0.09, sx * 1.2 + 0.09, 0.9, 0.09, {
           uvScale: UV.timber,
           skip: { ny: true },
           groundAO: AO.contact,
         });
       }
-      for (const y of [0.55, 0.98]) {
-        ctx.channel.timber.box(-1.5, y, -0.05, 1.5, y + 0.14, 0.05, {
+      for (const y of [0.42, 0.74]) {
+        ctx.channel.timber.box(-1.3, y, -0.05, 1.3, y + 0.13, 0.05, {
           uvScale: UV.timber,
           skip: { ny: true },
         });
       }
     }, at);
   }
-  placePiece(ctx, 'surveyStake', { x: -at.x!, y: LAYER.plotSlab, z: site.frontLimit + 0.6 });
+  placePiece(
+    ctx,
+    'surveyStake',
+    { x: -at.x!, y: LAYER.plotSlab, z: site.frontLimit + 0.6 },
+    { height: 0.85 }
+  );
   placePiece(ctx, ctx.rng.pick(['bench', 'boulder']), {
     x: ctx.rng.range(-site.halfX + 0.6, site.halfX - 0.6),
     y: LAYER.plotSlab,
-    z: ctx.rng.range(site.frontLimit + 1, site.rearLimit - 1),
+    z: ctx.rng.range(site.frontLimit + 1, -0.4),
     yaw: ctx.rng.range(0, Math.PI * 2),
   });
 }
@@ -1382,7 +1632,7 @@ function level0(ctx: KitContext, site: Site, v: number): void {
 export function buildBuilding(ctx: KitContext, spec: BuildingSpec): void {
   const plotW = bucket(spec.plotW);
   const plotD = bucket(spec.plotD);
-  const site = siteOf(plotW, plotD);
+  const site = siteOf(plotW, plotD, spec.family === 'civic' ? 3 : spec.level);
   const v = (spec.variant ?? seedVariant(spec)) % variantCount(spec.family, spec.level);
   const local: KitContext = {
     channel: ctx.channel,
