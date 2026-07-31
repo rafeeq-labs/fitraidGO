@@ -20,6 +20,7 @@ import { withTransform, type KitContext } from '../../KitTypes.js';
 import {
   framedFace,
   gallowsBanner,
+  fitArcade,
   stoneArcade,
   tradeSign,
   windowRow,
@@ -262,12 +263,7 @@ export function merchantL3(ctx: KitContext, site: Site, v: number): void {
   const eaves = 8;
   const rise = (ctx.kit.roof.pitch * mass.d) / 2;
   const archH = 3.2;
-  // The arcade may spread into the clearance budget beside the hall, but no further.
-  const pier = 0.62;
-  const arcadeSpan = Math.min(mass.w + 1.2, site.hardX * 2);
-  const bays = arcadeSpan >= 8.4 ? 3 : 2;
-  const archW = clamp((arcadeSpan - (bays + 1) * pier) / bays, 1.3, 2.2);
-  const step = archW + pier;
+  const { bays, archW, step } = fitArcade(site, mass);
 
   withTransform(
     ctx,

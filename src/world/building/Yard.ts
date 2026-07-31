@@ -461,6 +461,17 @@ export function formalForecourt(ctx: KitContext, site: Site, frontZ: number): vo
             seed: sx,
             base: false,
             leafDensity: 0.4,
+            // A forecourt cypress was costing 12,700 triangles, so a pair of them put 25,400 into
+            // every plot that took a formal forecourt - twenty times the entire rest of the
+            // building, and duplicated per parcel wherever the key falls below the instancing
+            // threshold. It was enough to blow the stack in MeshBuilder.merge, which spreads its
+            // uv array, the moment four such plots were laid out on one review sheet.
+            //
+            // `leafScale` is the right lever and TreeOptions says why: cluster COUNT goes as
+            // 1/size^2, so tripling the spray size cuts the triangles by about nine at constant
+            // coverage, silhouette, hue and light gradient. The only thing that changes is how fine
+            // the clusters are, and at the GPS camera an authored spray is 1.9 px.
+            leafScale: 3,
           }),
         {
           x: sx * flank,

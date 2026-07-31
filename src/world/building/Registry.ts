@@ -1,11 +1,20 @@
 import type { FamilyDef } from './FamilyDef.js';
+import { apartmentL1, apartmentL2, apartmentL3 } from './families/apartment.js';
 import { civic } from './families/civic.js';
+import { craftshopL1, craftshopL2, craftshopL3 } from './families/craftshop.js';
+import { innL1, innL2, innL3, innLevel0 } from './families/inn.js';
 import { merchantL1, merchantL2, merchantL3 } from './families/merchant.js';
 import {
   residentialL1,
   residentialL2,
   residentialL3,
 } from './families/residential.js';
+import {
+  townhallL1,
+  townhallL2,
+  townhallL3,
+  townhallLevel0,
+} from './families/townhall.js';
 import { workshopL1, workshopL2, workshopL3 } from './families/workshop.js';
 
 /**
@@ -22,6 +31,23 @@ export const FAMILIES = {
   residential: { levels: [residentialL1, residentialL2, residentialL3] },
   merchant: { levels: [merchantL1, merchantL2, merchantL3] },
   workshop: { levels: [workshopL1, workshopL2, workshopL3] },
+  // --- wave 1: masonry and timber only, so the registry itself is what is under test here ---
+  // These four need no new material and no new sub-assembly beyond the mansard roof. If seven
+  // families dispatch correctly and the original four still hash identical, the architecture is
+  // sound before any risk is taken on thatch, crops, water wheels or rock faces.
+  apartment: { levels: [apartmentL1, apartmentL2, apartmentL3] },
+  craftshop: { levels: [craftshopL1, craftshopL2, craftshopL3] },
+  // The inn is the only family whose empty plot is FURNISHED rather than bare - a fire pit, log
+  // seats and a lantern post - which is exactly what `level0` exists to override.
+  inn: { levels: [innL1, innL2, innL3], level0: innLevel0 },
+  // The town hall's empty plot is a PAVED civic square, not a lawn - the one family whose yard is
+  // fully occupied from L0, which is why its ladder leans entirely on height and material.
+  townhall: {
+    levels: [townhallL1, townhallL2, townhallL3],
+    level0: townhallLevel0,
+    ground: 'hardstand',
+  },
+
   // Civic ignores the requested level and always builds its one tier. It also offers three variants
   // at every level rather than the kit's 3/4/3, which used to be a name check in variantCount.
   //

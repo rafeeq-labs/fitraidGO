@@ -11,7 +11,8 @@ import {
   type WindowBayOptions,
 } from '../KitPieces.js';
 import { withTransform, type FaceOptionsLike, type KitContext } from '../KitTypes.js';
-import { type Mass } from './Site.js';
+import { clamp } from './Metrics.js';
+import { type Mass, type Site } from './Site.js';
 
 /**
  * Wall treatments and the things that hang off them.
@@ -142,6 +143,25 @@ export function tradeSign(ctx: KitContext, y: number, arm: number, boardW = 1, b
  * it changed nothing about the silhouette, and merchant L3 was separable from L2 only by footprint
  * and wall darkness — which REFERENCE-SPEC 10.6 auto-fails.
  */
+/**
+ * Bay count and arch width for an arcade that fits the plot it stands on.
+ *
+ * An arcade is WIDER than the mass behind it - that is what makes it an arcade - so its span has to
+ * be solved against the site's hard limit rather than assumed. Passing a fixed three bays of 1.5 m
+ * put 7.7 m of colonnade on a 7.8 m terrace and the lean-to roof over it left the kerb by 1.26 m.
+ *
+ * Lifted out of the merchant family unchanged, because the town hall's portico and the inn's
+ * colonnade are the same problem and both got it wrong independently.
+ */
+export function fitArcade(site: Site, mass: Mass): { bays: number; archW: number; step: number } {
+  const pier = 0.62;
+  // The arcade may spread into the clearance budget beside the hall, but no further.
+  const arcadeSpan = Math.min(mass.w + 1.2, site.hardX * 2);
+  const bays = arcadeSpan >= 8.4 ? 3 : 2;
+  const archW = clamp((arcadeSpan - (bays + 1) * pier) / bays, 1.3, 2.2);
+  return { bays, archW, step: archW + pier };
+}
+
 export function stoneArcade(ctx: KitContext, mass: Mass, bays: number, archW: number, archH: number): void {
   const pier = 0.62;
   const depth = 0.85;

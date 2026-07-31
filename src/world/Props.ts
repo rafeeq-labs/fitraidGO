@@ -52,6 +52,16 @@ const WATER: FaceOptions = tag({ uvScale: 1.4, ao: 0.82 }, TAG.water) as FaceOpt
  */
 const CRYSTAL: FaceOptions = tag({ uvScale: 0.5 }, TAG.crystal) as FaceOptions;
 const FIRE: FaceOptions = tag({ uvScale: 0.5, ao: 1 }, TAG.fire) as FaceOptions;
+/**
+ * Working iron, as opposed to the gold `metal` channel carries.
+ *
+ * The note at the top of this file describes the old workaround - iron-coloured things living in
+ * `stone` because `metal` is emblem gold. That is no longer necessary: `metal` now carries an
+ * `iron` tag. Existing pieces are migrated separately from this, so that the geometry change shows
+ * up as its own reviewable step rather than buried in a batch of new props.
+ */
+const IRON: FaceOptions = tag({ uvScale: 0.7 }, TAG.iron) as FaceOptions;
+
 const RECESS: FaceOptions = { uvScale: 0.9, ao: 0.3 };
 const NO_FLOOR = { ny: true } as const;
 
@@ -1143,7 +1153,158 @@ const statue: KitPiece = (ctx, o) => {
 // --- registration -------------------------------------------------------------------------------
 
 /** Canonical names, as listed in docs/BUILDING-KIT-SPEC.md. */
+// --- props for the craft, civic and hospitality families -----------------------
+
+/** A ring of stones round a bed of embers. The inn family's L0 centrepiece. */
+const firePit: KitPiece = (ctx, o) => {
+  const r = opt(o, 'radius', 0.85);
+  const s = ctx.channel.stone;
+  const n = 9;
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    const x = Math.cos(a) * r;
+    const z = Math.sin(a) * r;
+    const h = 0.16 + ((i * 37) % 7) * 0.014;
+    s.box(x - 0.16, 0, z - 0.14, x + 0.16, h, z + 0.14, { ...STONE, taper: 0.1, skip: NO_FLOOR });
+  }
+  // Embers, not flame: a low disc of fire-tagged glow with a spill on the stones around it. A
+  // standing flame would need billboarding, which baked geometry cannot do.
+  disc(ctx.channel.glow, r * 0.62, 0.07, 8, FIRE);
+  groundSpill(ctx, r * 2.6, 0.05, 0, 'fire');
+  bloom(ctx, r * 1.1, { y: 0.2 }, 'fire');
+};
+
+/** A split log on its side, used as a seat. */
+const logSeat: KitPiece = (ctx, o) => {
+  const len = opt(o, 'length', 1.5);
+  const r = opt(o, 'radius', 0.24);
+  const t = ctx.channel.timber;
+  // Flat side up, so it reads as something sat on rather than as a log left lying.
+  t.box(-len / 2, 0, -r, len / 2, r * 1.5, r, { ...TIMBER, taper: 0.06, skip: NO_FLOOR });
+  disc(t, r * 0.9, r * 1.5, 7, TIMBER);
+};
+
+/** A board on two posts with a pitched hood, for civic notices. */
+const noticeBoard: KitPiece = (ctx, o) => {
+  const w = opt(o, 'width', 1.1) / 2;
+  const h = opt(o, 'height', 1.5);
+  const t = ctx.channel.timber;
+  for (const sx of [-1, 1]) {
+    t.box(sx * w - 0.07, 0, -0.06, sx * w + 0.07, h, 0.06, { ...TIMBER, skip: NO_FLOOR });
+  }
+  t.box(-w, h * 0.42, -0.05, w, h - 0.06, 0.02, TIMBER);
+  // The hood, which is what makes it read as a notice board rather than as a blank panel.
+  ctx.channel.roof.quad([-w - 0.1, h + 0.16, 0.18], [w + 0.1, h + 0.16, 0.18], [w + 0.1, h - 0.02, -0.16], [-w - 0.1, h - 0.02, -0.16], ROOF);
+  // A pale sheet pinned to it.
+  ctx.channel.cloth.quad([-w * 0.5, h * 0.55, -0.06], [w * 0.3, h * 0.55, -0.06], [w * 0.3, h - 0.2, -0.06], [-w * 0.5, h - 0.2, -0.06], CLOTH);
+};
+
+/** A sawhorse with a log across it. */
+const sawBuck: KitPiece = (ctx, o) => {
+  const len = opt(o, 'length', 1.2);
+  const t = ctx.channel.timber;
+  const hw = len / 2;
+  for (const sz of [-1, 1]) {
+    for (const sx of [-1, 1]) {
+      t.quad(
+        [sx * hw * 0.8, 0, sz * 0.42],
+        [sx * hw * 0.8 + 0.09, 0, sz * 0.42],
+        [sx * hw * 0.2 + 0.09, 0.72, sz * 0.06],
+        [sx * hw * 0.2, 0.72, sz * 0.06],
+        TIMBER
+      );
+    }
+  }
+  t.box(-hw, 0.66, -0.09, hw, 0.78, 0.09, TIMBER);
+  // The log being cut, which is what names the prop.
+  t.box(-hw * 0.7, 0.78, -0.17, hw * 0.9, 1.1, 0.17, { ...TIMBER, taper: 0.12 });
+};
+
+/** A grindstone on a timber frame with an iron crank. */
+const grindstone: KitPiece = (ctx, o) => {
+  const r = opt(o, 'radius', 0.42);
+  const t = ctx.channel.timber;
+  for (const sz of [-1, 1]) {
+    t.box(-0.09, 0, sz * 0.32 - 0.07, 0.09, 0.62, sz * 0.32 + 0.07, { ...TIMBER, skip: NO_FLOOR });
+  }
+  t.box(-0.14, 0.56, -0.4, 0.14, 0.7, 0.4, TIMBER);
+  // The wheel, in stone, standing in its own plane.
+  const s = ctx.channel.stone;
+  const seg = 10;
+  for (let i = 0; i < seg; i++) {
+    const a0 = (i / seg) * Math.PI * 2;
+    const a1 = ((i + 1) / seg) * Math.PI * 2;
+    const y = 0.62 + r;
+    s.quad(
+      [-0.06, y + Math.sin(a0) * r, Math.cos(a0) * r],
+      [-0.06, y + Math.sin(a1) * r, Math.cos(a1) * r],
+      [0.06, y + Math.sin(a1) * r, Math.cos(a1) * r],
+      [0.06, y + Math.sin(a0) * r, Math.cos(a0) * r],
+      STONE
+    );
+  }
+  disc(s, r, 0.06, seg, STONE);
+  // Crank and spindle, in iron rather than in gold.
+  ctx.channel.metal.box(-0.2, 0.62 + r - 0.04, -0.04, 0.2, 0.62 + r + 0.04, 0.04, IRON);
+  ctx.channel.metal.box(0.16, 0.62 + r - 0.04, -0.04, 0.24, 0.62 + r + 0.24, 0.04, IRON);
+};
+
+/** A clipped evergreen in a tub. Formal planting for the resort forecourt. */
+const topiary: KitPiece = (ctx, o) => {
+  const h = opt(o, 'height', 1.35);
+  const s = ctx.channel.stone;
+  s.box(-0.28, 0, -0.28, 0.28, 0.34, 0.28, { ...STONE, taper: -0.12, skip: NO_FLOOR });
+  ctx.channel.timber.box(-0.06, 0.34, -0.06, 0.06, h * 0.45, 0.06, TIMBER);
+  // Two stacked balls, which is what makes it read as CLIPPED rather than as a shrub. Built from
+  // tapered boxes rather than blobs, matching hedgeRun: the kit's planting is chunky by design and
+  // a smooth sphere here would be the only true sphere in the whole prop set.
+  const f = ctx.channel.foliage;
+  const ball = (r: number, y: number): void => {
+    f.box(-r * 0.72, y - r, -r * 0.72, r * 0.72, y - r * 0.3, r * 0.72, { ...LEAF, taper: -0.3, groundAO: 0.5 });
+    f.box(-r, y - r * 0.35, -r, r, y + r * 0.35, r, { ...LEAF, groundAO: 0.8 });
+    f.box(-r * 0.72, y + r * 0.3, -r * 0.72, r * 0.72, y + r, r * 0.72, { ...LEAF, taper: 0.3 });
+  };
+  ball(0.4, h * 0.56);
+  ball(0.29, h * 0.9);
+};
+
+/** A trellis panel with a vine over it, for the coaching inn's benches. */
+const vineTrellis: KitPiece = (ctx, o) => {
+  const w = opt(o, 'width', 2.2) / 2;
+  const h = opt(o, 'height', 2.1);
+  const t = ctx.channel.timber;
+  for (const sx of [-1, 1]) {
+    t.box(sx * w - 0.07, 0, -0.07, sx * w + 0.07, h, 0.07, { ...TIMBER, skip: NO_FLOOR });
+  }
+  t.box(-w, h - 0.12, -0.06, w, h, 0.06, TIMBER);
+  // The lattice: a coarse grid, kept coarse because at this camera a fine one mips to a grey haze.
+  for (let i = 1; i < 4; i++) {
+    const x = -w + (i / 4) * w * 2;
+    t.box(x - 0.035, 0.3, -0.035, x + 0.035, h - 0.1, 0.035, TIMBER);
+  }
+  for (let j = 1; j < 3; j++) {
+    const y = 0.4 + (j / 3) * (h - 0.7);
+    t.box(-w + 0.05, y - 0.035, -0.035, w - 0.05, y + 0.035, 0.035, TIMBER);
+  }
+  // The vine: a few loose masses over the top rail, uneven so it reads as grown rather than placed.
+  const f = ctx.channel.foliage;
+  for (const [x, y, r] of [
+    [-w * 0.55, h * 0.8, 0.42],
+    [w * 0.15, h * 0.92, 0.36],
+    [w * 0.7, h * 0.66, 0.33],
+  ] as const) {
+    f.box(x - r, y - r * 0.7, -r * 0.55, x + r, y + r * 0.6, r * 0.55, { ...LEAF, taper: 0.12, groundAO: 0.85 });
+  }
+};
+
 const PIECES: Record<string, KitPiece> = {
+  firePit,
+  logSeat,
+  noticeBoard,
+  sawBuck,
+  grindstone,
+  topiary,
+  vineTrellis,
   flagstonePath,
   forecourtPaving,
   fencePanel,

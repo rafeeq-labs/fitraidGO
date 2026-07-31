@@ -968,6 +968,73 @@ export function hipRoof(ctx: KitContext, o: HipRoofOptions = {}): void {
   if (style.snowCover > 0) snowOnGable(ctx, rx, hd, y, y + rise, style.snowCover);
 }
 
+export type MansardRoofOptions = {
+  w?: number;
+  d?: number;
+  y?: number;
+  /** Height of the steep lower slope, from eaves to the break. */
+  skirt?: number;
+  /** Rise of the shallow upper roof above the break. */
+  cap?: number;
+  /** How far in the break sits, as a fraction of each half-dimension. */
+  inset?: number;
+  overhang?: number;
+  shingle?: boolean;
+};
+
+/**
+ * A mansard: a steep lower slope to a break, then a shallow upper roof.
+ *
+ * The kit has gable, cross, hip, mono-pitch, dormer and cone, and none of them is a mansard. It
+ * exists for the apartment family's top tier, where it is the ladder step: an L2 block and an L3
+ * block are both tall rectangles, so the ROOF has to carry the difference. A mansard does that in a
+ * way a taller gable cannot, because it reads as an extra inhabited storey rather than as more
+ * roof - which is exactly what it is on a real tenement.
+ *
+ * The upper roof reuses `hipRoof` rather than reimplementing a second slope: it already handles the
+ * ridge cap, the soffit line and the biome's snow cover, and a mansard cap is a hip roof by
+ * definition.
+ */
+export function mansardRoof(ctx: KitContext, o: MansardRoofOptions = {}): void {
+  const w = o.w ?? 9;
+  const d = o.d ?? 7;
+  const y = o.y ?? 0;
+  const skirt = o.skirt ?? 2.4;
+  const inset = o.inset ?? 0.28;
+  const oh = o.overhang ?? ctx.kit.roof.overhang;
+  const ro = roofOpts(o.shingle);
+  const mb = ctx.channel.roof;
+
+  // Eaves rectangle, carried out over the wall by the overhang; break rectangle, drawn in.
+  const ew = w / 2 + oh;
+  const ed = d / 2 + oh;
+  const bw = (w / 2) * (1 - inset);
+  const bd = (d / 2) * (1 - inset);
+  const yb = y + skirt;
+
+  // Four trapezoids. Steep, and deliberately so: at a shallow angle the break disappears and the
+  // whole thing reads as a hip roof with a bump, which is the one silhouette it must not have.
+  mb.quad([-ew, y, ed], [ew, y, ed], [bw, yb, bd], [-bw, yb, bd], ro);
+  mb.quad([ew, y, -ed], [-ew, y, -ed], [-bw, yb, -bd], [bw, yb, -bd], ro);
+  mb.quad([ew, y, ed], [ew, y, -ed], [bw, yb, -bd], [bw, yb, bd], ro);
+  mb.quad([-ew, y, -ed], [-ew, y, ed], [-bw, yb, bd], [-bw, yb, -bd], ro);
+
+  hipRoof(ctx, {
+    w: bw * 2,
+    d: bd * 2,
+    y: yb,
+    rise: o.cap ?? 1.15,
+    overhang: 0.1,
+    shingle: o.shingle,
+  });
+
+  // The eave soffit under the steep slope, matching what gable and hip roofs put there.
+  const soffit: Opts = { uvScale: UV.timber, ao: AO.soffit };
+  const t = ctx.channel.timber;
+  t.quad([ew, y, ed], [-ew, y, ed], [-ew, y - 0.2, ed], [ew, y - 0.2, ed], soffit);
+  t.quad([-ew, y, -ed], [ew, y, -ed], [ew, y - 0.2, -ed], [-ew, y - 0.2, -ed], soffit);
+}
+
 export type MonoPitchRoofOptions = {
   w?: number;
   d?: number;
@@ -1744,6 +1811,7 @@ register<TimberFrameBayOptions>('timberFrameBay', timberFrameBay);
 register<GableRoofOptions>('gableRoof', gableRoof);
 register<CrossGableOptions>('crossGable', crossGable);
 register<HipRoofOptions>('hipRoof', hipRoof);
+register<MansardRoofOptions>('mansardRoof', mansardRoof);
 register<MonoPitchRoofOptions>('monoPitchRoof', monoPitchRoof);
 register<DormerOptions>('dormer', dormer);
 register<ConeSpireOptions>('coneSpire', coneSpire);
