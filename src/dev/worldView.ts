@@ -14,7 +14,10 @@ import type { WorldTile } from '../map/types.js';
  * URL-parameter reading and the stats overlay; nothing here builds any geometry.
  *
  * URL parameters: biome, seed, cam, scrub, fog, freeze, t, stats, players, tile, grass, cell,
- * margin, budget, treeDetail, shrubRadius.
+ * margin, budget, treeDetail, treeCoarse, shrubSpan.
+ *
+ * `treeDetail` and `shrubSpan` are metres of GROUND SPAN across the frame's short axis, not radii
+ * from the player: see `TreeLodTier.maxSpan`.
  */
 
 const params = new URLSearchParams(location.search);
@@ -51,8 +54,9 @@ const world = buildWorld({
   cellSize: params.get('cell') === null ? undefined : num('cell', 56),
   streamMargin: params.get('margin') === null ? undefined : num('margin', 22),
   cellBudget: params.get('budget') === null ? undefined : num('budget', 2),
-  treeDetailRadius: params.get('treeDetail') === null ? undefined : num('treeDetail', 123),
-  shrubRadius: params.get('shrubRadius') === null ? undefined : num('shrubRadius', Infinity),
+  treeDetailSpan: params.get('treeDetail') === null ? undefined : num('treeDetail', 60),
+  treeCoarseScale: params.get('treeCoarse') === null ? undefined : num('treeCoarse', 2),
+  shrubSpan: params.get('shrubSpan') === null ? undefined : num('shrubSpan', Infinity),
 });
 
 const s = world.streamer.stats;

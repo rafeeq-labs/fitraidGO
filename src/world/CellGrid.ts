@@ -93,13 +93,39 @@ export class CellGrid {
   /**
    * Distance from a point to the nearest point of a cell, in metres; 0 inside.
    *
-   * This, not the distance to the cell centre, is what LOD must be measured on: a 56 m cell whose
-   * centre is 60 m away has a corner 20 m away, and choosing the far stand-in for the trees in that
-   * corner puts a crude tree in the near field.
+   * Nearest point, not the centre: a 56 m cell whose centre is 60 m away has a corner 20 m away.
+   * Level of detail is NOT measured on this — see `depthTo` — but proximity to the player still is,
+   * wherever the question is genuinely about the world rather than about the view.
    */
   distanceTo(cell: Cell, x: number, z: number): number {
     const dx = Math.max(cell.minX - x, 0, x - cell.maxX);
     const dz = Math.max(cell.minZ - z, 0, z - cell.maxZ);
     return Math.hypot(dx, dz);
+  }
+
+  /**
+   * How far UP THE SCREEN the nearest part of a cell lies, in metres of ground, measured from
+   * `(x, z)` along the unit ground axis `(dirX, dirZ)`.
+   *
+   * This, and not `distanceTo`, is what level of detail is measured on, and the reason is the camera
+   * rather than the world. The azimuth is FIXED, so the visible ground is a quad of constant shape
+   * that merely translates, and this axis is a constant of the preset. Apparent size on screen then
+   * depends only on how far up that quad something sits: at the GPS camera a 9 m canopy is 111 px
+   * across at the bottom of the frame, 99 px at the target and 87 px at the top — and 99 px at both
+   * side edges. Iso-detail contours are therefore LINES ACROSS THE FRAME. A radius measured from any
+   * point at all draws circles instead, and gets it wrong in two directions at once: demoting trees
+   * at the left and right edges that are the same size as the ones in the middle, while promoting
+   * trees far up the frame that are smaller than either.
+   *
+   * `IsoCamera.groundSpanAt` turns this into the apparent scale the tier tables are written in.
+   *
+   * The minimum over the cell, not its centre: a 56 m cell whose far edge is well up the frame may
+   * have its near edge in the foreground, and the near edge is what the eye is on.
+   */
+  depthTo(cell: Cell, x: number, z: number, dirX: number, dirZ: number): number {
+    const cx = (cell.minX + cell.maxX) / 2 - x;
+    const cz = (cell.minZ + cell.maxZ) / 2 - z;
+    const half = this.size / 2;
+    return cx * dirX + cz * dirZ - half * (Math.abs(dirX) + Math.abs(dirZ));
   }
 }

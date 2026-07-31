@@ -40,8 +40,17 @@ import { makeRng } from '../engine/rng.js';
  *
  * So the unit of existence is now a cell, and a cell exists when it overlaps the ground the camera
  * can see. Cells enter and leave as the player walks; work is rationed so that entering never costs
- * a whole frame; and how much detail a cell carries is decided against the player's live position
- * rather than baked in at load.
+ * a whole frame; and how much detail a cell carries is decided against the CAMERA, every frame.
+ *
+ * That last point was the expensive one to get right. Detail was first measured as a radius from the
+ * player, which is what the one-shot builders did, and it is wrong twice. The player is not the
+ * viewer: they sit 87 % of the way down a portrait frame, so the ground they are nearest is the
+ * bottom edge and two thirds of what is on screen is ahead of them — at the GPS camera the target is
+ * 62 m up the frame from the player and the top edge is 168 m up. A 52 m radius from the player
+ * therefore handed the coarse rung to everything from the middle of the frame upward, which is
+ * precisely where the eye rests. And a radius is the wrong SHAPE even measured from the right place,
+ * because this camera's iso-detail contours are lines across the frame rather than circles. See
+ * `CellGrid.depthTo`.
  *
  * Three things are deliberately NOT streamed:
  *
@@ -73,25 +82,29 @@ export interface WorldStreamerOptions {
   margin?: number;
   /** Cells built per frame once the world is running. */
   budget?: number;
-  /** Tree detail rungs, measured from the followed point. */
+  /** Tree detail rungs, keyed on ground span; see `TreeLodTier.maxSpan`. */
   treeLod?: readonly TreeLodTier[];
-  /** Ground-cover tier distances, measured from the followed point. */
+  /** Ground-cover tier boundaries, in metres of ground span. */
   coverLod?: readonly number[];
-  /** Metres beyond which shrubs are not planted at all. */
-  shrubMaxDistance?: number;
-  /** Metres a cell must move past a tier boundary before it changes tier. */
+  /** Ground span beyond which shrubs are not planted at all. */
+  shrubMaxSpan?: number;
+  /** Metres of span a cell must move past a boundary before it changes tier. */
   hysteresis?: number;
   coverDensity?: number;
 }
 
 /**
- * Ground-cover tier distances, in metres from the followed point.
+ * Ground-cover tier boundaries, in metres of GROUND SPAN across the frame's short axis.
  *
- * These are the one-shot builder's own boundaries, converted out of the fractions of a 232 m disc
- * it expressed them in. Keeping them where they were is the point: the tier a tuft lands in decides
- * how many blades it has, and moving the boundaries would change the picture.
+ * Converted from the one-shot builder's radii about the player (32.5 / 69.6 / 134.6 m) by working
+ * out where they actually fell in the GPS frame and reading off the span there. The picture the old
+ * numbers produced is preserved; what changes is that the ladder now belongs to the view rather than
+ * to the avatar, so it is right at the street and plot cameras too instead of by accident.
+ *
+ * A tuft is 1.4 m — a sixtieth of the GPS frame's width, about 15 px — and the tiers differ by a
+ * handful of blades, so this ladder is far less visible than the tree one and is stepped harder.
  */
-export const DEFAULT_COVER_LOD: readonly number[] = [32.5, 69.6, 134.6, Infinity];
+export const DEFAULT_COVER_LOD: readonly number[] = [79, 83, 89, Infinity];
 
 interface LoadedCell {
   cell: Cell;
@@ -176,9 +189,9 @@ export class WorldStreamer {
   private readonly margin: number;
   private readonly budget: number;
   private readonly treeLod: readonly TreeLodTier[];
-  private readonly treeDistances: readonly number[];
+  private readonly treeSpans: readonly number[];
   private readonly coverLod: readonly number[];
-  private readonly shrubMaxDistance: number;
+  private readonly shrubMaxSpan: number;
   private readonly hysteresis: number;
 
   private readonly pools = new PoolSet();
@@ -201,10 +214,10 @@ export class WorldStreamer {
     this.margin = options.margin ?? 22;
     this.budget = options.budget ?? 2;
     this.treeLod = options.treeLod ?? DEFAULT_TREE_LOD;
-    this.treeDistances = this.treeLod.map((t) => t.maxDistance);
+    this.treeSpans = this.treeLod.map((t) => t.maxSpan);
     this.coverLod = options.coverLod ?? DEFAULT_COVER_LOD;
-    this.shrubMaxDistance = options.shrubMaxDistance ?? Infinity;
-    this.hysteresis = options.hysteresis ?? 8;
+    this.shrubMaxSpan = options.shrubMaxSpan ?? Infinity;
+    this.hysteresis = options.hysteresis ?? 1.5;
     this.group.name = 'streamed-world';
     this.vegetation = createVegetationLibrary(options.kit, options.textures, {
       seed: options.seed ?? 5,
@@ -219,13 +232,20 @@ export class WorldStreamer {
   /**
    * Reconcile the loaded set with what the camera can see, spending at most `budget` cell builds.
    *
-   * `focusX`/`focusZ` is the point detail is measured from — the player, not the camera target.
-   * That is what the one-shot builders used, so the same trees keep the same detail they had; the
-   * difference is that it is now re-evaluated every frame instead of once at load.
+   * The camera is the ONLY input. It decides both which cells exist — through `groundBounds`, the
+   * quad of ground the frame can see — and how much detail each of them carries, through
+   * `viewDepth`. The player used to be passed in here as well, to measure detail from; that was the
+   * defect this class exists to have fixed, and there is now nowhere for it to creep back in.
    */
-  update(camera: IsoCamera, focusX: number, focusZ: number, budget = this.budget): void {
-    this.lastFocusX = focusX;
-    this.lastFocusZ = focusZ;
+  update(camera: IsoCamera, budget = this.budget): void {
+    // The view this frame's detail is measured against. The ground axis depends only on the
+    // preset's azimuth, the origin only on where the camera is looking, and the scale only on the
+    // preset — so all of it is read once and every cell is then a couple of multiplies.
+    this.view = camera;
+    this.viewX = camera.target.x;
+    this.viewZ = camera.target.z;
+    this.viewUpX = camera.screenUpX;
+    this.viewUpZ = camera.screenUpZ;
     camera.groundBounds(this.margin, this.bounds);
     this.scratchCells.length = 0;
     this.desired.clear();
@@ -237,10 +257,13 @@ export class WorldStreamer {
       if (!this.desired.has(id)) {
         this.pools.removeCell(id);
         this.loaded.delete(id);
-        this.plotsDirty = true;
+        // Only if it actually held parcels. Unloading is the common event while walking and a
+        // rebuild welds every batch in the frame from scratch, so marking dirty for a cell of open
+        // fields paid the whole cost of the built environment to remove nothing from it.
+        if (this.index.plotsOf(entry.cell).length > 0) this.plotsDirty = true;
       } else {
-        const treeTier = this.tierFor(entry.cell, focusX, focusZ, this.treeDistances, entry.treeTier);
-        const coverTier = this.tierFor(entry.cell, focusX, focusZ, this.coverLod, entry.coverTier);
+        const treeTier = this.tierFor(entry.cell, this.treeSpans, entry.treeTier);
+        const coverTier = this.tierFor(entry.cell, this.coverLod, entry.coverTier);
         if (treeTier !== entry.treeTier || coverTier !== entry.coverTier) {
           entry.treeTier = treeTier;
           entry.coverTier = coverTier;
@@ -254,16 +277,14 @@ export class WorldStreamer {
     for (const [id, cell] of this.desired) {
       if (!this.loaded.has(id)) this.queue.push(cell);
     }
-    // Nearest first, so the ground under the player is never the thing still missing.
-    this.queue.sort(
-      (a, b) =>
-        this.index.grid.distanceTo(a, focusX, focusZ) - this.index.grid.distanceTo(b, focusX, focusZ)
-    );
+    // Bottom of the frame first, so the ground the camera is closest to is never the thing still
+    // missing. That is the near edge of the view, which is where the player is, not the target.
+    this.queue.sort((a, b) => this.viewDepth(a) - this.viewDepth(b));
 
     let built = 0;
     for (const cell of this.queue) {
       if (built >= budget) break;
-      this.load(cell, focusX, focusZ);
+      this.load(cell);
       built++;
     }
     this.stats.builtThisFrame = built;
@@ -279,29 +300,42 @@ export class WorldStreamer {
    * Used once before the first presented frame, and by the capture harness: a budgeted stream that
    * has not finished yet is exactly what a half-populated screenshot looks like.
    */
-  prime(camera: IsoCamera, focusX: number, focusZ: number): void {
+  prime(camera: IsoCamera): void {
     for (let guard = 0; guard < 64; guard++) {
-      this.update(camera, focusX, focusZ, Number.POSITIVE_INFINITY);
+      this.update(camera, Number.POSITIVE_INFINITY);
       if (this.stats.pending === 0) break;
     }
   }
 
+  /**
+   * How far up the screen a cell's nearest edge lies, in metres of ground from the camera target.
+   *
+   * Negative is toward the bottom of the frame, which is the ground nearest the camera; positive is
+   * toward the horizon. Used directly for build ORDER, and turned into a scale by `viewSpanOf`.
+   */
+  private viewDepth(cell: Cell): number {
+    return this.index.grid.depthTo(cell, this.viewX, this.viewZ, this.viewUpX, this.viewUpZ);
+  }
+
+  /**
+   * Metres of ground the frame's short axis covers where this cell's nearest edge is.
+   *
+   * The one number every level of detail in the world is keyed off, and the only one that means the
+   * same thing at all three cameras. Small is close and detailed; large is far and coarse.
+   */
+  private viewSpanOf(cell: Cell): number {
+    return this.view ? this.view.groundSpanAt(this.viewDepth(cell)) : Infinity;
+  }
 
   /**
    * Which rung a cell sits on, with hysteresis.
    *
-   * Without it a cell straddling a boundary flips tier every few frames as the follow point jitters,
-   * and each flip rebuilds its instance buffers. The band is applied against the tier the cell is
+   * Without it a cell straddling a boundary flips tier every few frames as the camera drifts, and
+   * each flip rebuilds its instance buffers. The band is applied against the tier the cell is
    * already on, so it only ever resists change.
    */
-  private tierFor(
-    cell: Cell,
-    x: number,
-    z: number,
-    boundaries: readonly number[],
-    current: number
-  ): number {
-    const d = this.index.grid.distanceTo(cell, x, z);
+  private tierFor(cell: Cell, boundaries: readonly number[], current: number): number {
+    const d = this.viewSpanOf(cell);
     for (let i = 0; i < boundaries.length; i++) {
       const edge = boundaries[i]!;
       // Moving to a coarser tier needs the cell to be clear of the boundary; moving to a finer one
@@ -312,11 +346,11 @@ export class WorldStreamer {
     return boundaries.length - 1;
   }
 
-  private load(cell: Cell, focusX: number, focusZ: number): void {
+  private load(cell: Cell): void {
     const entry: LoadedCell = {
       cell,
-      treeTier: this.tierFor(cell, focusX, focusZ, this.treeDistances, 0),
-      coverTier: this.tierFor(cell, focusX, focusZ, this.coverLod, 0),
+      treeTier: this.tierFor(cell, this.treeSpans, 0),
+      coverTier: this.tierFor(cell, this.coverLod, 0),
       trees: 0,
       shrubs: 0,
       banks: 0,
@@ -337,14 +371,17 @@ export class WorldStreamer {
   private emitPlants(entry: LoadedCell): void {
     const { cell, treeTier } = entry;
     const plants = this.index.plantsOf(cell);
-    const distance = this.index.grid.distanceTo(cell, this.lastFocusX, this.lastFocusZ);
-    const shrubs = distance <= this.shrubMaxDistance ? plants.shrubs : [];
+    const shrubs = this.viewSpanOf(cell) <= this.shrubMaxSpan ? plants.shrubs : [];
 
     this.emitGroup(cell.id, plants.trees, `t${treeTier}`, (slot) =>
       this.vegetation.tree(slot, treeTier)
     );
-    this.emitGroup(cell.id, shrubs, 's', (slot) => this.vegetation.shrub(slot));
-    this.emitGroup(cell.id, plants.banks, 'b', (slot) => this.vegetation.bank(slot));
+    this.emitGroup(cell.id, shrubs, `s${treeTier}`, (slot) =>
+      this.vegetation.shrub(slot, treeTier)
+    );
+    this.emitGroup(cell.id, plants.banks, `b${treeTier}`, (slot) =>
+      this.vegetation.bank(slot, treeTier)
+    );
 
     entry.trees = plants.trees.length;
     entry.shrubs = shrubs.length;
@@ -546,8 +583,12 @@ export class WorldStreamer {
 
   // --- bookkeeping ----------------------------------------------------------
 
-  private lastFocusX = 0;
-  private lastFocusZ = 0;
+  /** The camera this frame's detail is measured against, and its ground frame. */
+  private view: IsoCamera | null = null;
+  private viewX = 0;
+  private viewZ = 0;
+  private viewUpX = 0;
+  private viewUpZ = -1;
 
   private flush(): void {
     const { triangles, draws } = this.pools.flush(this.group);
@@ -571,6 +612,13 @@ export class WorldStreamer {
     this.stats.cover = cover;
   }
 
+  /**
+   * Free everything this streamer owns.
+   *
+   * `materials.slot` is the whole set: `materials.channel` is a table of ALIASES into it, so walking
+   * both would double-dispose. The camera reference is dropped as well, because a disposed streamer
+   * holding the live camera keeps the whole renderer graph reachable.
+   */
   dispose(): void {
     this.pools.dispose(this.group);
     for (const mesh of this.plotMeshes) this.group.remove(mesh);
@@ -585,6 +633,10 @@ export class WorldStreamer {
     this.vegetation.dispose();
     this.cover.dispose();
     this.loaded.clear();
+    this.desired.clear();
+    this.queue.length = 0;
+    this.scratchCells.length = 0;
+    this.view = null;
     this.group.removeFromParent();
   }
 }

@@ -1,5 +1,5 @@
 import type { TreeArchetype, VegetationKit } from '../biomes/BiomeKit.js';
-import { makeRng, mix, type Rng } from '../engine/rng.js';
+import { hash32, makeRng, mix, type Rng } from '../engine/rng.js';
 import {
   barkTrunk,
   blade,
@@ -70,16 +70,11 @@ export interface TreeOptions {
   /** Carry `palette.foliageAccent` blossom. Ignored by archetypes that cannot flower. */
   blossom?: boolean;
   /**
-   * `distant` swaps in a cheaper stand-in that keeps the archetype's mass, plan shape and hue and
-   * throws away the parts that are genuinely sub-pixel.
-   */
-  detail?: 'full' | 'distant';
-  /**
    * Emit the surface roots, grass tufts and half-sunk stones that ring the trunk.
    *
    * On by default because every tree in the reference carries them and they are what stops a trunk
-   * looking pushed into the turf; the world turns them off past the LOD swap, where a 0.4 m tuft is
-   * a third of a pixel.
+   * looking pushed into the turf; the world turns them off on every rung past the finest, where a
+   * 0.4 m tuft is a fraction of a pixel.
    */
   base?: boolean;
   /**
@@ -89,12 +84,30 @@ export interface TreeOptions {
    * and the dark interior shell starts showing through as holes rather than as shade.
    */
   leafDensity?: number;
+  /**
+   * Multiplier on the SIZE of every leaf spray, with the count divided by its square.
+   *
+   * This is the distance ladder, and it is deliberately not `leafDensity`. Coverage — how much of
+   * the crown's surface has foliage over it — is what decides whether a canopy reads as a leafy mass
+   * or as a dark faceted lump, and dropping `leafDensity` destroys exactly that. Spray SIZE is free:
+   * the count needed to cover a shell goes as 1/size^2, so doubling the size quarters the triangles
+   * at constant coverage, constant silhouette, constant hue and constant light gradient. The only
+   * thing that changes is how fine the leaf clusters are, which is the one property that genuinely
+   * stops being resolvable as a tree recedes.
+   *
+   * Measured at the GPS camera: a spray is 0.17 m and the frame runs at about 11 px/m, so an
+   * authored spray is 1.9 px. At 2 it is 3.7 px and at 3 it is 5.6 px — still several clusters
+   * across a crown that is only ever 80-110 px wide in that view.
+   */
+  leafScale?: number;
 }
 
 export interface UnderstoryOptions {
   kind: VegetationKit['understory'];
   seed?: number;
   scale?: number;
+  /** Leaf-spray size multiplier; see `TreeOptions.leafScale`. */
+  leafScale?: number;
 }
 
 /**
@@ -129,6 +142,22 @@ export const DEFAULT_HEIGHT: Record<TreeArchetype, number> = {
 function jitterUV(skin: FaceOptions, rng: Rng): FaceOptions {
   const off = skin.uvOffset ?? [0, 0];
   return { ...skin, uvOffset: [off[0] + rng.range(0, 8), off[1] + rng.range(0, 8)] };
+}
+
+/**
+ * A child stream seeded from exactly ONE draw of `rng`.
+ *
+ * This is what makes the distance ladder invisible. The rungs differ only in how many leaf sprays
+ * they emit, and every spray used to draw from the tree's single sequential stream — so a coarser
+ * rung consumed fewer numbers, and every structural decision AFTER the first canopy clump (where
+ * the next clump sits, how big it is, which way it faces) came out different. The tree changed
+ * shape at the swap, which is the one thing a level of detail must never do.
+ *
+ * Foliage is therefore emitted from a branch: the parent advances by one draw per clump whatever
+ * the rung, so armature, clump layout and silhouette are bit-identical across the whole ladder.
+ */
+function branchRng(rng: Rng): Rng {
+  return makeRng(hash32(Math.floor(rng.next() * 0x7fffffff) | 0));
 }
 
 
@@ -275,7 +304,9 @@ function leafClump(
     sag?: number;
   }
 ): void {
-  const rng = o.rng;
+  // A branch, not the caller's stream: see `branchRng`. Everything inside this function is foliage,
+  // and how much of it there is depends on the rung.
+  const rng = branchRng(o.rng);
   const lvl = o.level;
   const ry = r * (o.ryK ?? 0.86);
   const core = o.core ?? 0.84;
@@ -430,7 +461,7 @@ function treeBase(ctx: KitContext, h: number, trunkR: number, rng: Rng): void {
  * only slightly down, so the sunlit side of the cone is genuinely lit while the dark shell behind
  * keeps the archetype the darkest large mass in the frame.
  */
-function conifer(ctx: KitContext, h: number, rng: Rng, density: number): void {
+function conifer(ctx: KitContext, h: number, rng: Rng, density: number, leafK: number): void {
   const f = ctx.channel.foliage;
   const t = ctx.channel.timber;
   barkTrunk(t, h * 0.05, h * 0.42, {
@@ -466,12 +497,16 @@ function conifer(ctx: KitContext, h: number, rng: Rng, density: number): void {
     });
     f.pop();
     // The needle sprays. Scattered over the tier's cone, drooping outward and down.
+    const spray = branchRng(rng);
     coneShell(f, {
       radius: r * 1.06,
       height: th,
       y,
-      count: Math.max(12, Math.round(96 * r * r * density)),
-      size: h * 0.058,
+      count: Math.max(
+        Math.ceil(12 / (leafK * leafK)),
+        Math.round((96 * r * r * density) / (leafK * leafK))
+      ),
+      size: h * 0.058 * leafK,
       sizeVar: 0.34,
       droop: 0.42,
       from: 0,
@@ -480,16 +515,16 @@ function conifer(ctx: KitContext, h: number, rng: Rng, density: number): void {
       aoBottom: 0.7 * (0.86 + k * 0.28),
       aoJitter: 0.28,
       outVar: 0.16,
-      rand: () => rng.next(),
+      rand: () => spray.next(),
       emit: (b, rad, ao) =>
         needleSpray(b, rad * 1.9, rad * 0.9, {
-          ...jitterUV(NEEDLE, rng),
+          ...jitterUV(NEEDLE, spray),
           ribs: 4,
           taper: 0.12,
           sweep: 0.6,
           aoBase: ao * 0.78,
           aoTip: ao,
-          rand: () => rng.next(),
+          rand: () => spray.next(),
         }),
     });
   }
@@ -498,8 +533,8 @@ function conifer(ctx: KitContext, h: number, rng: Rng, density: number): void {
     radius: maxR * 0.2,
     height: h * 0.14,
     y: top - h * 0.05,
-    count: Math.max(6, Math.round(34 * density)),
-    size: h * 0.042,
+    count: Math.max(Math.ceil(6 / (leafK * leafK)), Math.round((34 * density) / (leafK * leafK))),
+    size: h * 0.042 * leafK,
     droop: 0.3,
     aoTop: 2.35,
     aoBottom: 0.85,
@@ -523,7 +558,14 @@ function conifer(ctx: KitContext, h: number, rng: Rng, density: number): void {
  * taller stem, because with the crown at shade-tree height the whole thing was a low pink mass on
  * the turf with no trunk visible at all.
  */
-function broadleaf(ctx: KitContext, h: number, rng: Rng, blossom: boolean, density: number): void {
+function broadleaf(
+  ctx: KitContext,
+  h: number,
+  rng: Rng,
+  blossom: boolean,
+  density: number,
+  leafK: number
+): void {
   const t = ctx.channel.timber;
   const f = ctx.channel.foliage;
   const skin = blossom ? ACCENT : LEAF;
@@ -553,7 +595,7 @@ function broadleaf(ctx: KitContext, h: number, rng: Rng, blossom: boolean, densi
     rng,
   });
   const r = h * 0.46;
-  const size = h * 0.019;
+  const size = h * 0.019 * leafK;
   // A clump on the end of every secondary, sized by how far out it reached, plus a crown boss over
   // the fork so the middle of the tree is not a hole.
   for (const tip of tips) {
@@ -664,7 +706,7 @@ function palm(ctx: KitContext, h: number, rng: Rng): void {
  * measured 20 px wide at the game camera — narrower than the kerb strip beside it, in the darkest
  * value in the palette. It read as a crack, not as a tree.
  */
-function cypress(ctx: KitContext, h: number, rng: Rng, density: number): void {
+function cypress(ctx: KitContext, h: number, rng: Rng, density: number, leafK: number): void {
   const f = ctx.channel.foliage;
   barkTrunk(ctx.channel.timber, h * 0.04, h * 0.2, {
     ...BARK,
@@ -697,12 +739,13 @@ function cypress(ctx: KitContext, h: number, rng: Rng, density: number): void {
   });
   // Sprays laid ALONG the flank and swept upward, which is the cypress's texture: a column of small
   // vertical flames rather than the horizontal shelves of a spruce.
+  const spray = branchRng(rng);
   leafShell(f, {
     rx: r,
     ry,
     rz: r,
-    count: Math.max(60, Math.round(1500 * density)),
-    size: h * 0.056,
+    count: Math.max(Math.ceil(60 / (leafK * leafK)), Math.round((1500 * density) / (leafK * leafK))),
+    size: h * 0.056 * leafK,
     sizeVar: 0.34,
     // 0.34, not 0.78. On a column the surface normal is horizontal, so a heavy up-bias lays every
     // spray flat like a stack of plates inside the silhouette and none of them shows.
@@ -714,16 +757,16 @@ function cypress(ctx: KitContext, h: number, rng: Rng, density: number): void {
     aoTop: 2.7,
     aoBottom: 0.5,
     aoJitter: 0.3,
-    rand: () => rng.next(),
+    rand: () => spray.next(),
     emit: (b, rad, ao) =>
       needleSpray(b, rad * 1.5, rad * 0.95, {
-        ...jitterUV(NEEDLE, rng),
+        ...jitterUV(NEEDLE, spray),
         ribs: 5,
         taper: 0.15,
         sweep: 0.72,
         aoBase: ao * 0.7,
         aoTip: ao,
-        rand: () => rng.next(),
+        rand: () => spray.next(),
       }),
   });
   f.pop();
@@ -785,7 +828,14 @@ function bare(ctx: KitContext, h: number, rng: Rng): void {
  * from the axis right out to the rim. Ten clumps all at 0.36-0.9 of the radius is a torus, and from
  * above it read as one lumpy doughnut.
  */
-function olive(ctx: KitContext, h: number, rng: Rng, blossom: boolean, density: number): void {
+function olive(
+  ctx: KitContext,
+  h: number,
+  rng: Rng,
+  blossom: boolean,
+  density: number,
+  leafK: number
+): void {
   const t = ctx.channel.timber;
   const f = ctx.channel.foliage;
   const trunkR = h * 0.1;
@@ -812,7 +862,7 @@ function olive(ctx: KitContext, h: number, rng: Rng, blossom: boolean, density: 
     rng,
   });
   const r = h * 0.48;
-  const size = h * 0.019;
+  const size = h * 0.019 * leafK;
   const spots: readonly (readonly [number, number, number])[] = [
     [0.0, 0.12, 0.78],
     [0.13, 0.55, 0.7],
@@ -861,7 +911,7 @@ function olive(ctx: KitContext, h: number, rng: Rng, blossom: boolean, density: 
  * it, hung vertically, is exactly a withy. The bosses survive only as a small cap over the fork, so
  * the crown has a lit top rather than ending in a set of parted hair.
  */
-function willow(ctx: KitContext, h: number, rng: Rng, density: number): void {
+function willow(ctx: KitContext, h: number, rng: Rng, density: number, leafK: number): void {
   const t = ctx.channel.timber;
   const f = ctx.channel.foliage;
   const trunkR = h * 0.08;
@@ -887,7 +937,7 @@ function willow(ctx: KitContext, h: number, rng: Rng, density: number): void {
     rng,
   });
   const r = h * 0.52;
-  const size = h * 0.018;
+  const size = h * 0.018 * leafK;
   /**
    * Nine bosses over a shallow dome, each with a curtain of withies hanging off ITS OWN rim.
    *
@@ -927,7 +977,16 @@ function willow(ctx: KitContext, h: number, rng: Rng, density: number): void {
    * a needs phi = -a; a quarter turn on top of that put every strand edge-on to the direction it
    * was supposed to fill and the curtain came back as a ring of vertical planks.
    */
-  const perBoss = Math.max(14, Math.round(62 * density));
+  /**
+   * The curtain thins and coarsens together, so its coverage of the plan silhouette holds.
+   *
+   * A withy is a strip, not a disc, so its coverage goes as count x width rather than as count x
+   * size squared: the count comes down by `k` and the width goes up by `k`, and the rib count — the
+   * only other thing a strand costs — comes down by `k` as well. The pair is the same quadratic
+   * saving the leaf sprays get, at the same constant coverage.
+   */
+  const perBoss = Math.max(Math.ceil(14 / leafK), Math.round((62 * density) / leafK));
+  const ribs = Math.max(4, Math.round(10 / leafK));
   for (const [bx, by, bz, br] of bosses) {
     for (let j = 0; j < perBoss; j++) {
       const ra = (j / perBoss) * Math.PI * 2 + rng.range(-0.24, 0.24);
@@ -955,9 +1014,9 @@ function willow(ctx: KitContext, h: number, rng: Rng, density: number): void {
       // Width is 3 % of the tree's height, not 40 % of the strand's length. At the latter a withy
       // was a metre across and the archetype came back wearing eighty giant fern fronds; measured
       // off the reference, a strand there is about 2 % of the tree's height wide.
-      needleSpray(f, len, h * rng.range(0.026, 0.042), {
+      needleSpray(f, len, h * rng.range(0.026, 0.042) * leafK, {
         ...jitterUV(WILLOW, rng),
-        ribs: 10,
+        ribs,
         taper: 0.34,
         sweep: 0.7,
         aoBase: 2.3 - out * 0.6,
@@ -969,102 +1028,18 @@ function willow(ctx: KitContext, h: number, rng: Rng, density: number): void {
   }
 }
 
-/** Which of the foliage materials an archetype's canopy belongs to. */
-function skinFor(archetype: TreeArchetype, blossom: boolean): FaceOptions {
-  if (blossom) return ACCENT;
-  if (archetype === 'conifer' || archetype === 'cypress') return NEEDLE;
-  if (archetype === 'willow') return WILLOW;
-  return LEAF;
-}
-
-/**
- * The far-field stand-in: the archetype's plan shape, mass and hue at a fraction of full cost.
- *
- * Past the swap distance a canopy is under 35 px, so limbs, withies, root flare and base tufts are
- * genuinely sub-pixel. Lobe COUNT and the lit-crown-to-dark-underside gradient are not — dropping
- * those is what made the middle distance read as gravel — and neither is the ragged edge, so the
- * stand-in keeps a leaf shell at a quarter of the near tree's cluster count.
- */
-function distantTree(ctx: KitContext, archetype: TreeArchetype, h: number, rng: Rng): void {
-  const f = ctx.channel.foliage;
-  const t = ctx.channel.timber;
-  const skin = skinFor(archetype, false);
-  if (archetype === 'conifer' || archetype === 'cypress' || archetype === 'bare') {
-    const maxR = h * (archetype === 'cypress' ? 0.17 : 0.23);
-    barkTrunk(t, h * 0.05, h * 0.24, { ...BARK, segments: 6, rings: 1, taper: 0.6 });
-    for (let i = 0; i < 4; i++) {
-      const k = i / 3;
-      const y = h * (0.14 + k * 0.54);
-      const r = maxR * (1 - k * 0.74);
-      const th = h * (0.4 - k * 0.09);
-      mound(f, r * 0.85, th, 12, {
-        ...skin,
-        y,
-        bow: 0.28,
-        wobble: 0.16,
-        rand: () => rng.next(),
-        aoTop: 0.5 + k * 0.24,
-        aoBottom: 0.3 + k * 0.16,
-      });
-      coneShell(f, {
-        radius: r,
-        height: th,
-        y,
-        count: Math.max(6, Math.round(11 * r * r)),
-        size: h * 0.06,
-        droop: 0.4,
-        aoTop: 1.12,
-        aoBottom: 0.6,
-        rand: () => rng.next(),
-        emit: (b, rad, ao) =>
-          needleSpray(b, rad * 1.9, rad * 0.9, {
-            ...jitterUV(skin, rng),
-            ribs: 3,
-            aoBase: ao * 0.62,
-            aoTip: ao,
-            rand: () => rng.next(),
-          }),
-      });
-    }
-    return;
-  }
-  const r = h * 0.45;
-  barkTrunk(t, h * 0.055, h * 0.46, { ...BARK, segments: 6, rings: 1, taper: 0.6 });
-  f.push();
-  f.translate(0, h * 0.7, 0);
-  leafClump(f, r * 0.86, {
-    skin,
-    level: 1.06,
-    rng,
-    cover: 0.42,
-    size: h * 0.078,
-    points: 5,
-    ryK: 0.8,
-    upBias: 0.5,
-  });
-  f.pop();
-  for (let i = 0; i < 4; i++) {
-    const a = (i / 4) * Math.PI * 2 + rng.range(-0.3, 0.3);
-    const d = r * rng.range(0.44, 0.66);
-    f.push();
-    f.translate(Math.cos(a) * d, h * rng.range(0.54, 0.64), Math.sin(a) * d);
-    leafClump(f, r * rng.range(0.42, 0.54), {
-      skin,
-      level: 0.8,
-      rng,
-      cover: 0.42,
-      size: h * 0.078,
-      points: 5,
-      ryK: 0.76,
-      upBias: 0.45,
-    });
-    f.pop();
-  }
-}
-
 /**
  * Builds one tree at the current transform of every channel, trunk base at y = 0.
  * Trunks and roots go into `timber`, canopies and base tufts into `foliage`, stones into `stone`.
+ *
+ * There is ONE tree builder, and every rung of the distance ladder goes through it. There used to be
+ * a second — `distantTree`, a four-lobe blob on a stick — and it was the wrong idea twice over. It
+ * was wrong in principle, because a stand-in built by different code diverges from the tree it
+ * stands in for in silhouette, in armature and in hue, so the swap is visible however far out it is
+ * put. And it was wrong in practice: shipped, it read as a dark faceted lump, and it was the first
+ * thing anyone looking at the frame objected to. What recedes with distance is the size of the
+ * smallest resolvable feature, not the shape or the colour of the tree, so `leafScale` is the only
+ * thing the ladder is allowed to move.
  */
 export function buildTree(ctx: KitContext, options: TreeOptions): void {
   const blossom = options.blossom ?? false;
@@ -1075,29 +1050,32 @@ export function buildTree(ctx: KitContext, options: TreeOptions): void {
     options.height ??
     (blossom && options.archetype === 'broadleaf' ? 5 : DEFAULT_HEIGHT[options.archetype]);
   const rng = makeRng(mix(options.seed ?? 0, 0x7bee));
-  if (options.detail === 'distant') return distantTree(ctx, options.archetype, h, rng);
   const d = options.leafDensity ?? 1;
+  // Clamped AND checked finite. A NaN here multiplies into every vertex the crown emits, and a NaN
+  // vertex NaNs the instanced bounding sphere, which three then silently frustum-culls — the tree
+  // does not come out wrong, it disappears, with no error anywhere.
+  const leafK = Number.isFinite(options.leafScale) ? Math.max(1, options.leafScale!) : 1;
   switch (options.archetype) {
     case 'conifer':
-      conifer(ctx, h, rng, d);
+      conifer(ctx, h, rng, d, leafK);
       break;
     case 'broadleaf':
-      broadleaf(ctx, h, rng, blossom, d);
+      broadleaf(ctx, h, rng, blossom, d, leafK);
       break;
     case 'palm':
       palm(ctx, h, rng);
       break;
     case 'cypress':
-      cypress(ctx, h, rng, d);
+      cypress(ctx, h, rng, d, leafK);
       break;
     case 'bare':
       bare(ctx, h, rng);
       break;
     case 'olive':
-      olive(ctx, h, rng, blossom, d);
+      olive(ctx, h, rng, blossom, d, leafK);
       break;
     case 'willow':
-      willow(ctx, h, rng, d);
+      willow(ctx, h, rng, d, leafK);
       break;
   }
   if (options.base ?? true) {
@@ -1120,6 +1098,7 @@ export function buildUnderstory(ctx: KitContext, options: UnderstoryOptions): vo
   if (kind === 'none') return;
   const rng = makeRng(mix(options.seed ?? 0, 0x1f0d));
   const s = options.scale ?? 1;
+  const leafK = Number.isFinite(options.leafScale) ? Math.max(1, options.leafScale!) : 1;
   const f = ctx.channel.foliage;
 
   if (kind === 'bush') {
@@ -1138,7 +1117,7 @@ export function buildUnderstory(ctx: KitContext, options: UnderstoryOptions): vo
         level: 0.9 + (i % 2) * 0.28,
         rng,
         cover: 1.7,
-        size: 0.075 * s,
+        size: 0.075 * s * leafK,
         points: 5,
         ryK: 0.86,
         upBias: 0.5,

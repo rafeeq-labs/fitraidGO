@@ -85,6 +85,48 @@ export class IsoCamera {
     return this.scratch.set(-Math.sin(a), 0, -Math.cos(a));
   }
 
+  /**
+   * X component of the ground-plane "up the screen" axis. Paired with `screenUpZ`.
+   *
+   * These exist alongside `screenUpOnGround` because that getter hands back the shared scratch
+   * vector, which the next call to `update` overwrites — fine for reading two components on the
+   * spot, a trap for anything that wants to hold on to it. The axis is a property of the preset's
+   * azimuth alone and nothing else, which is exactly why the world can key detail off it.
+   */
+  get screenUpX(): number {
+    return -Math.sin(MathUtils.degToRad(this.preset.azimuth));
+  }
+
+  /** Z component of the ground-plane "up the screen" axis. See `screenUpX`. */
+  get screenUpZ(): number {
+    return -Math.cos(MathUtils.degToRad(this.preset.azimuth));
+  }
+
+  /**
+   * Metres of ground the frame's short axis covers, `depth` metres up the screen from the target.
+   *
+   * This is the scale bar the world's level of detail is read off, and it is exact rather than an
+   * approximation: the eye is `focusDistance` from the target along a ray at the preset's elevation,
+   * so a ground point `depth` further up the screen is `depth * cos(elevation)` further from the eye,
+   * and a perspective camera's span grows in proportion to distance. Checked against unprojected
+   * corners on all three presets and it agrees to two decimal places.
+   *
+   * `viewSpan` — the span at the target — is the number every camera in this project is authored
+   * against, so expressing detail in it needs no conversion and, unlike a pixel count, does not
+   * change what the world looks like when the same view is rendered on a denser screen.
+   *
+   * The measurement that made this the unit: at the GPS camera the span runs 73 m at the bottom of
+   * the frame to 94 m at the top. That is a 28 % change in apparent size across 188 m of ground —
+   * the projection is very nearly orthographic — so the GPS view has no far field to economise in,
+   * and any level of detail that treats the top of that frame as "distant" is visible. The street
+   * camera runs 42 m to 73 m and the plot camera 21 m to 35 m, so the same table places all three.
+   */
+  groundSpanAt(depth: number): number {
+    const focus = this.focusDistance;
+    const along = focus + depth * Math.cos(MathUtils.degToRad(this.preset.elevation));
+    return (this.preset.viewSpan * Math.max(along, focus * 0.05)) / focus;
+  }
+
   setAspect(aspect: number): void {
     this.aspect = aspect;
     this.camera.aspect = aspect;

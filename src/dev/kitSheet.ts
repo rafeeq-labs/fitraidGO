@@ -155,7 +155,7 @@ function emit(ctx: KitContext, label: string, x: number, z: number, yaw: number)
        * A canopy is not an opaque solid, and casting it as one is why every tree on this sheet sat
        * in a hard bean-shaped puddle with its own trunk inside it — measured against the reference,
        * whose trees stand in broken light with a plainly lit warm bole. The mask is the same one
-       * `buildWorldVegetation` uses, so the sheet and the game agree about what a tree's shade
+       * `createVegetationLibrary` uses, so the sheet and the game agree about what a tree's shade
        * looks like.
        */
       if (CANOPY_SLOTS.has(slot)) {

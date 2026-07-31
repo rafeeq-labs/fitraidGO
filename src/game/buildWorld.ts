@@ -9,7 +9,7 @@ import type { WorldTile } from '../map/types.js';
 import { buildTileSurfaces, type TileSurfaceResult } from '../world/TileSurfaces.js';
 import { WorldIndex } from '../world/WorldIndex.js';
 import { WorldStreamer } from '../world/WorldStreamer.js';
-import { DEFAULT_TREE_LOD, NEAR_LEAF_DENSITY, type TreeLodTier } from '../world/WorldVegetation.js';
+import { DEFAULT_TREE_LOD, type TreeLodTier } from '../world/WorldVegetation.js';
 import { FakePlayers } from './FakePlayers.js';
 import { FogOfWar } from './FogOfWar.js';
 import { Player } from './Player.js';
@@ -55,16 +55,17 @@ export interface BuildWorldOptions {
   /** Cells built per frame while walking. */
   cellBudget?: number;
   /**
-   * Metres from the player out to which trees are built at full detail.
+   * Ground span, in metres across the frame's short axis, out to which trees carry authored leaf
+   * detail. See `TreeLodTier.maxSpan`; the default is the first rung of `DEFAULT_TREE_LOD`.
    *
-   * The default reproduces exactly where the one-shot builder's `detail: 'distant'` swap fell, so
-   * the same trees get the same treatment they always did; the difference is that it now follows
-   * the player instead of being decided once at load. Lowering it trades canopy detail in the
-   * middle of the frame for triangles.
+   * Not a radius from anything, and in particular not from the player. Smaller means the camera has
+   * to be closer before the finest rung is used.
    */
-  treeDetailRadius?: number;
-  /** Metres from the player beyond which shrubs are not planted. */
-  shrubRadius?: number;
+  treeDetailSpan?: number;
+  /** Leaf-spray size multiplier for the coarse rung. Dev knob for sweeping the ladder. */
+  treeCoarseScale?: number;
+  /** Ground span beyond which shrubs are not planted. */
+  shrubSpan?: number;
 }
 
 export interface World {
@@ -235,11 +236,22 @@ export function buildWorld(options: BuildWorldOptions): World {
     coverDensity: options.grassDensity ?? 0.92,
   });
   timings.index = lap();
-  const detailRadius = options.treeDetailRadius ?? DEFAULT_TREE_LOD[0]!.maxDistance;
-  const treeLod: TreeLodTier[] = [
-    { maxDistance: detailRadius, leafDensity: NEAR_LEAF_DENSITY, base: true },
-    { maxDistance: Infinity, distant: true, base: false },
-  ];
+  /**
+   * The ladder, with only its first boundary exposed.
+   *
+   * `DEFAULT_TREE_LOD` is the shipped table and the rungs past the first are not parameterised,
+   * because the thing worth sweeping while tuning is where authored detail stops — everything above
+   * that is the same tree at a coarser leaf cluster and moving those boundaries changes triangles
+   * without changing the picture.
+   */
+  const last = DEFAULT_TREE_LOD.length - 1;
+  const treeLod: TreeLodTier[] = DEFAULT_TREE_LOD.map((rung, i) => ({
+    ...rung,
+    ...(i === 0 && options.treeDetailSpan !== undefined ? { maxSpan: options.treeDetailSpan } : {}),
+    ...(i === last && options.treeCoarseScale !== undefined
+      ? { leafScale: options.treeCoarseScale }
+      : {}),
+  }));
   const streamer = new WorldStreamer({
     index,
     kit,
@@ -248,12 +260,12 @@ export function buildWorld(options: BuildWorldOptions): World {
     margin: options.streamMargin,
     budget: options.cellBudget,
     treeLod,
-    shrubMaxDistance: options.shrubRadius,
+    shrubMaxSpan: options.shrubSpan,
   });
   scene.add(streamer.group);
   // Nothing is presented until the frame is complete: a budgeted stream that has not caught up yet
   // is exactly what a half-populated screenshot looks like.
-  streamer.prime(renderer.isoCamera, focus.x, focus.z);
+  streamer.prime(renderer.isoCamera);
   timings.prime = lap();
   timings.total = performance.now() - t0;
   console.info(
@@ -294,7 +306,7 @@ export function buildWorld(options: BuildWorldOptions): World {
 
         // The world follows the camera, not the other way round. Budgeted, so that walking into a
         // new block never costs a frame.
-        streamer.update(renderer.isoCamera, pose.x, pose.z);
+        streamer.update(renderer.isoCamera);
 
         ring.follow(focus);
         ring.update(t);
@@ -317,6 +329,20 @@ export function buildWorld(options: BuildWorldOptions): World {
       });
     },
 
+    /**
+     * Give back everything this build took, in the order that makes each step legal.
+     *
+     * The frame loop stops first, because everything below is pulled out from under it. Then the
+     * scene contents, then the lights (whose shadow map is the largest single allocation here), then
+     * the texture cache — which must be last, because the materials that reference those textures
+     * are disposed by the streamer and by the surface loop above, and disposing a texture that a
+     * live material still points at is how a rebuilt world comes back with black roofs.
+     *
+     * Every object that owns GPU memory and exposes a `dispose` is called. This used to remove the
+     * player, the route, the ring, the companions and the fog-of-war target from the scene and stop
+     * there, which frees the JS objects and leaks every buffer, material and render target they
+     * hold — a leak that only shows up in the one case the whole function exists for, rebuilding.
+     */
     dispose(): void {
       renderer.stop();
       streamer.dispose();
@@ -328,7 +354,14 @@ export function buildWorld(options: BuildWorldOptions): World {
         else material.dispose();
       }
       scene.remove(player.object, ring.mesh, route.mesh, others.group);
+      player.dispose();
+      ring.dispose();
+      route.dispose();
+      others.dispose();
       setFogOfWar(null);
+      fog.dispose();
+      lighting.dispose();
+      textures.dispose();
       renderer.dispose();
     },
   };

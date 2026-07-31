@@ -2,11 +2,8 @@ import {
   BufferGeometry,
   Color,
   DataTexture,
-  InstancedMesh,
   Material,
-  Matrix4,
   MeshDepthMaterial,
-  Object3D,
   RGBADepthPacking,
   RedFormat,
   RepeatWrapping,
@@ -16,9 +13,8 @@ import type { BiomeKit, TreeArchetype } from '../biomes/BiomeKit.js';
 import { RampMaterial } from '../engine/RampMaterial.js';
 import type { Rng } from '../engine/rng.js';
 import type { TextureFactory } from '../engine/TextureGen.js';
-import { makeNoise2D } from '../engine/noise.js';
 import { makeRng, mix } from '../engine/rng.js';
-import type { Polyline, WorldTile } from '../map/types.js';
+import type { Polyline } from '../map/types.js';
 import { createKitContext } from './KitPieces.js';
 import { CHANNEL_SLOTS, KIT_CHANNELS } from './KitTypes.js';
 import { splitTags } from './PlotBuilder.js';
@@ -33,26 +29,15 @@ import { DEFAULT_HEIGHT, buildTree, buildUnderstory } from './Vegetation.js';
  * of a park, and the untidy margins. Scattering them uniformly across open ground instead is what
  * makes a generated town read as wilderness with roads through it.
  *
- * Twenty full-detail prototype geometries, ten distant stand-ins, four bank willows and five shrubs
- * are built once and instanced with per-instance scale, rotation and tint, so a street of forty
- * trees costs a handful of draws and no two look alike. Prototype COUNT is the cheapest variety
- * there is — each one is a single vertex buffer, however many thousand instances it carries — and it
- * is the only thing that fixes a street reading as one tree stamped repeatedly.
+ * Twenty tree prototypes, four bank willows and five shrubs — each at every rung of the distance
+ * ladder — are built on demand and instanced with per-instance scale, rotation and tint, so a street
+ * of forty trees costs a handful of draws and no two look alike. Prototype COUNT is the cheapest
+ * variety there is — each one is a single vertex buffer, however many thousand instances it carries
+ * — and it is the only thing that fixes a street reading as one tree stamped repeatedly.
+ *
+ * There is no separate far-field species. The rungs of the ladder are the SAME tree at a coarser
+ * leaf cluster; see `TreeLodTier` and `buildTree`.
  */
-
-export interface WorldVegetationOptions {
-  centerX: number;
-  centerZ: number;
-  radius: number;
-  seed?: number;
-  /** Multiplier on the biome's own density. */
-  densityScale?: number;
-}
-
-export interface WorldVegetationResult {
-  meshes: Object3D[];
-  stats: { instances: number; triangles: number };
-}
 
 export interface Prototype {
   geometry: BufferGeometry;
@@ -157,7 +142,7 @@ function foliageMaterials(
     rim: 0.1,
   });
   // The blossom accent, on the same recipe PlotBuilder uses for the trees inside plots. Without it
-  // `buildWorldVegetation` had nowhere to put a flowering tree, which is why it never planted one.
+  // the world's trees had nowhere to put a flowering tree, which is why one was never planted.
   const blossom = new RampMaterial({
     map: textures.leaf(`${kit.id}:worldblossom`, {
       // A LIT stop above the accent, where PlotBuilder's version has lit == mid. With both stops
@@ -315,6 +300,17 @@ export const NEAR_LEAF_DENSITY = 0.34;
 /** How many prototype slots the tree population is spread over; see `treeSlotSpecs`. */
 export const TREE_SLOTS = 20;
 
+/**
+ * The understory's own place on the leaf-cluster ladder, on top of whatever rung its cell is on.
+ *
+ * A shrub is 1.2 m and the GPS camera runs at about 11 px/m, so it occupies some 13 px of frame —
+ * a hundredth of what a shade tree does. It was nonetheless built at the shade tree's spray size,
+ * which worked out at five hundred leaf clusters and 5 300 triangles apiece: 133 of them in frame
+ * came to 709 000 triangles, more than every building in the picture put together, for objects the
+ * size of a full stop.
+ */
+const SHRUB_LEAF_SCALE = 2;
+
 export interface SlotSpec {
   archetype: TreeArchetype;
   blossom: boolean;
@@ -338,12 +334,11 @@ export interface SlotSpec {
  * The pattern below is a period of ten, run twice. Per ten: six of the biome's secondary (the
  * deciduous shade tree in temperate), two primary (the conifer accent), one drawn from the kit's
  * remaining archetype list, and one blossom — REFERENCE-SPEC 6.4 puts blossom at about six per
- * frame, and `buildWorldVegetation` had never planted one because there was no material slot for
- * it and no archetype entry that asked for it.
+ * frame, and the world had never planted one because there was no material slot for it and no
+ * archetype entry that asked for it.
  *
- * Pulled out of `buildWorldVegetation` so the streaming world plants exactly the same mix: the slot
- * a tree lands in is now a property of WHERE it stands rather than of the order it happened to be
- * generated in, which is what lets a cell be built and rebuilt without the species changing.
+ * The slot a tree lands in is a property of WHERE it stands rather than of the order it happened to
+ * be generated in, which is what lets a cell be built and rebuilt without the species changing.
  */
 export function treeSlotSpecs(kit: BiomeKit): SlotSpec[] {
   const primary = kit.vegetation.primary;
@@ -386,32 +381,61 @@ export function treeSlotSpecs(kit: BiomeKit): SlotSpec[] {
  * One rung of the distance ladder a tree is built at.
  *
  * The switch used to be a build-time property of a tree — `detail: 'full' | 'distant'` chosen once
- * from a fixed centre — so walking never changed anything's detail. It is now a property of the
- * CELL a tree stands in, re-evaluated against the camera target every frame, and this table is what
- * a tier means.
+ * from a fixed centre, which was the player's position at load — so walking never changed anything's
+ * detail and the camera's opinion was never asked. It is now a property of the CELL a tree stands
+ * in, re-evaluated against the camera every frame.
+ *
+ * A rung changes exactly one thing: how fine the leaf clusters are. Silhouette, armature, clump
+ * layout, species, blossom, hue and light gradient are identical on every rung, because every rung
+ * is the same call to the same tree builder — see `buildTree`.
  */
 export interface TreeLodTier {
-  /** Metres from the camera target out to which this tier is used. */
-  maxDistance: number;
+  /**
+   * Used where the frame's short axis covers at most this many metres of ground.
+   *
+   * Ground span, not distance. Detail is about APPARENT SIZE, and on this project's cameras apparent
+   * size is not a function of distance from anything on the ground — it is a function of how far up
+   * the frame a thing sits, and of which camera is looking. `IsoCamera.groundSpanAt` turns the one
+   * into the other exactly, and it makes a single table place all three presets: at the GPS camera
+   * the span runs 73-94 m, at the street camera 42-73 m and at the plot camera 21-35 m.
+   *
+   * The consequence worth writing down, because it is what makes the old design unfixable: the GPS
+   * frame's span varies by 28 % end to end. A 9 m canopy is 111 px at the bottom of it and 87 px at
+   * the top. There is no far field in the view that ships, so no rung used in it may be crude, and a
+   * boundary drawn across it is a seam between two trees of the same size on screen. Two rungs, with
+   * the boundary falling OUTSIDE the GPS range, is the honest answer that measurement gives.
+   */
+  maxSpan: number;
   leafDensity?: number;
-  distant?: boolean;
+  /** Leaf-spray size multiplier; the spray count falls as its square. See `TreeOptions.leafScale`. */
+  leafScale?: number;
   /** The surface roots, tufts and stones that ring a trunk; sub-pixel past the near field. */
   base: boolean;
 }
 
 /**
- * The shipped ladder: full detail in the near field, the cheap stand-in beyond it.
+ * The shipped ladder.
  *
- * 52 m is measured from the camera TARGET rather than from the player, and it reproduces where the
- * old build-time swap actually fell: the old rule was 1.3 x the caller's radius from the PLAYER,
- * which on the GPS camera is about 55 m ahead of the target and about 48 m off to the side, because
- * the player sits at 87% down the frame and the target is some 67 m ahead of them. So the same
- * trees get the same treatment — the difference is that the ones behind the camera are no longer
- * built at all.
+ * 60 m of span is where a 0.17 m leaf spray crosses about three thousandths of the frame's width —
+ * roughly 2.6 px on the 900 px captures, which is where the authored cluster size stops being
+ * resolvable and paying for it stops buying anything. It falls between the street camera's near half
+ * and its far half, below the whole of the GPS frame, and above the whole of the plot camera. So the
+ * table reads: authored detail wherever the camera is close enough to show it, one step coarser
+ * everywhere else, and nothing crude anywhere.
+ *
+ * The coarse rung is leafScale 2 and not 3, and that is measured rather than chosen. Held against a
+ * capture with the whole frame at the authored size, scale 2 tracks it to within a third of a luma
+ * point of mean and under one point of standard deviation on every canopy sampled — invisible. Scale
+ * 3 is 28 % cheaper again but its standard deviation rises by two full points on the same canopies,
+ * which is the leaf clusters becoming individually legible, and it looks it.
+ *
+ * There is deliberately no third rung. At the GPS camera a third boundary would have to fall inside
+ * a span range that varies by 28 %, putting a visibly coarser tree next to a visibly finer one of
+ * the same size on screen — the seam being exactly what the old two-tier ladder was hated for.
  */
 export const DEFAULT_TREE_LOD: readonly TreeLodTier[] = [
-  { maxDistance: 52, leafDensity: NEAR_LEAF_DENSITY, base: true },
-  { maxDistance: Infinity, distant: true, base: false },
+  { maxSpan: 60, leafDensity: NEAR_LEAF_DENSITY, leafScale: 1, base: true },
+  { maxSpan: Infinity, leafDensity: NEAR_LEAF_DENSITY, leafScale: 2, base: false },
 ];
 
 export interface VegetationLibrary {
@@ -421,8 +445,16 @@ export interface VegetationLibrary {
   bankCount: number;
   /** Prototype parts for one slot at one tier. Built on first use and kept forever. */
   tree(slot: number, tier: number): ProtoSet;
-  shrub(i: number): ProtoSet;
-  bank(i: number): ProtoSet;
+  /**
+   * Understory and bank willows take the ladder too.
+   *
+   * They were on the near rung everywhere, which for the willows meant seventeen 20 000-triangle
+   * trees standing wherever the river happened to run through the frame, and for the shrubs meant
+   * 133 five-thousand-triangle bushes rendered at about 18 px each. Nothing about either is special
+   * enough to be exempt from the thing every other plant obeys.
+   */
+  shrub(i: number, tier: number): ProtoSet;
+  bank(i: number, tier: number): ProtoSet;
   materialFor(proto: Prototype, set: ProtoSet): Material;
   /** The dappled shadow stand-in a canopy casts through, or null for anything else. */
   depthFor(proto: Prototype, set: ProtoSet): MeshDepthMaterial | null;
@@ -481,6 +513,7 @@ export function createVegetationLibrary(
   };
 
   const wantsWillow = kit.vegetation.archetypes.includes('willow');
+  const rungAt = (tier: number): TreeLodTier => tiers[Math.min(tier, tiers.length - 1)]!;
 
   return {
     slots,
@@ -493,20 +526,26 @@ export function createVegetationLibrary(
       const hit = trees.get(key);
       if (hit) return hit;
       const spec = slots[slot]!;
-      const rung = tiers[Math.min(tier, tiers.length - 1)]!;
-      // No blossom past the near field: `distantTree` builds one dome per archetype and knows
-      // nothing about flowering, and the six-per-frame accent has no business in the far field.
-      const blossom = spec.blossom && !rung.distant;
+      const rung = rungAt(tier);
+      /**
+       * The blossom accent survives to every rung, and the prototype SEED does not change with the
+       * rung.
+       *
+       * Both used to be false. A far tree was a different species built from a different seed by
+       * different code, so the swap moved the trunk, re-cut the crown and, for one slot in twenty,
+       * turned a pink tree green. The whole ladder now differs in leaf-cluster size and nothing else.
+       */
+      const blossom = spec.blossom;
       const built = keep({
         slot: foliageSlotFor(spec.archetype, blossom),
         hue: spec.hue,
-        parts: prototype(kit, mix(seed, 0x100 + slot + tier * 0x40), (ctx) =>
+        parts: prototype(kit, mix(seed, 0x100 + slot), (ctx) =>
           buildTree(ctx, {
             archetype: spec.archetype,
             blossom,
             seed: mix(seed, 0x200 + slot),
-            leafDensity: rung.leafDensity,
-            detail: rung.distant ? 'distant' : 'full',
+            leafDensity: rung.leafDensity ?? NEAR_LEAF_DENSITY,
+            leafScale: rung.leafScale,
             base: rung.base,
             height:
               (blossom && spec.archetype === 'broadleaf' ? 5 : DEFAULT_HEIGHT[spec.archetype]) *
@@ -518,23 +557,31 @@ export function createVegetationLibrary(
       return built;
     },
 
-    shrub(i: number): ProtoSet {
-      const hit = shrubs.get(i);
+    shrub(i: number, tier: number): ProtoSet {
+      const key = tier * 1024 + i;
+      const hit = shrubs.get(key);
       if (hit) return hit;
+      const rung = rungAt(tier);
       const built = keep({
         slot: 'canopy',
         hue: (i / 4) * 2 - 1,
         parts: prototype(kit, mix(seed, 0x300 + i), (ctx) =>
-          buildUnderstory(ctx, { kind: kit.vegetation.understory, seed: mix(seed, 0x400 + i) })
+          buildUnderstory(ctx, {
+            kind: kit.vegetation.understory,
+            seed: mix(seed, 0x400 + i),
+            leafScale: (rung.leafScale ?? 1) * SHRUB_LEAF_SCALE,
+          })
         ),
       });
-      shrubs.set(i, built);
+      shrubs.set(key, built);
       return built;
     },
 
-    bank(i: number): ProtoSet {
-      const hit = banks.get(i);
+    bank(i: number, tier: number): ProtoSet {
+      const key = tier * 1024 + i;
+      const hit = banks.get(key);
       if (hit) return hit;
+      const rung = rungAt(tier);
       const built = keep({
         slot: 'willow',
         hue: i / 1.5 - 1,
@@ -543,11 +590,13 @@ export function createVegetationLibrary(
             archetype: 'willow',
             seed: mix(seed, 0x520 + i),
             leafDensity: NEAR_LEAF_DENSITY,
+            leafScale: rung.leafScale,
+            base: rung.base,
             height: DEFAULT_HEIGHT.willow * (0.82 + i * 0.13),
           })
         ),
       });
-      banks.set(i, built);
+      banks.set(key, built);
       return built;
     },
 
@@ -613,471 +662,4 @@ export function insideRect(
   const c = Math.cos(-yaw);
   const s = Math.sin(-yaw);
   return Math.abs(dx * c - dz * s) <= hw && Math.abs(dx * s + dz * c) <= hd;
-}
-
-export function buildWorldVegetation(
-  tile: WorldTile,
-  kit: BiomeKit,
-  textures: TextureFactory,
-  options: WorldVegetationOptions
-): WorldVegetationResult {
-  const { centerX, centerZ, radius } = options;
-  const seed = options.seed ?? 5;
-  const rng = makeRng(mix(seed, 0x7ee));
-  const noise = makeNoise2D(seed ^ 0x1234);
-  const densityScale = options.densityScale ?? 1;
-
-  /**
-   * The planted disc runs half again past the caller's radius, and the density falls away over the
-   * last two thirds of it.
-   *
-   * The GPS frame is 82 m across and 180 m up, with the player at 87 %H — so the ground runs to
-   * about 155 m ahead while the caller's radius is 94. Cutting at 94 put a hard arc of bare turf
-   * across the upper third of every capture. Trees past `farFrom` are built from the distant LOD,
-   * which is a fifth of the cost, so the extra reach is cheaper than the fade it replaces.
-   */
-  const maxRadius = radius * 1.55;
-  /**
-   * Where the distant stand-in takes over. 1.3 of the caller's radius, not 0.92.
-   *
-   * 0.92 put the swap at 87 m. At the GPS camera's 11.8 px/m a 9 m canopy is still about NINETY
-   * pixels across at that distance — a third of the frame's width — and the stand-in is a two-lobe
-   * dome with no lobe structure. Measured on a capture, the trees standing one block ahead of the
-   * player were visibly cruder than the ones beside them: flat faceted lumps sitting on the grass.
-   * 1.3 pushes the swap to ~123 m, where a canopy is under 35 px and its lobes genuinely are
-   * sub-pixel, and the stand-in itself is no longer a two-lobe dome (see `distantTree`).
-   */
-  const farFrom = radius * 1.3;
-  /** 1 out to 45% of the radius, then easing to a thin scatter at the edge. */
-  const falloff = (dSq: number): number => {
-    const u = Math.sqrt(dSq) / maxRadius;
-    if (u <= 0.29) return 1;
-    const k = Math.min(1, (u - 0.29) / 0.71);
-    return 0.32 + 0.68 * (1 - k * k * (3 - 2 * k));
-  };
-
-  const specs = treeSlotSpecs(kit);
-
-  const protoSets: ProtoSet[] = specs.map((spec, i) => ({
-    slot: foliageSlotFor(spec.archetype, spec.blossom),
-    hue: spec.hue,
-    parts: prototype(kit, mix(seed, 0x100 + i), (ctx) =>
-      buildTree(ctx, {
-        archetype: spec.archetype,
-        blossom: spec.blossom,
-        seed: mix(seed, 0x200 + i),
-        leafDensity: NEAR_LEAF_DENSITY,
-        height:
-          (spec.blossom && spec.archetype === 'broadleaf' ? 5 : DEFAULT_HEIGHT[spec.archetype]) *
-          spec.heightK,
-      })
-    ),
-  }));
-
-  /**
-   * Willows, planted along the water rather than mixed into the general population.
-   *
-   * REFERENCE-SPEC 6.4 gives the willow one job — "canal banks (temperate)" — and reference 13 puts
-   * a line of them down the canal edge. Scattered through a street mix instead, the archetype's
-   * whole point (a wide pendulous mass answering the water) is lost, and it never appeared at all
-   * because the slot list only ever held the kit's primary and secondary.
-   */
-  const wantsWillow = kit.vegetation.archetypes.includes('willow');
-  const bankSets: ProtoSet[] = !wantsWillow
-    ? []
-    : [0, 1, 2, 3].map((i) => ({
-        slot: 'willow' as FoliageSlot,
-        hue: i / 1.5 - 1,
-        parts: prototype(kit, mix(seed, 0x500 + i), (ctx) =>
-          buildTree(ctx, {
-            archetype: 'willow',
-            seed: mix(seed, 0x520 + i),
-            leafDensity: NEAR_LEAF_DENSITY,
-            height: DEFAULT_HEIGHT.willow * (0.82 + i * 0.13),
-          })
-        ),
-      }));
-
-  // Distant stand-ins, in the same proportions as the near mix and at the same eight-slot variety —
-  // the far field is 90-150 m out, which is most of the frame's ground area, not a fringe.
-  const farSpecs = specs.filter((_, i) => i % 2 === 0).slice(0, 10);
-  const farSets: ProtoSet[] = farSpecs.map((spec, i) => ({
-    // No blossom past the swap distance. `distantTree` builds one dome per archetype and knows
-    // nothing about flowering, so a blossom far slot was a plain dome wearing the pink material —
-    // and REFERENCE-SPEC's six-per-frame accent has no business being spent on the far field.
-    slot: foliageSlotFor(spec.archetype, false),
-    hue: spec.hue,
-    parts: prototype(kit, mix(seed, 0x180 + i), (ctx) =>
-      buildTree(ctx, {
-        archetype: spec.archetype,
-        seed: mix(seed, 0x280 + i),
-        height: DEFAULT_HEIGHT[spec.archetype] * spec.heightK,
-        detail: 'distant',
-        // No tufts or stones past the swap: a 0.4 m tuft is a third of a pixel out there.
-        base: false,
-      })
-    ),
-  }));
-  const shrubSets: ProtoSet[] = [];
-  if (kit.vegetation.understory !== 'none') {
-    for (let i = 0; i < 5; i++) {
-      shrubSets.push({
-        slot: 'canopy',
-        hue: (i / 4) * 2 - 1,
-        parts: prototype(kit, mix(seed, 0x300 + i), (ctx) =>
-          buildUnderstory(ctx, { kind: kit.vegetation.understory, seed: mix(seed, 0x400 + i) })
-        ),
-      });
-    }
-  }
-
-  const nearbyRoads = tile.roads.filter((road) => {
-    for (let i = 0; i + 1 < road.centerline.length; i += 2) {
-      const dx = road.centerline[i]! - centerX;
-      const dz = road.centerline[i + 1]! - centerZ;
-      if (dx * dx + dz * dz < (maxRadius + 80) * (maxRadius + 80)) return true;
-    }
-    return false;
-  });
-  const nearbyPlots = tile.plots.filter(
-    (p) => (p.x - centerX) ** 2 + (p.z - centerZ) ** 2 < (maxRadius + 40) ** 2
-  );
-
-  /** Rejects a candidate that would stand in a road, on a plot, or in the water. */
-  const blocked = (x: number, z: number, clearance: number): boolean => {
-    for (const road of nearbyRoads) {
-      const keep = road.width / 2 + clearance;
-      if (distanceToPolylineSq(x, z, road.centerline) < keep * keep) return true;
-    }
-    for (const p of nearbyPlots) {
-      if (insideRect(x, z, p.x, p.z, p.w / 2 + 0.8, p.d / 2 + 0.8, p.yaw)) return true;
-    }
-    for (const w of tile.water) {
-      for (const ring of w.rings) {
-        if (distanceToPolylineSq(x, z, ring) < 9) return true;
-      }
-    }
-    return false;
-  };
-
-  const treeInstances: Matrix4[] = [];
-  const farInstances: Matrix4[] = [];
-  const shrubInstances: Matrix4[] = [];
-  const bankInstances: Matrix4[] = [];
-  /**
-   * The global ceiling on full-detail trees.
-   *
-   * This was 2400 and never came close to binding — the capture that prompted this work had 158
-   * trees in it, on a frame the benchmark fills with continuous canopy. The cap is here to stop a
-   * pathological tile, not to shape the picture, so it sits where only a pathological tile reaches
-   * it.
-   */
-  const TREE_CAP = 12000;
-
-  const m = new Matrix4();
-  const rot = new Matrix4();
-  const scl = new Matrix4();
-
-  const push = (x: number, z: number, list: Matrix4[], scaleRange: [number, number]): void => {
-    const yaw = rng.range(0, Math.PI * 2);
-    const s = rng.range(scaleRange[0], scaleRange[1]);
-    rot.makeRotationY(yaw);
-    scl.makeScale(s, s * rng.range(0.9, 1.18), s);
-    list.push(m.makeTranslation(x, 0, z).multiply(rot).multiply(scl).clone());
-  };
-
-  /** Routes a candidate to the full-detail or the distant list by how far out it stands. */
-  const plant = (x: number, z: number, dSq: number, scaleRange: [number, number]): void => {
-    push(x, z, dSq > farFrom * farFrom ? farInstances : treeInstances, scaleRange);
-  };
-
-  // --- street trees: a rhythm along each verge, offset just outside the kerb
-  for (const road of nearbyRoads) {
-    if (road.klass === 'footway' || road.klass === 'path' || road.bridge) continue;
-    // 10 m and 15 m, not 14 and 19. REFERENCE-SPEC 4.1 puts street lanterns every 18 m and the
-    // benchmark's avenues carry a continuous line of crowns between them; at 14 m with a 0.72 accept
-    // chance the mean gap was 19 m of bare verge between 6 m crowns, which is a row of dots rather
-    // than an avenue.
-    const spacing = road.klass === 'primary' || road.klass === 'secondary' ? 10 : 15;
-    // 2.5 m clear of the kerb, not 1.9. REFERENCE-SPEC 10.4 auto-fails a frame with anything
-    // intruding into a carriageway, and once the canopies stopped reading as dark specks it was
-    // obvious that a 4 m crown radius planted 1.9 m out hangs over the road surface.
-    const offset = road.width / 2 + 2.5;
-    const pts = road.centerline;
-    let carried = rng.range(0, spacing);
-    for (let i = 0; i + 3 < pts.length; i += 2) {
-      const ax = pts[i]!;
-      const az = pts[i + 1]!;
-      const bx = pts[i + 2]!;
-      const bz = pts[i + 3]!;
-      const segLen = Math.hypot(bx - ax, bz - az);
-      if (segLen < 1e-3) continue;
-      const nx = -(bz - az) / segLen;
-      const nz = (bx - ax) / segLen;
-      let t = carried;
-      while (t < segLen) {
-        const u = t / segLen;
-        for (const side of [1, -1]) {
-          const x = ax + (bx - ax) * u + nx * offset * side;
-          const z = az + (bz - az) * u + nz * offset * side;
-          const dSq = (x - centerX) ** 2 + (z - centerZ) ** 2;
-          if (dSq > maxRadius * maxRadius) continue;
-          if (blocked(x, z, 1.4)) continue;
-          // Street trees are the small end of the range: a verge tree at park scale is a 14 m crown
-          // over an 11 m carriageway.
-          if (treeInstances.length >= TREE_CAP) continue;
-          if (rng.chance(0.88 * falloff(dSq))) plant(x, z, dSq, [0.62, 0.9]);
-        }
-        t += spacing;
-      }
-      carried = t - segLen;
-    }
-  }
-
-  // --- park planting: denser, clustered, and irregular
-  for (const park of tile.parks) {
-    // 1.7x the kit's own figure, and the per-park ceiling goes from 400 to 1600. A park in the
-    // benchmark is a continuous mass of overlapping crowns with lawn showing through the gaps, not
-    // a scatter of individuals on a green field.
-    const perM2 =
-      (kit.vegetation.density / 1000) * densityScale * 1.7 * (park.kind === 'forest' ? 2.4 : 1);
-    const target = Math.min(1600, Math.round(park.areaM2 * perM2));
-    for (let i = 0; i < target * 3 && treeInstances.length < TREE_CAP; i++) {
-      const ring = park.rings[0];
-      if (!ring || ring.length < 6) break;
-      let minX = Infinity;
-      let maxX = -Infinity;
-      let minZ = Infinity;
-      let maxZ = -Infinity;
-      for (let k = 0; k < ring.length; k += 2) {
-        minX = Math.min(minX, ring[k]!);
-        maxX = Math.max(maxX, ring[k]!);
-        minZ = Math.min(minZ, ring[k + 1]!);
-        maxZ = Math.max(maxZ, ring[k + 1]!);
-      }
-      const x = rng.range(minX, maxX);
-      const z = rng.range(minZ, maxZ);
-      const dSq = (x - centerX) ** 2 + (z - centerZ) ** 2;
-      if (dSq > maxRadius * maxRadius) continue;
-      // Clumping: accept far more readily where the noise field is high, so stands form.
-      if (rng.next() > (0.25 + ((noise(x * 0.03, z * 0.03) + 1) / 2) * 0.9) * falloff(dSq)) continue;
-      if (blocked(x, z, 2.2)) continue;
-      plant(x, z, dSq, [0.78, 1.08]);
-    }
-  }
-
-  /**
-   * --- groves on the leftover ground.
-   *
-   * Streets and mapped parks between them cover a fraction of the tile. Everything else — the land
-   * behind the plot rows, the wedges where streets meet, the ground past the last block — got
-   * nothing at all, and in a portrait frame that is most of the picture: the capture that prompted
-   * this work is two thirds bare turf. The benchmark has no such thing. Its open ground carries
-   * STANDS of trees, with lawn showing between them.
-   *
-   * "Stands" is the whole condition. The comment at the top of this file is right that a uniform
-   * sprinkle of trees over open ground reads as wilderness with roads through it; what follows is
-   * not uniform. A low-frequency noise field is thresholded so only about a third of the open
-   * ground qualifies at all, and inside those patches the density is high enough for crowns to
-   * touch. The result is groves with clear edges, which is what a town's leftover land looks like.
-   */
-  {
-    const attempts = Math.round(maxRadius * maxRadius * 0.16 * densityScale);
-    for (let i = 0; i < attempts && treeInstances.length < TREE_CAP; i++) {
-      const a = rng.range(0, Math.PI * 2);
-      const rr = Math.sqrt(rng.next()) * maxRadius;
-      const x = centerX + Math.cos(a) * rr;
-      const z = centerZ + Math.sin(a) * rr;
-      const dSq = (x - centerX) ** 2 + (z - centerZ) ** 2;
-      // Two octaves: the coarse one decides where a stand is, the fine one breaks up its edge so
-      // the boundary is ragged rather than a contour line.
-      const coarse = (noise(x * 0.011, z * 0.011) + 1) / 2;
-      const fine = (noise(x * 0.055 + 31, z * 0.055 - 17) + 1) / 2;
-      const field = coarse * 0.75 + fine * 0.25;
-      // Outside a stand the field does not go to zero, it goes to a floor: about one specimen tree
-      // per 1200 m2 of open ground. A block of lawn with a single shade tree standing in the middle
-      // of it is the village green of REFERENCE-SPEC 6.6, and it is also what keeps a block the
-      // groves happened to miss from being a bald green rectangle.
-      const strength =
-        field < 0.56 ? 0.045 : Math.max(0.045, Math.min(1, (field - 0.56) / 0.3));
-      if (rng.next() > strength * falloff(dSq)) continue;
-      if (blocked(x, z, 2.4)) continue;
-      plant(x, z, dSq, [0.74, 1.12]);
-    }
-  }
-
-  /**
-   * --- willows along the banks.
-   *
-   * `tile.water[].rings` is the bank polygon, so walking it at a fixed arc step and stepping a few
-   * metres off the edge gives the line of trees reference 13 puts down its canal. Which side is
-   * land is decided by an even-odd test against the ring itself, because `blocked` only measures
-   * DISTANCE from the bank and is therefore happy to plant in the middle of the river.
-   */
-  if (bankSets.length) {
-    const inWater = (x: number, z: number, ring: Polyline): boolean => {
-      let inside = false;
-      const n = ring.length / 2;
-      for (let i = 0, j = n - 1; i < n; j = i++) {
-        const xi = ring[i * 2]!;
-        const zi = ring[i * 2 + 1]!;
-        const xj = ring[j * 2]!;
-        const zj = ring[j * 2 + 1]!;
-        if (zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside;
-      }
-      return inside;
-    };
-    for (const w of tile.water) {
-      for (const ring of w.rings) {
-        if (ring.length < 8) continue;
-        let carried = rng.range(0, 12);
-        for (let i = 0; i + 3 < ring.length; i += 2) {
-          const ax = ring[i]!;
-          const az = ring[i + 1]!;
-          const bx = ring[i + 2]!;
-          const bz = ring[i + 3]!;
-          const segLen = Math.hypot(bx - ax, bz - az);
-          if (segLen < 1e-3) continue;
-          const nx = -(bz - az) / segLen;
-          const nz = (bx - ax) / segLen;
-          // 11 m along the bank: a willow's crown is 1.25 x its 7 m height, so this is a broken
-          // line of touching canopies rather than a hedge.
-          const step = 11;
-          let t = carried;
-          while (t < segLen) {
-            const u = t / segLen;
-            const off = rng.range(4.5, 7.5);
-            for (const side of [1, -1]) {
-              const x = ax + (bx - ax) * u + nx * off * side;
-              const z = az + (bz - az) * u + nz * off * side;
-              const dSq = (x - centerX) ** 2 + (z - centerZ) ** 2;
-              if (dSq > maxRadius * maxRadius) continue;
-              if (inWater(x, z, ring)) continue;
-              if (blocked(x, z, 1.2)) continue;
-              if (!rng.chance(0.8 * falloff(dSq))) continue;
-              push(x, z, bankInstances, [0.86, 1.16]);
-            }
-            t += step;
-          }
-          carried = t - segLen;
-        }
-      }
-    }
-  }
-
-  // --- shrubs at the margins. They follow the same radial fade: a shrub belt that ends on a circle
-  // is as visible as a grass belt that does.
-  if (shrubSets.length) {
-    const attempts = Math.round(maxRadius * 6 * densityScale);
-    for (let i = 0; i < attempts; i++) {
-      const a = rng.range(0, Math.PI * 2);
-      const r = Math.sqrt(rng.next()) * maxRadius;
-      const x = centerX + Math.cos(a) * r;
-      const z = centerZ + Math.sin(a) * r;
-      if (blocked(x, z, 1.1)) continue;
-      if (rng.next() > 0.42 * falloff(r * r)) continue;
-      push(x, z, shrubInstances, [0.7, 1.45]);
-    }
-  }
-
-  // --- materials: foliage sways, trunks do not
-  const foliageSlots = foliageMaterials(kit, textures);
-  /**
-   * Bark, birch bark, lawn and stone, on exactly the cache keys PlotBuilder registers so a tree
-   * outside a plot and a tree inside one are the same material and cost no extra uploads.
-   *
-   * The world's trunks used to take `<kit>-bark`, a key nothing else uses, carrying the building
-   * kit's stained-timber recipe at rim 0.9 — a dark maroon pole with a cool edge on every facet.
-   */
-  const barkMaterial = new RampMaterial({
-    map: textures.timber(`${kit.id}:bark`, {
-      lit: 0xb08a5e,
-      mid: 0x7d5f42,
-      shade: 0x4a3728,
-      planks: 11,
-    }),
-    vertexAO: true,
-    rim: 0.5,
-  });
-  const lawnMaterial = new RampMaterial({
-    map: textures.grass(kit.id, kit.textures.ground),
-    vertexAO: true,
-    sway: true,
-    rim: 0.2,
-  });
-  const stoneMaterial = new RampMaterial({
-    map: textures.ashlar(kit.id, kit.textures.stone),
-    vertexAO: true,
-    rim: 0.6,
-  });
-
-  const meshes: Object3D[] = [];
-  let triangles = 0;
-  const dapple = makeDappleMask();
-  const canopyDepth = dappledDepth(dapple);
-  const coniferDepth = dappledDepth(dapple, 0.64);
-
-  const emit = (sets: ProtoSet[], list: Matrix4[], name: string, tint: boolean): void => {
-    if (!list.length || !sets.length) return;
-    const buckets: Matrix4[][] = sets.map(() => []);
-    for (let i = 0; i < list.length; i++) buckets[i % sets.length]!.push(list[i]!);
-    for (let i = 0; i < sets.length; i++) {
-      const instances = buckets[i]!;
-      if (!instances.length) continue;
-      const set = sets[i]!;
-      const canopy = foliageSlots[set.slot];
-      for (const proto of set.parts) {
-        const isCanopy = proto.slot === 'canopy';
-        const material =
-          proto.slot === 'canopy'
-            ? canopy
-            : proto.slot === 'lawn'
-              ? lawnMaterial
-              : proto.slot === 'stone'
-                ? stoneMaterial
-                : barkMaterial;
-        const mesh = new InstancedMesh(proto.geometry, material, instances.length);
-        mesh.name = `${name}-${proto.slot}`;
-        for (let k = 0; k < instances.length; k++) {
-          mesh.setMatrixAt(k, instances[k]!);
-          // Every canopy mesh gets a tint, including the shrubs. Leaving `instanceColor` unset
-          // does not fall back to the material's colour in a useful way here — it leaves the
-          // canopy at the map's own value with no per-individual variation at all, and on the
-          // un-mapped material this replaced it left every shrub in the world pure white. Lawn
-          // tufts and stones are excluded: they are ground dressing and must match the ground.
-          if (isCanopy && tint) {
-            mesh.setColorAt(k, canopyTint(rng, kit.vegetation.hueJitter, set.hue));
-          }
-        }
-        mesh.instanceMatrix.needsUpdate = true;
-        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-        // Canopies cast through the dapple mask; trunks cast solid.
-        if (isCanopy) {
-          mesh.customDepthMaterial = set.slot === 'conifer' ? coniferDepth : canopyDepth;
-        }
-        mesh.computeBoundingSphere();
-        meshes.push(mesh);
-        triangles += ((proto.geometry.getIndex()?.count ?? 0) / 3) * instances.length;
-      }
-    }
-  };
-
-  emit(protoSets, treeInstances, 'vegetation', true);
-  emit(bankSets, bankInstances, 'vegetation-bank', true);
-  emit(farSets, farInstances, 'vegetation-far', true);
-  emit(shrubSets, shrubInstances, 'vegetation-shrub', true);
-
-  return {
-    meshes,
-    stats: {
-      instances:
-        treeInstances.length +
-        bankInstances.length +
-        farInstances.length +
-        shrubInstances.length,
-      triangles,
-    },
-  };
 }

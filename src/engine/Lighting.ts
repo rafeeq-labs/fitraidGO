@@ -151,6 +151,23 @@ export class Lighting {
     this.sun.target.position.copy(this.snapped);
     this.sun.position.copy(this.snapped).addScaledVector(this.sunDirection, r * 2.6);
     this.sun.target.updateMatrixWorld();
+  }
+
+  /**
+   * Frees the shadow map and detaches the lights.
+   *
+   * The shadow map is the single largest GPU allocation the lighting owns — 2048 x 2048 of depth,
+   * allocated lazily by the renderer on the first shadow pass and NOT freed by `WebGLRenderer.
+   * dispose()`. A world that is rebuilt (a change of biome, a new route) therefore leaked one per
+   * build, which is what a "dispose everything" path exists to prevent.
+   */
+  dispose(): void {
+    this.sun.shadow.dispose();
+    this.sun.removeFromParent();
+    this.sun.target.removeFromParent();
+    this.fill.removeFromParent();
+    this.sun.dispose();
+    this.fill.dispose();
     this.sun.updateMatrixWorld();
   }
 }
