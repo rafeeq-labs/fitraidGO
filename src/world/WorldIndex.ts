@@ -369,6 +369,7 @@ export class WorldIndex {
    * a distance test alone is happy to plant in the middle of the river.
    */
   private indexBankWillows(): void {
+    if (this.densityScale <= 0) return;
     if (!this.kit.vegetation.archetypes.includes('willow')) return;
     const inWater = (x: number, z: number, ring: Polyline): boolean => {
       let inside = false;
@@ -438,6 +439,25 @@ export class WorldIndex {
    * hundred small records, so keeping the whole tile's costs a couple of megabytes and makes walking
    * back over ground already visited free.
    */
+  /**
+   * Whether a planting site survives the tree-density setting.
+   *
+   * `densityScale` used to be consulted by the GROVE and SHRUB passes only, so `?trees=0` - which
+   * the world builder documents as "world trees are OFF by default" - still planted every street
+   * tree, every park tree and every bank willow. Measured on the default Bathwick view that was 40
+   * trees and 7 willows standing in a frame that was supposed to have none, and it is why the
+   * canopies the author asked to be rid of were still there.
+   *
+   * Deterministic in position rather than random, so thinning is stable across frames and across
+   * runs: the same site keeps the same verdict, which is the same guarantee every other placement
+   * in this file makes.
+   */
+  private keepPlant(x: number, z: number, salt: number): boolean {
+    if (this.densityScale <= 0) return false;
+    if (this.densityScale >= 1) return true;
+    return siteRng(x, z, salt).next() < this.densityScale;
+  }
+
   plantsOf(cell: Cell): CellPlants {
     const hit = this.plants.get(cell.id);
     if (hit) return hit;
@@ -447,6 +467,7 @@ export class WorldIndex {
     const banks: PlantSite[] = [];
 
     for (const p of this.streetSites.get(cell.id) ?? []) {
+      if (!this.keepPlant(p.x, p.z, 0x51)) continue;
       if (siteRng(p.x, p.z, 11).next() > 0.88) continue;
       if (this.blocked(f, p.x, p.z, 1.4)) continue;
       // Street trees are the small end of the range: a verge tree at park scale is a 14 m crown
@@ -454,6 +475,7 @@ export class WorldIndex {
       trees.push(this.site(p.x, p.z, 3, 0.62, 0.9, TREE_SLOTS));
     }
     for (const p of this.parkSites.get(cell.id) ?? []) {
+      if (!this.keepPlant(p.x, p.z, 0x52)) continue;
       if (this.blocked(f, p.x, p.z, 2.2)) continue;
       trees.push(this.site(p.x, p.z, 3, 0.78, 1.08, TREE_SLOTS));
     }
