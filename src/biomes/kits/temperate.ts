@@ -121,7 +121,10 @@ export const temperate: BiomeKit = {
         0x6f93d6,
         0xd8622e,
       ],
-      flowerDensity: 1,
+      // Denser than the old 1.0. Reference footage of this genre carries white heads across most
+      // open ground rather than as an occasional speck, and flowers are the cheapest way to stop a
+      // large lawn reading as one flat pigment.
+      flowerDensity: 2.4,
       clump: 1,
     },
     roof: {
@@ -252,7 +255,11 @@ export const temperate: BiomeKit = {
     // REFERENCE-SPEC 8.1 puts the cool sky fill at ~35% of key. Below that, albedo variation does
     // not survive in shade and every shadow-side face measures as one flat value; above it, a cast
     // shadow cannot get dark enough to be seen.
-    fillIntensity: 1.3,
+    // 35% of the 5.2 key, which is what REFERENCE-SPEC 8.1 actually specifies - it was running at
+    // 25% and every cast shadow came out hard and near-black. Raising the FILL rather than cutting
+    // the key softens the shadow without flattening the lit surfaces, which matters because at the
+    // GPS camera a shadow still has to be visible at thumbnail size.
+    fillIntensity: 1.82,
     // Trimmed with the key. Pale ashlar is the most common albedo in the kit and at 1.3 every
     // sun-facing stone plane clipped to the same `#e5ded0` at luma 220-224, which put loose rocks,
     // steps and statues above the buildings they are meant to sit behind. At 1.06 a horizontal lit

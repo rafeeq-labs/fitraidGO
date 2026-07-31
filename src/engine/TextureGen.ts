@@ -606,9 +606,13 @@ function grassScale(
     // on the sheet is luma 43.
     deep: grade(p.shade, 0.52 * v, 1.3 * s, 0.04, 0x2a4038),
     shade: grade(p.shade, 0.92 * v, 1.55 * s, 0.02),
-    mid: grade(p.mid, 1.16 * v, 2.05 * s, 0.05),
-    lit: grade(p.lit, 1.38 * v, 2.15 * s, 0.13),
-    sun: grade(p.lit, 1.8 * v, 1.9 * s, 0.26),
+    mid: grade(p.mid, 1.16 * v, 2.15 * s, 0.03),
+    // The warm push on the two brightest stops used to be 0.13 and 0.26 toward `grade`'s gold
+    // anchor, which is what made lit turf measure #94AB4A - olive, not grass. Reference footage of
+    // this genre keeps the sunlit stop a FRESH green at the same value, so the warm term drops and
+    // saturation rises to keep the stop from going grey as it cools.
+    lit: grade(p.lit, 1.38 * v, 2.3 * s, 0.05),
+    sun: grade(p.lit, 1.78 * v, 2.05 * s, 0.11),
     straw: grade(p.lit, 1.72 * v, 1.25 * s, 0.55, 0xdcc474),
   };
 }
