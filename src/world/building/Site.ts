@@ -9,6 +9,7 @@ import {
   bandOf,
   bucket,
   clamp,
+  type LevelGate,
 } from './Metrics.js';
 
 /** The buildable envelope inside a plot, and the mass-placement primitives every recipe uses. */
@@ -51,7 +52,12 @@ export interface Site {
  * plot, got level 2, and showed a four-column ladder with only three tiers in it for four rounds
  * of review. Anything that assigns a level must report what was delivered, not what was requested.
  */
-export function deliverableLevel(plotW: number, plotD: number, requested: number): number {
+export function deliverableLevelFor(
+  plotW: number,
+  plotD: number,
+  requested: number,
+  gate: LevelGate
+): number {
   // Bucketed, because the plot the recipe actually stands on is the bucketed one. Gating on the
   // raw parcel and building on the bucketed plot let the two disagree by a module, and the plot
   // builder's downgrade counter then reported a level the kit had not delivered.
@@ -61,8 +67,8 @@ export function deliverableLevel(plotW: number, plotD: number, requested: number
   while (level > 0) {
     const site = siteOf(w, d, level);
     if (
-      site.rearLimit - site.frontLimit >= LEVEL_MIN_DEPTH[level]! &&
-      site.halfX * 2 >= LEVEL_MIN_WIDTH[level]!
+      site.rearLimit - site.frontLimit >= gate.minDepth[level]! &&
+      site.halfX * 2 >= gate.minWidth[level]!
     ) {
       break;
     }
@@ -70,6 +76,12 @@ export function deliverableLevel(plotW: number, plotD: number, requested: number
   }
   return level;
 }
+
+/** The kit's default envelope minimums, used by every family that does not override them. */
+export const DEFAULT_GATE: LevelGate = {
+  minDepth: LEVEL_MIN_DEPTH,
+  minWidth: LEVEL_MIN_WIDTH,
+};
 
 export function siteOf(plotW: number, plotD: number, level: number): Site {
   const i = clamp(Math.round(level), 0, 3);

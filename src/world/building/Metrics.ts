@@ -90,6 +90,19 @@ export const LEVEL_MIN_DEPTH: readonly number[] = [0, 4.4, 5.6, 5.6];
 export const LEVEL_MIN_WIDTH: readonly number[] = [0, 3.2, 4.2, 4.6];
 
 /**
+ * The pair above, as a type a family can override.
+ *
+ * It lives here rather than beside FamilyDef because it is pure numbers and this module imports
+ * nothing: putting it next to the family type would make Site and FamilyDef import each other,
+ * which TypeScript erases happily enough but which is exactly the cycle the layering exists to
+ * stop anyone thinking is acceptable.
+ */
+export interface LevelGate {
+  readonly minDepth: readonly number[];
+  readonly minWidth: readonly number[];
+}
+
+/**
  * Bucketing rounds DOWN, never to nearest.
  *
  * To nearest, a 7.8 m frontage became an 8.0 m plot: the kerb, the capstone and the corner piers of

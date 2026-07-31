@@ -8,9 +8,11 @@ import { Renderer } from '../engine/Renderer.js';
 import { TextureFactory } from '../engine/TextureGen.js';
 import { makeRng, mix } from '../engine/rng.js';
 import {
+  BUILDING_FAMILIES,
   variantCount,
   type BuildingFamily,
 } from '../world/BuildingKit.js';
+import { familyDef } from '../world/building/Registry.js';
 import { createKitContext } from '../world/KitPieces.js';
 import { placePiece } from '../world/KitPlacement.js';
 import { CHANNEL_SLOTS, KIT_CHANNELS, withTransform, type KitContext } from '../world/KitTypes.js';
@@ -254,7 +256,15 @@ function layout(
 // rounds of review while claiming four.
 const PLOT_W = Number(params.get('w') ?? 16);
 const PLOT_D = Number(params.get('d') ?? 16);
-const ALL_LADDER_FAMILIES: readonly BuildingFamily[] = ['residential', 'merchant', 'workshop'];
+/**
+ * Read from the registry rather than listed, so a new family appears on the sheet the moment it is
+ * defined. Single-tier families are excluded from the DEFAULT set because a ladder of one repeated
+ * tier is not a ladder - but `?family=civic` still renders one, which is why the validation below
+ * checks the full registry rather than this filtered view.
+ */
+const ALL_LADDER_FAMILIES: readonly BuildingFamily[] = BUILDING_FAMILIES.filter(
+  (f) => !familyDef(f).singleTier
+);
 
 /**
  * `?family=lumber` narrows the ladder to one family's four tiers, which is the layout every
@@ -267,7 +277,7 @@ const LADDER_FAMILIES: readonly BuildingFamily[] = familyParam
   ? familyParam.split(',').map((s) => s.trim() as BuildingFamily)
   : ALL_LADDER_FAMILIES;
 for (const f of LADDER_FAMILIES) {
-  if (!ALL_LADDER_FAMILIES.includes(f)) throw new Error(`kitSheet: unknown family "${f}"`);
+  if (!BUILDING_FAMILIES.includes(f)) throw new Error(`kitSheet: unknown family "${f}"`);
 }
 
 /** Same string hash the rest of the kit uses, so two family names cannot collide on their length. */

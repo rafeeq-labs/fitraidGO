@@ -1,33 +1,17 @@
 import { makeRng, mix } from '../engine/rng.js';
-import { bucket } from './building/Metrics.js';
-import { deliverableLevel, siteOf } from './building/Site.js';
+import { LEVEL_MIN_DEPTH, LEVEL_MIN_WIDTH, bucket } from './building/Metrics.js';
+import { familyDef, type BuildingFamily } from './building/Registry.js';
+import { deliverableLevelFor, siteOf } from './building/Site.js';
 import { yardSurface } from './building/Yard.js';
-import { civic } from './building/families/civic.js';
-import { level0 } from './building/families/level0.js';
-import {
-  merchantL1,
-  merchantL2,
-  merchantL3,
-} from './building/families/merchant.js';
-import {
-  residentialL1,
-  residentialL2,
-  residentialL3,
-} from './building/families/residential.js';
-import {
-  workshopL1,
-  workshopL2,
-  workshopL3,
-} from './building/families/workshop.js';
+import { level0 as sharedLevel0 } from './building/families/level0.js';
 import type { KitContext } from './KitTypes.js';
 
 /**
  * The building kit's public face.
  *
- * The recipes themselves live under `building/`, layered so that each module imports only from the
- * ones above it: Metrics (which imports nothing at all) -> Site -> Foundation, Yard, Facades ->
- * parts -> families. This file is the only thing outside that tree the rest of the game talks to,
- * so the split cost no call site a single edit.
+ * The recipes themselves live under `building/`, layered so each module imports only from the ones
+ * above it: Metrics (which imports nothing at all) -> Site -> Foundation, Yard, Facades -> parts ->
+ * families -> Registry. This file is the only part of that tree the rest of the game talks to.
  *
  * Three axes escalate together at every step of a family ladder, because a level is only legible if
  * all three move: mass height, material richness (plaster -> plaster + framing + stone base course
@@ -43,11 +27,9 @@ import type { KitContext } from './KitTypes.js';
  */
 
 export { MODULE } from './building/Metrics.js';
-export { deliverableLevel } from './building/Site.js';
 export { buildPlotFoundation, type PlotFoundationSpec } from './building/Foundation.js';
 export { yardSurface } from './building/Yard.js';
-
-export type BuildingFamily = 'residential' | 'merchant' | 'workshop' | 'civic';
+export { BUILDING_FAMILIES, FAMILIES, type BuildingFamily } from './building/Registry.js';
 
 export interface BuildingSpec {
   family: BuildingFamily;
@@ -60,9 +42,32 @@ export interface BuildingSpec {
   variant?: number;
 }
 
+/**
+ * The level a parcel can actually carry, for a given family.
+ *
+ * `family` is REQUIRED rather than optional, and that is the whole point of the parameter. Families
+ * gate differently - a field strip or a stack yard needs run-length a house does not - and an
+ * optional parameter would leave every existing three-argument call compiling silently against the
+ * default gate. The plot builder's downgrade counter would then report levels the kit never built,
+ * which is exactly the failure the function was written to prevent.
+ */
+export function deliverableLevel(
+  plotW: number,
+  plotD: number,
+  requested: number,
+  family: BuildingFamily
+): number {
+  const gate = familyDef(family).gate;
+  return deliverableLevelFor(plotW, plotD, requested, {
+    minDepth: gate?.minDepth ?? LEVEL_MIN_DEPTH,
+    minWidth: gate?.minWidth ?? LEVEL_MIN_WIDTH,
+  });
+}
+
 /** Three or four variants per family-level; beyond that the geometry cache stops paying for itself. */
 export function variantCount(family: BuildingFamily, level: number): number {
-  if (family === 'civic') return 3;
+  const def = familyDef(family);
+  if (def.variants) return def.variants(level);
   if (level <= 0) return 3;
   return level === 1 ? 4 : 3;
 }
@@ -84,16 +89,22 @@ function seedVariant(spec: BuildingSpec): number {
  * Plot space: origin at the plot centre on terrain, +y up, the fronting street at -z (see
  * map/types.ts). Everything here is authored above LAYER.plotSlab, so the caller only positions
  * and rotates the plot.
+ *
+ * The guard ordering below is load-bearing and unchanged from the dispatcher this replaces:
+ * too-small bail, then single-tier, then level 0, then the ladder. The only structural change is
+ * that the ladder is a table lookup with no trailing `else` - that `else` was an unguarded
+ * catch-all for workshop, so a new family name built a smithy rather than failing to compile.
  */
 export function buildBuilding(ctx: KitContext, spec: BuildingSpec): void {
   const plotW = bucket(spec.plotW);
   const plotD = bucket(spec.plotD);
+  const def = familyDef(spec.family);
   const v = (spec.variant ?? seedVariant(spec)) % variantCount(spec.family, spec.level);
   // The site is solved for the level that will actually be DELIVERED, not the one requested. Built
   // from the requested level, a downgraded parcel got the wrong setback and the wrong planted
   // margin — an L3 site is 0.2 m tighter at the sides than an L2 one — so the recipe that ran was
   // sized against a plot it was not standing on.
-  const level = spec.family === 'civic' ? 3 : deliverableLevel(plotW, plotD, spec.level);
+  const level = def.singleTier ? 3 : deliverableLevel(plotW, plotD, spec.level, spec.family);
   const site = siteOf(plotW, plotD, level);
   const local: KitContext = {
     channel: ctx.channel,
@@ -105,8 +116,8 @@ export function buildBuilding(ctx: KitContext, spec: BuildingSpec): void {
     yardSurface(local, plotW, plotD, spec.level >= 2 ? 1 : 0);
     return;
   }
-  if (spec.family === 'civic') {
-    civic(local, site, v);
+  if (def.singleTier) {
+    def.levels[2](local, site, v);
     return;
   }
   // A parcel too shallow or too narrow for its level is DOWNGRADED, not squeezed. placeMass will
@@ -115,20 +126,8 @@ export function buildBuilding(ctx: KitContext, spec: BuildingSpec): void {
   // strip the level-3 manor put its rear wall a metre and a half outside its own kerb. What a
   // parcel can carry is a property of the parcel; see the containment invariant in PlotBuilder.
   if (spec.level <= 0 || level <= 0) {
-    level0(local, siteOf(plotW, plotD, 0), v);
+    (def.level0 ?? sharedLevel0)(local, siteOf(plotW, plotD, 0), v);
     return;
   }
-  if (spec.family === 'residential') {
-    if (level === 1) residentialL1(local, site, v);
-    else if (level === 2) residentialL2(local, site, v);
-    else residentialL3(local, site, v);
-  } else if (spec.family === 'merchant') {
-    if (level === 1) merchantL1(local, site, v);
-    else if (level === 2) merchantL2(local, site, v);
-    else merchantL3(local, site, v);
-  } else {
-    if (level === 1) workshopL1(local, site, v);
-    else if (level === 2) workshopL2(local, site, v);
-    else workshopL3(local, site, v);
-  }
+  def.levels[level - 1]!(local, site, v);
 }

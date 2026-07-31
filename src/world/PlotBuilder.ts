@@ -684,7 +684,7 @@ export function buildPlotMeshes(
     const footprint = standardFootprint(plot);
     // A parcel too shallow for its level is downgraded. That is correct, but it has to be counted:
     // silently capping the top tier is indistinguishable from never authoring it.
-    const got = deliverableLevel(footprint.w, footprint.d, assignment.level);
+    const got = deliverableLevel(footprint.w, footprint.d, assignment.level, assignment.family);
     delivered[got] = (delivered[got] ?? 0) + 1;
     if (got < assignment.level) downgraded++;
     let group = groups.get(key);
