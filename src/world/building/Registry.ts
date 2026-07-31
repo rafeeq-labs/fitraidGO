@@ -2,8 +2,16 @@ import type { FamilyDef } from './FamilyDef.js';
 import { apartmentL1, apartmentL2, apartmentL3 } from './families/apartment.js';
 import { civic } from './families/civic.js';
 import { craftshopL1, craftshopL2, craftshopL3 } from './families/craftshop.js';
+import { farmL1, farmL2, farmL3, farmLevel0 } from './families/farm.js';
 import { innL1, innL2, innL3, innLevel0 } from './families/inn.js';
+import { lumberL1, lumberL2, lumberL3, lumberLevel0 } from './families/lumber.js';
 import { merchantL1, merchantL2, merchantL3 } from './families/merchant.js';
+import {
+  pastureL1,
+  pastureL2,
+  pastureL3,
+  pastureLevel0,
+} from './families/pasture.js';
 import {
   residentialL1,
   residentialL2,
@@ -42,6 +50,31 @@ export const FAMILIES = {
   inn: { levels: [innL1, innL2, innL3], level0: innLevel0 },
   // The town hall's empty plot is a PAVED civic square, not a lawn - the one family whose yard is
   // fully occupied from L0, which is why its ladder leans entirely on height and material.
+  // --- wave 2: the first families to consume thatch, crop, soil and hide ---
+  // All three carry their identity in the YARD rather than the mass, so all three gate on DEPTH -
+  // a field strip, a pen or a stack yard needs run-length that a house does not, and below it the
+  // family has no ladder left. They also opt out of the generic rear-yard scatter, which would
+  // otherwise drop bushes into the wheat and shrubs into the cattle pen.
+  farm: {
+    levels: [farmL1, farmL2, farmL3],
+    level0: farmLevel0,
+    ground: 'soil',
+    dressing: 'none',
+    gate: { minDepth: [0, 6.5, 9, 11] },
+  },
+  pasture: {
+    levels: [pastureL1, pastureL2, pastureL3],
+    level0: pastureLevel0,
+    dressing: 'none',
+    gate: { minDepth: [0, 6.5, 9, 11] },
+  },
+  lumber: {
+    levels: [lumberL1, lumberL2, lumberL3],
+    level0: lumberLevel0,
+    dressing: 'none',
+    gate: { minDepth: [0, 6, 8, 9.5] },
+  },
+
   townhall: {
     levels: [townhallL1, townhallL2, townhallL3],
     level0: townhallLevel0,

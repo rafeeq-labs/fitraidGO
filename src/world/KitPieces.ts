@@ -767,7 +767,16 @@ export function timberFrameBay(ctx: KitContext, o: TimberFrameBayOptions = {}): 
  * so an L1 roof came out as boards running down the slope while its ridge cap — always emitted
  * into the roof channel — came out blue slate on top of brown planking. One generator, two hues.
  */
-function roofOpts(shingle?: boolean): Opts {
+/**
+ * Which of the three roof materials a pitched roof is covered in.
+ *
+ * `thatch` is a separate MATERIAL, not a warm tint on slate: its courses are deep rolls with no
+ * edges, where slate is a hard-edged grid that survives minification as visible corduroy. Six of
+ * the thirteen new families are thatched, and tinting slate for them would have made a farm, a
+ * fishery and an inn read as the same building in three colours.
+ */
+function roofOpts(shingle?: boolean, thatch?: boolean): Opts {
+  if (thatch === true) return { ...TAGGED.thatch };
   return shingle === true ? { ...TAGGED.shingle } : { uvScale: UV.roof };
 }
 
@@ -859,6 +868,8 @@ export type GableRoofOptions = {
   ends?: boolean;
   verge?: boolean;
   shingle?: boolean;
+  /** Bundled reed rather than slate or shingle; see roofOpts. */
+  thatch?: boolean;
   /** Half-width of the ridge capping course. */
   ridgeCap?: number;
   /** The gable end wall is made of whatever the mass below it is; plaster is only the default. */
@@ -875,7 +886,7 @@ export function gableRoof(ctx: KitContext, o: GableRoofOptions = {}): void {
   const rise = o.rise ?? (pitch * d) / 2;
   const oh = o.overhang ?? style.overhang;
   ctx.channel.roof.gableRoof(w, d, rise, {
-    ...roofOpts(o.shingle),
+    ...roofOpts(o.shingle, o.thatch),
     y,
     overhang: oh,
     sag: style.sag,
@@ -939,6 +950,8 @@ export type HipRoofOptions = {
   overhang?: number;
   ridgeFraction?: number;
   shingle?: boolean;
+  /** Bundled reed rather than slate or shingle; see roofOpts. */
+  thatch?: boolean;
 };
 
 /** All four sides slope. Reads formal, so it is the civic default. */
@@ -949,7 +962,7 @@ export function hipRoof(ctx: KitContext, o: HipRoofOptions = {}): void {
   const style = ctx.kit.roof;
   const rise = o.rise ?? ((o.pitch ?? style.pitch) * d) / 2;
   const oh = o.overhang ?? style.overhang;
-  const ro = roofOpts(o.shingle);
+  const ro = roofOpts(o.shingle, o.thatch);
   const mb = ctx.channel.roof;
   mb.hipRoof(w, d, rise, { ...ro, y, overhang: oh, ridgeFraction: o.ridgeFraction ?? 0.45 });
   const hw = w / 2 + oh;
@@ -1043,6 +1056,8 @@ export type MonoPitchRoofOptions = {
   overhang?: number;
   ends?: boolean;
   shingle?: boolean;
+  /** Bundled reed rather than slate or shingle; see roofOpts. */
+  thatch?: boolean;
 };
 
 /** A lean-to: high edge at -z, sloping down toward the street. Open ends by default. */
@@ -1058,7 +1073,7 @@ export function monoPitchRoof(ctx: KitContext, o: MonoPitchRoofOptions = {}): vo
   const z0 = -d / 2 - oh;
   // u across the slope's width, v up the slope, as everywhere else: the quad's own edge order
   // already gives that, so this must NOT be rotated.
-  const opts: Opts = roofOpts(o.shingle);
+  const opts: Opts = roofOpts(o.shingle, o.thatch);
   mb.quad([-hw, y, z1], [hw, y, z1], [hw, y + rise, z0], [-hw, y + rise, z0], opts, [0.9, 0.9, 1, 1]);
   mb.quad(
     [hw, y - 0.16, z1],
