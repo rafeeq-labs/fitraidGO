@@ -22,6 +22,22 @@ Node 22+. No npm install is needed: `three` and `earcut` are vendored in `vendor
     npm test          # geometry unit tests
     npm run shoot     # Playwright portrait captures -> shots/
 
+## Camera controls
+
+The camera stays a solved rig — the controls edit the elevation, azimuth, span and pan the rig is
+solved from, so panning still streams the right cells and zooming still picks the right tree detail.
+
+    drag / one finger          pan the map, 1:1 with the ground under the cursor
+    right or shift drag        turn the view; drag up and down to tilt
+    two fingers                pinch to zoom, twist to turn, slide to tilt
+    wheel                      zoom
+    + -   Q E   W S            zoom, turn, tilt
+    C or double-click          recentre on the player
+    R                          back to the preset view
+
+The compass, zoom pair and recentre button in the bottom-right corner do the same things, and are
+part of the HUD: `?hud=0` takes them away and leaves the gestures.
+
 ## URL parameters
 
     ?biome=temperate|snow|desert|coastal|forest|alpine|farmland|autumn|swamp
