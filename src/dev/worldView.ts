@@ -51,6 +51,7 @@ const world = buildWorld({
   players: num('players', 5),
   showStats: params.get('stats') === '1',
   grassDensity: num('grass', 0.92),
+  treeDensity: num('trees', 0),
   cellSize: params.get('cell') === null ? undefined : num('cell', 56),
   streamMargin: params.get('margin') === null ? undefined : num('margin', 22),
   cellBudget: params.get('budget') === null ? undefined : num('budget', 2),
