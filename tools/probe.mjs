@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs';
 import { inflateSync } from 'node:zlib';
 
-function decode(path) {
+export function decode(path) {
   const buf = readFileSync(path);
   let p = 8;
   let w = 0;
@@ -61,8 +61,11 @@ function decode(path) {
   return { w, h, channels, data: out };
 }
 
-const luma = (r, g, b) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+export const luma = (r, g, b) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
 
+// This file is both a CLI and a module: tools/measure-sheet.mjs reuses the decoder rather than
+// carrying a second copy of it. Everything below runs only when it is the process entry point.
+function main() {
 const [, , file, ...rest] = process.argv;
 const img = decode(file);
 const { w, h, channels, data } = img;
@@ -123,3 +126,6 @@ if (rest.length === 0) {
     );
   }
 }
+}
+
+if (process.argv[1] !== undefined && process.argv[1].endsWith('probe.mjs')) main();
