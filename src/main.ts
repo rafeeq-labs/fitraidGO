@@ -1,3 +1,4 @@
+import type { World } from './game/buildWorld.js';
 import { Hud } from './game/hud.js';
 import { PositionSource } from './game/PositionSource.js';
 import type { Landmark, WorldTile } from './map/types.js';
@@ -26,6 +27,8 @@ declare global {
     __RAIDFIT_TILE?: WorldTile;
     /** Exposed for the capture harness and for checking the fallback from a console. */
     __RAIDFIT_POSITION?: PositionSource;
+    /** Exposed so the camera, the streamer and the controls can be driven from a console. */
+    __RAIDFIT_WORLD?: World;
   }
 }
 
@@ -161,6 +164,16 @@ async function bootGame(): Promise<void> {
     showStats: params.get('stats') === '1',
   });
   world.start();
+  window.__RAIDFIT_WORLD = world;
+
+  /**
+   * The camera controls are always live; the buttons for them are part of the HUD, so `?hud=0`
+   * takes both away and leaves the gestures.
+   */
+  const view =
+    hud && world.controls
+      ? new (await import('./game/ViewControls.js')).ViewControls({ controls: world.controls })
+      : null;
 
   const walker = source.walker;
   if (!walker) {
@@ -177,6 +190,7 @@ async function bootGame(): Promise<void> {
   const landmarks = walker.tile.landmarks;
   const tick = (): void => {
     const pose = walker.pose;
+    view?.update();
     hud.update({
       remaining: source.remaining,
       walked: source.walked,

@@ -1,5 +1,6 @@
 import { Vector3 } from 'three';
 import { getBiome, type BiomeId } from '../biomes/BiomeKit.js';
+import { CameraControls } from '../engine/CameraControls.js';
 import { CAMERA_PRESETS } from '../engine/IsoCamera.js';
 import { Lighting } from '../engine/Lighting.js';
 import { rampUniforms, setFogOfWar } from '../engine/RampMaterial.js';
@@ -66,6 +67,13 @@ export interface BuildWorldOptions {
   treeCoarseScale?: number;
   /** Ground span beyond which shrubs are not planted. */
   shrubSpan?: number;
+  /**
+   * Let the pointer, the wheel and the keyboard move the camera. On by default.
+   *
+   * The capture harness leaves it on: with no input the controls write the preset back unchanged,
+   * so a frozen frame is bit-identical to one built without them.
+   */
+  controls?: boolean;
 }
 
 export interface World {
@@ -78,6 +86,8 @@ export interface World {
   ring: RadiusRing;
   fog: FogOfWar;
   others: FakePlayers;
+  /** Pointer, wheel and key control of the camera; null when the build asked for none. */
+  controls: CameraControls | null;
   surfaces: TileSurfaceResult;
   streamer: WorldStreamer;
   index: WorldIndex;
@@ -155,14 +165,29 @@ export function buildWorld(options: BuildWorldOptions): World {
   });
   renderer.setSunDirection(lighting.sunDirection);
   renderer.isoCamera.setPreset(CAMERA_PRESETS[camName] ?? CAMERA_PRESETS.gps!);
-  lighting.fitFogToCamera(
-    renderer.isoCamera.focusDistance,
-    kit.atmosphere.fogNearOffset,
-    kit.atmosphere.fogFarOffset,
-    scene
-  );
-  // Cover the whole visible ground, with a margin so geometry just off-frame still casts into it.
-  lighting.setShadowExtent(renderer.isoCamera.groundRadius() * 1.15);
+
+  /**
+   * Everything that is fitted to the view rather than to the world: fog placement and the shadow
+   * frustum. Both were set once at build, which was correct while the view was a fixed preset and
+   * is not now that it zooms and tilts — a view pulled back to 250 m with fog fitted to 82 m puts
+   * the whole frame in haze, and a shadow box fitted to the old span drops every shadow past the
+   * near blocks.
+   *
+   * The shadow extent is capped rather than tracking the span all the way out: the map is a fixed
+   * 2048 square, so a frustum that grows without limit only trades sharp shadows near the player
+   * for blurry ones everywhere.
+   */
+  const fitViewDependents = (): void => {
+    lighting.fitFogToCamera(
+      renderer.isoCamera.focusDistance,
+      kit.atmosphere.fogNearOffset,
+      kit.atmosphere.fogFarOffset,
+      scene
+    );
+    // Cover the whole visible ground, with a margin so geometry just off-frame still casts into it.
+    lighting.setShadowExtent(Math.min(renderer.isoCamera.groundRadius() * 1.15, 260));
+  };
+  fitViewDependents();
 
   const textures = new TextureFactory(seed);
   timings.textures = lap();
@@ -276,6 +301,18 @@ export function buildWorld(options: BuildWorldOptions): World {
 
   others.freeze(scrub);
 
+  /**
+   * Bound to the canvas rather than to the window so that the HUD keeps its own events, and built
+   * after the preset is applied because the controls take their home framing from it.
+   */
+  const controls =
+    options.controls === false
+      ? null
+      : new CameraControls({
+          element: renderer.renderer.domElement,
+          camera: renderer.isoCamera,
+        });
+
   const world: World = {
     renderer,
     scene,
@@ -286,6 +323,7 @@ export function buildWorld(options: BuildWorldOptions): World {
     ring,
     fog,
     others,
+    controls,
     surfaces,
     streamer,
     index,
@@ -301,7 +339,10 @@ export function buildWorld(options: BuildWorldOptions): World {
         player.place(pose.x, 0, pose.z, pose.yaw);
         player.update(dt > 0 ? dt : 1 / 60, pose.speed, pose.yaw);
 
+        // The controls edit the numbers the rig is solved from, so they run before the solve.
+        controls?.update(dt);
         renderer.isoCamera.update(pose.x, 0, pose.z, dt > 0 ? dt : 1);
+        if (controls?.takeViewChanged()) fitViewDependents();
         lighting.follow(renderer.isoCamera.target.x, renderer.isoCamera.target.z);
 
         // The world follows the camera, not the other way round. Budgeted, so that walking into a
@@ -345,6 +386,7 @@ export function buildWorld(options: BuildWorldOptions): World {
      */
     dispose(): void {
       renderer.stop();
+      controls?.dispose();
       streamer.dispose();
       for (const mesh of surfaces.meshes) {
         scene.remove(mesh);

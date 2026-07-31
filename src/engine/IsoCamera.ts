@@ -66,6 +66,17 @@ export class IsoCamera {
    * of them, and centring the shadow budget on the avatar spends half of it behind the camera.
    */
   readonly target = new Vector3();
+  /**
+   * Ground-plane offset applied to the whole rig after the anchor has been solved, in metres.
+   *
+   * This is what dragging the map moves. It deliberately sits OUTSIDE the anchor solve: the frame
+   * slides across the world and the player slides out of the anchor with it, which is the point —
+   * a pan that kept the avatar pinned to `anchorY` would not be a pan at all. Only x and z are read.
+   *
+   * Everything that keys off the view rather than off the player — streaming, the shadow frustum,
+   * the fog stamp — reads `target` or the camera itself, so all of it follows a pan for free.
+   */
+  readonly pan = new Vector3();
   /** The smoothed position being followed (normally the player). */
   private readonly follow = new Vector3();
   private readonly desiredFollow = new Vector3();
@@ -219,6 +230,17 @@ export class IsoCamera {
       const screenY = (1 - this.scratch.y) / 2;
       if (screenY < this.preset.anchorY) lo = ahead;
       else hi = ahead;
+    }
+
+    // Slide the solved rig sideways. Applied after the bisection rather than inside it so that the
+    // anchor is solved once for the player and the pan is a rigid translation of the whole view.
+    if (this.pan.x !== 0 || this.pan.z !== 0) {
+      this.target.x += this.pan.x;
+      this.target.z += this.pan.z;
+      this.camera.position.x += this.pan.x;
+      this.camera.position.z += this.pan.z;
+      this.camera.lookAt(this.target);
+      this.camera.updateMatrixWorld();
     }
   }
 
