@@ -24,7 +24,20 @@ export const FAMILIES = {
   workshop: { levels: [workshopL1, workshopL2, workshopL3] },
   // Civic ignores the requested level and always builds its one tier. It also offers three variants
   // at every level rather than the kit's 3/4/3, which used to be a name check in variantCount.
-  civic: { levels: [civic, civic, civic], singleTier: true, variants: () => 3 },
+  //
+  // The gate is the fix for a latent crash. Because civic bypassed level gating entirely, a shallow
+  // parcel got the full hall regardless, and its rear wall left the kerb: buildPlotChannels THREW
+  // from assertContained on every plot 10 m deep or less. Nothing caught it because the containment
+  // checker carried a hard-coded family list that civic was not on. Measured, the hall is contained
+  // from 6.25 m of buildable depth and escapes at 5.92, so that is the threshold, and it is repeated
+  // across levels 1-3 so the downgrade walk lands on 0 - a parcel that cannot carry the hall stays a
+  // surveyed plot rather than getting a squeezed one.
+  civic: {
+    levels: [civic, civic, civic],
+    singleTier: true,
+    variants: () => 3,
+    gate: { minDepth: [0, 6.25, 6.25, 6.25] },
+  },
 } satisfies Record<string, FamilyDef>;
 
 export type BuildingFamily = keyof typeof FAMILIES;

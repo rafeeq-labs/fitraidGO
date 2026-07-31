@@ -104,7 +104,14 @@ export function buildBuilding(ctx: KitContext, spec: BuildingSpec): void {
   // from the requested level, a downgraded parcel got the wrong setback and the wrong planted
   // margin — an L3 site is 0.2 m tighter at the sides than an L2 one — so the recipe that ran was
   // sized against a plot it was not standing on.
-  const level = def.singleTier ? 3 : deliverableLevel(plotW, plotD, spec.level, spec.family);
+  // A single-tier family is still GATED, it just is not laddered: it either gets its one tier or it
+  // stays a surveyed plot. Skipping the gate entirely is what let civic build a full hall on a 10 m
+  // parcel and throw out of assertContained.
+  const level = def.singleTier
+    ? deliverableLevel(plotW, plotD, 3, spec.family) === 3
+      ? 3
+      : 0
+    : deliverableLevel(plotW, plotD, spec.level, spec.family);
   const site = siteOf(plotW, plotD, level);
   const local: KitContext = {
     channel: ctx.channel,
@@ -116,7 +123,7 @@ export function buildBuilding(ctx: KitContext, spec: BuildingSpec): void {
     yardSurface(local, plotW, plotD, spec.level >= 2 ? 1 : 0);
     return;
   }
-  if (def.singleTier) {
+  if (def.singleTier && level === 3) {
     def.levels[2](local, site, v);
     return;
   }
