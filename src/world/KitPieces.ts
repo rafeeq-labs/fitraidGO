@@ -63,6 +63,12 @@ export const UV = {
   cloth: 2.2,
   /** Yard paving reads as a smaller module than a building's ashlar. */
   paving: 1.6,
+  /** Ploughed earth. Matches the ground scale so a furrow ridge sits on its own clods. */
+  soil: 3.2,
+  /** Deep thatch courses; at the roof's 2.5 m the rolls came out as fine as a slate grid. */
+  thatch: 4.2,
+  /** Hide is read at the scale of an animal's flank, not a wall's. */
+  hide: 1.1,
 } as const;
 
 /** Shared AO stops. Anything darker than `recess` starts to read as a hole in the render. */
@@ -86,6 +92,18 @@ export const TAGGED = {
   water: tag({ uvScale: 1.4, ao: 0.7 }, TAG.water) as Opts,
   crystal: tag({ uvScale: UV.glow }, TAG.crystal) as Opts,
   fire: tag({ uvScale: UV.glow, ao: 1 }, TAG.fire) as Opts,
+
+  // Ground materials. `soil` and `crop` tile at the ground scale so a furrow and a drill row read
+  // at the pitch they are authored at; `rock` and `hardstand` take the stone scale.
+  soil: tag({ uvScale: UV.soil }, TAG.soil) as Opts,
+  rock: tag({ uvScale: UV.stone }, TAG.rock) as Opts,
+  hardstand: tag({ uvScale: UV.paving }, TAG.hardstand) as Opts,
+  crop: tag({ uvScale: UV.foliage }, TAG.crop) as Opts,
+  // Thatch takes a LARGER tile than slate: its courses are deep, and at the roof's 2.5 m the rolls
+  // came out as fine as a slate grid, which is the one thing the separate generator exists to avoid.
+  thatch: tag({ uvScale: UV.thatch }, TAG.thatch) as Opts,
+  iron: tag({ uvScale: UV.metal }, TAG.iron) as Opts,
+  hide: tag({ uvScale: UV.hide }, TAG.hide) as Opts,
 } as const;
 
 /**

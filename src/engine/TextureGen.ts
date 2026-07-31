@@ -454,7 +454,7 @@ export interface GrassParams {
  *  - `meadow` — coarser: big tussocks, long blades, bleached patches, many more wildflowers.
  *  - `mown`   — parks and greens: short, fine, evenly lit, tight clumps and few flowers.
  */
-export type GrassVariant = 'sward' | 'meadow' | 'mown';
+export type GrassVariant = 'sward' | 'meadow' | 'mown' | 'crop';
 
 interface GrassRecipe {
   /** Multiplier on the whole value scale. */
@@ -551,6 +551,34 @@ const GRASS_RECIPES: Record<GrassVariant, GrassRecipe> = {
     flowers: 0.4,
     weedsPerM2: 0.22,
   },
+  /**
+   * A drilled cereal crop, for the farm family's ripening fields.
+   *
+   * The structural difference from the three turf variants is `fan`, not colour. Grass fans its
+   * blades into a rosette from a point; a cereal plant throws a tight sheaf of near-vertical stems,
+   * so the fan drops to a quarter turn and the blades roughly triple in length. Without that the
+   * field reads as long grass whatever colour it is painted, which is the failure mode a crop has
+   * to avoid — a farm whose fields look like lawn has no family identity at all.
+   *
+   * `dry` carries most of the gold. Straw is the bleached-stem pigment the recipe already has, so
+   * ripening wheat is mostly a matter of asking for a great deal of it rather than inventing a new
+   * colour path; the caller supplies the gold ramp on top through GrassParams.
+   */
+  crop: {
+    value: 1.05,
+    sat: 0.9,
+    tuft: [0.1, 0.2],
+    tuftsPerM2: 40,
+    tuftBlades: [6, 11],
+    bladeLen: [0.45, 0.8],
+    filler: [300, 520],
+    fan: 0.24,
+    bias: 0.3,
+    zoning: 0.35,
+    dry: 0.72,
+    flowers: 0.15,
+    weedsPerM2: 0.1,
+  },
 };
 
 /**
@@ -583,6 +611,16 @@ function grassScale(
     sun: grade(p.lit, 1.8 * v, 1.9 * s, 0.26),
     straw: grade(p.lit, 1.72 * v, 1.25 * s, 0.55, 0xdcc474),
   };
+}
+
+export interface ThatchParams {
+  lit: number;
+  mid: number;
+  shade: number;
+  /** Courses across the sheet. Far fewer than a slate roof: the roll is the readable feature. */
+  rows: number;
+  /** Combed stems per texel of sheet width. */
+  comb: number;
 }
 
 export interface TimberParams {
@@ -1078,6 +1116,75 @@ export class TextureFactory {
             ctx.fillStyle = joint;
             ctx.fillRect(x + gap, top + h, tileW - gap * 2, Math.max(1.5, rowH * 0.07));
           }
+        }
+        return canvas;
+      },
+      repeat
+    );
+  }
+
+  /**
+   * Thatch: bundled reed or straw, laid in deep courses.
+   *
+   * It gets its own generator rather than a warm tint on `roof` because the two are structurally
+   * opposite. A slate roof is a grid of hard-edged rectangles with a bright catch along each lower
+   * lip; thatch has no edges at all — it is a stack of fat rolls, each one a mass of stem ends,
+   * lit along its crown and dropping into deep shade where the course below tucks under. Tinting
+   * slate brown gives brown slate, which is exactly what the six thatched families must not have:
+   * at the GPS camera the slate grid survives minification as a visible corduroy, and a farm, a
+   * fishery and an inn all wearing it read as the same building in different colours.
+   *
+   * The courses are far deeper than a slate course and deliberately few, because the feature that
+   * has to survive to a 40 px thumbnail is the ROLL, not the straw.
+   */
+  thatch(key: string, p: ThatchParams, repeat = 1): Texture {
+    return this.memo(
+      `thatch:${key}`,
+      (rng, size) => {
+        const { canvas, ctx } = makeCanvas(size);
+        ctx.fillStyle = shiftCss(p.shade, -0.12);
+        ctx.fillRect(0, 0, size, size);
+
+        const rowH = size / p.rows;
+        for (let row = -1; row <= p.rows; row++) {
+          const y = row * rowH;
+          // The roll. The lit stop sits near the TOP of the course rather than the middle, because
+          // a thatch course is a cylinder seen from above the eaves: its crown catches the sun and
+          // the underside of the roll is the deepest shadow on the whole roof.
+          const grad = ctx.createLinearGradient(0, y, 0, y + rowH * 1.12);
+          grad.addColorStop(0, shiftCss(p.shade, -0.05));
+          grad.addColorStop(0.26, shiftCss(p.lit, 0.06));
+          grad.addColorStop(0.68, css(p.mid));
+          grad.addColorStop(1, shiftCss(p.shade, -0.14));
+          ctx.fillStyle = grad;
+          ctx.fillRect(0, y, size, rowH * 1.08);
+
+          // Combed stems, running with the pitch. Individually valued for the same reason every
+          // other discrete element in this file is: a flat roll reads as a painted tube.
+          const straws = Math.round(p.comb * size);
+          ctx.lineWidth = Math.max(1, size / 620);
+          for (let i = 0; i < straws; i++) {
+            const x = rng.range(-2, size + 2);
+            const top = y + rng.range(0, rowH * 0.55);
+            const len = rng.range(rowH * 0.3, rowH * 0.95);
+            const v = rng.range(-0.55, 1);
+            const c = v >= 0 ? shiftCss(p.lit, v * 0.16) : shiftCss(p.shade, v * 0.1);
+            ctx.strokeStyle = c;
+            ctx.globalAlpha = rng.range(0.25, 0.7);
+            ctx.beginPath();
+            ctx.moveTo(x, top);
+            // A slight lean, alternating, so the comb does not read as a printed vertical rule.
+            ctx.lineTo(x + rng.range(-1, 1) * (size / 300), top + len);
+            ctx.stroke();
+          }
+          ctx.globalAlpha = 1;
+
+          // The shadow the course above casts across the crown of this one, and the hard dark line
+          // where this course's butt ends overhang the next.
+          ctx.fillStyle = css(p.shade, 0.55);
+          ctx.fillRect(0, y, size, rowH * 0.16);
+          ctx.fillStyle = shiftCss(p.shade, -0.16);
+          ctx.fillRect(0, y + rowH * 1.02, size, Math.max(1.5, rowH * 0.07));
         }
         return canvas;
       },

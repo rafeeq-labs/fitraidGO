@@ -14,7 +14,7 @@ import {
 import type { BiomeKit } from '../biomes/BiomeKit.js';
 import { LAYER, PALETTE } from '../engine/Palette.js';
 import { RampMaterial } from '../engine/RampMaterial.js';
-import type { TextureFactory } from '../engine/TextureGen.js';
+import { grade, type TextureFactory } from '../engine/TextureGen.js';
 import type { Material, Texture } from 'three';
 import { hash32, makeRng, mix } from '../engine/rng.js';
 import type { Plot, PlotSize, PlotUse } from '../map/types.js';
@@ -357,6 +357,97 @@ export function createKitMaterials(kit: BiomeKit, textures: TextureFactory): Kit
     water: new RampMaterial({ map: textures.water(kit.id, t.water), vertexAO: true, rim: 0.8 }),
     timber: new RampMaterial({ map: textures.timber(kit.id, t.timber), vertexAO: true, rim: 0.4 }),
     metal: new RampMaterial({ color: PALETTE.emblemGold, vertexAO: true, rim: 1.6 }),
+
+    /**
+     * The seven materials the thirteen new families need.
+     *
+     * EVERY key here carries a distinct `:suffix`. `TextureFactory.memo` keys on the key string
+     * alone and ignores its params object entirely, so `textures.roof(kit.id, thatchParams)` would
+     * hand back the blue slate already cached under `kit.id` and no amount of correcting the
+     * parameters would change a pixel. Two full rounds of colour work once measured as literally
+     * zero change for exactly this reason.
+     */
+    // Ploughed earth. Built from the biome's own stone ramp shifted warm and desaturated, so a
+    // farm in the snow kit gets cold grey earth and one in farmland gets a red-brown loam.
+    soil: new RampMaterial({
+      map: textures.granular(`${kit.id}:soil`, {
+        base: grade(t.stone.mid, 0.72, 0.72, 0.3),
+        lit: grade(t.stone.lit, 0.86, 0.68, 0.28),
+        shade: grade(t.stone.shade, 0.6, 0.8, 0.24),
+        grain: 0.7,
+      }),
+      vertexAO: true,
+      rim: 0.12,
+    }),
+    // Cut rock. The same ashlar palette at full strength with a hard rim, because a quarry face is
+    // read entirely by the light catching its fracture edges.
+    rock: new RampMaterial({
+      map: textures.granular(`${kit.id}:rock`, {
+        base: t.stone.mid,
+        lit: t.stone.lit,
+        shade: t.stone.shade,
+        grain: 1,
+      }),
+      vertexAO: true,
+      rim: 0.9,
+    }),
+    // Compacted working yard: gravel and dust, flatter and cooler than soil, almost no rim so it
+    // sits back and lets the machinery standing on it carry the frame.
+    hardstand: new RampMaterial({
+      map: textures.granular(`${kit.id}:hardstand`, {
+        base: grade(t.paving.stone, 0.92, 0.55, 0.06),
+        lit: grade(t.paving.stoneLit, 1, 0.5, 0.05),
+        shade: grade(t.paving.stoneShade, 0.82, 0.6, 0.04),
+        grain: 0.85,
+      }),
+      vertexAO: true,
+      rim: 0.2,
+    }),
+    // Bundled reed. `#8A7557` is the authoritative hex, from REFERENCE-SPEC 7's farmland biome.
+    thatch: new RampMaterial({
+      map: textures.thatch(`${kit.id}:thatch`, {
+        lit: grade(0x8a7557, 1.32, 1.05, 0.14),
+        mid: 0x8a7557,
+        shade: grade(0x8a7557, 0.58, 1.12, 0.05),
+        rows: 7,
+        comb: 0.9,
+      }),
+      vertexAO: true,
+      rim: 0.7,
+    }),
+    // Standing cereal. The gold ramp is supplied here rather than by the variant, which carries
+    // the crop's STRUCTURE - upright sheaves rather than fanned rosettes.
+    crop: new RampMaterial({
+      map: textures.grass(
+        `${kit.id}:crop`,
+        {
+          lit: 0xd9bc57,
+          mid: 0xc8a63e,
+          shade: 0x8a6f2a,
+          flowers: [0xc0392b, 0x6a7fc4],
+          flowerDensity: 0.1,
+          clump: 0.5,
+        },
+        1,
+        'crop'
+      ),
+      vertexAO: true,
+      rim: 0.3,
+    }),
+    // Working iron: dark, cool, and hard-rimmed so a rail, a tyre or a chain catches the sun as a
+    // thin bright line. Deliberately nothing like `metal`, which is saturated emblem gold.
+    iron: new RampMaterial({ color: 0x4c525a, vertexAO: true, rim: 1.1 }),
+    // Hide. Warm brown at a fine scale; sheep take untagged `wall` instead.
+    hide: new RampMaterial({
+      map: textures.granular(`${kit.id}:hide`, {
+        base: 0x6b4a32,
+        lit: 0x8f6a49,
+        shade: 0x442d1e,
+        grain: 0.45,
+      }),
+      vertexAO: true,
+      rim: 0.35,
+    }),
     // Clamped to a warm ceiling: at 0.78 the pane came out of the ACES shoulder at luma 226 with
     // R, G and B within 30 of each other, i.e. a white sticker. 0.72 against the gold-shifted core
     // lands it near `#F6E4B6` with a real 60-point spread between R and B, under the spec's 226 cap.

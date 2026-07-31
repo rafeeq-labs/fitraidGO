@@ -74,15 +74,24 @@ export const KIT_CHANNELS: readonly KitChannel[] = [
 /**
  * Every material a channel can resolve to, in tag order. Index 0 is the untagged material.
  * A channel absent from this table has exactly one material.
+ *
+ * APPEND ONLY. `splitTags` resolves a tag by its ARRAY POSITION in these lists, and `plotKey` is a
+ * permanent persistence key, so appending is invisible to every building already built while
+ * inserting or reordering silently repaints all of them. This is a hard rule, not a preference.
+ *
+ * A new material is a tag rather than a ninth channel because a channel costs a MeshBuilder per
+ * building unconditionally plus a push/pop on every placement, whereas a tag costs a draw only when
+ * a tile actually contains that material. Plot draws are `instancedDraws <= 96` plus one batched
+ * draw per distinct slot present, against a budget of 200.
  */
 export const CHANNEL_SLOTS: Record<KitChannel, readonly string[]> = {
-  stone: ['stone', 'paving'],
-  wall: ['wall'],
-  roof: ['roof', 'shingle', 'water'],
+  stone: ['stone', 'paving', 'soil', 'rock', 'hardstand'],
+  wall: ['wall', 'hide'],
+  roof: ['roof', 'shingle', 'water', 'thatch'],
   timber: ['timber', 'bark'],
-  metal: ['metal'],
+  metal: ['metal', 'iron'],
   glow: ['glow', 'glowCrystal', 'glowFire', 'haloWarm', 'haloCool', 'haloFire'],
-  foliage: ['foliage', 'foliageAccent', 'canopy', 'conifer', 'willowLeaf'],
+  foliage: ['foliage', 'foliageAccent', 'canopy', 'conifer', 'willowLeaf', 'crop'],
   cloth: ['cloth'],
 };
 
@@ -109,6 +118,34 @@ export const TAG = {
    * wants a much finer uv scale than a plank does.
    */
   bark: 1,
+
+  /** Ploughed earth, for the farm and pasture yards and the mill's approach. */
+  soil: 2,
+  /** Cut rock face, for the quarry and mine excavations. */
+  rock: 3,
+  /** Compacted working yard: warehouse, quarry, mine, sawmill, forge. */
+  hardstand: 4,
+  /** Bundled reed roofing, for the six rural families. */
+  thatch: 3,
+  /** Standing cereal, for the farm's ripening fields. */
+  crop: 5,
+  /**
+   * Dark working iron, split off the kit's emblem gold.
+   *
+   * `metal` is a saturated gold used for finials, emblems and heraldic fittings, and the kit has
+   * been putting working iron into `stone` to avoid it — Props.ts documents the anvil and the
+   * bollards doing exactly that. With thirteen industrial families the iron surface area explodes:
+   * rails, cart tyres, a winding wheel, chains, hooks, mill gearing and a trip hammer. Painting all
+   * of that in pale ashlar would be the most visible material failure this expansion could ship.
+   */
+  iron: 1,
+  /**
+   * Animal hide, for the pasture family's cattle and horses.
+   *
+   * Narrow by design, and it buys the whole family: sheep take UNTAGGED `wall`, because cream
+   * plaster at a fine uv scale is already a good fleece.
+   */
+  hide: 1,
 } as const;
 
 /** Where a caller wants a piece to stand, in the caller's own space. */
