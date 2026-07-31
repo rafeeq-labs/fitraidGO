@@ -1,10 +1,15 @@
 // Extracts frames from a local video file, so a reference clip can be measured the same way a
 // reference PNG already is.
 //
-// There is no ffmpeg here and there is no way to get one: it is not installed, and both
-// registry.npmjs.org and pypi.org answer 403 through this environment's proxy. The only video
-// decoder present is the Chromium that Playwright already uses for every capture in this repo, so
-// that is what does the decoding.
+// Decoding is done by the Chromium that Playwright already drives for every capture in this repo,
+// because it is the only usable decoder present. Playwright DOES ship an ffmpeg at
+// /opt/pw-browsers/ffmpeg-1011, but it is compiled `--disable-everything` with only mjpeg, vp8,
+// webm and png enabled, so it cannot decode much either; there is no system ffmpeg, and npm and
+// pypi both answer 403 so nothing can be installed.
+//
+// The practical consequence, which `sniffCodec` below exists to report clearly: Chromium here is
+// the open-source build, so it plays VP8, VP9 and AV1 but NOT H.264. Most screen recordings and
+// anything off a social platform are H.264, so this is the common case, not an edge case.
 //
 // Frames are taken by drawing the video into a canvas at its NATIVE resolution and reading the
 // canvas back, rather than by screenshotting the <video> element. An element screenshot goes through
@@ -19,7 +24,16 @@
 // Usage:
 //   node tools/video-frames.mjs <video> [--out DIR] [--fps 2] [--max 400] [--start S] [--end S]
 import { createServer } from 'node:http';
-import { createReadStream, statSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import {
+  createReadStream,
+  statSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  openSync,
+  readSync,
+  closeSync,
+} from 'node:fs';
 import { basename, extname, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 
@@ -74,6 +88,51 @@ export function serveFile(path, html = '') {
 }
 
 /**
+ * Reads the video codec out of the container without decoding anything.
+ *
+ * Exists so a file this Chromium cannot play fails with the REASON and the fix, rather than with
+ * `Error: video failed to load`, which is what it said before and which cost a full diagnosis round
+ * to turn into "it is H.264 and this build has no H.264".
+ *
+ * Deliberately crude - it scans for known codec boxes rather than walking the box tree. Naming the
+ * codec is all that is needed to produce a useful message; a full parser would be more code for the
+ * same sentence.
+ */
+export function sniffCodec(path) {
+  const head = Buffer.alloc(Math.min(4_000_000, statSync(path).size));
+  const fd = openSync(path, 'r');
+  readSync(fd, head, 0, head.length, 0);
+  closeSync(fd);
+  const marks = [
+    ['avc1', 'H.264'], ['avc3', 'H.264'], ['hev1', 'H.265'], ['hvc1', 'H.265'],
+    ['vp08', 'VP8'], ['vp09', 'VP9'], ['av01', 'AV1'],
+    ['V_VP8', 'VP8'], ['V_VP9', 'VP9'], ['V_AV1', 'AV1'], ['V_MPEG4/ISO/AVC', 'H.264'],
+  ];
+  const found = [];
+  for (const [box, name] of marks) {
+    if (head.includes(box) && !found.includes(name)) found.push(name);
+  }
+  return found;
+}
+
+/** Codecs the installed Chromium will actually play, asked of the browser rather than assumed. */
+async function supportedCodecs(page) {
+  return page.evaluate(() => {
+    const v = document.createElement('video');
+    const probes = {
+      'H.264': 'video/mp4; codecs="avc1.42E01E"',
+      'H.265': 'video/mp4; codecs="hvc1.1.6.L93.B0"',
+      VP8: 'video/webm; codecs="vp8"',
+      VP9: 'video/webm; codecs="vp9"',
+      AV1: 'video/mp4; codecs="av01.0.05M.08"',
+    };
+    return Object.entries(probes)
+      .filter(([, mime]) => v.canPlayType(mime) !== '')
+      .map(([name]) => name);
+  });
+}
+
+/**
  * Decodes `video` into PNG frames in `outDir`.
  *
  * Returns the frame index written. Deterministic: the same file and the same timestamps produce
@@ -97,16 +156,41 @@ export async function extractFrames(video, outDir, opts = {}) {
 
   await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'domcontentloaded' });
 
-  const meta = await page.evaluate(async () => {
-    const v = document.getElementById('v');
-    if (v.readyState < 1) {
-      await new Promise((ok, fail) => {
-        v.addEventListener('loadedmetadata', ok, { once: true });
-        v.addEventListener('error', () => fail(new Error('video failed to load')), { once: true });
-      });
-    }
-    return { duration: v.duration, width: v.videoWidth, height: v.videoHeight };
-  });
+  let meta;
+  try {
+    meta = await page.evaluate(async () => {
+      const v = document.getElementById('v');
+      if (v.readyState < 1) {
+        await new Promise((ok, fail) => {
+          v.addEventListener('loadedmetadata', ok, { once: true });
+          v.addEventListener(
+            'error',
+            () => fail(new Error(v.error ? `media error ${v.error.code}: ${v.error.message}` : 'load failed')),
+            { once: true }
+          );
+        });
+      }
+      return { duration: v.duration, width: v.videoWidth, height: v.videoHeight };
+    });
+  } catch (e) {
+    const inFile = sniffCodec(path);
+    const canPlay = await supportedCodecs(page);
+    await browser.close();
+    server.close();
+    const unplayable = inFile.filter((c) => !canPlay.includes(c));
+    throw new Error(
+      `video-frames: this Chromium cannot decode ${basename(path)}.\n` +
+        `  codec in file : ${inFile.length ? inFile.join(', ') : 'unrecognised'}\n` +
+        `  this build plays: ${canPlay.join(', ') || 'nothing'}\n` +
+        (unplayable.length
+          ? `  ${unplayable.join(', ')} is not supported - Playwright ships the OPEN-SOURCE Chromium,\n` +
+            `  which omits proprietary codecs, and no other decoder is installed.\n\n` +
+            `  Re-encode to VP9 and pass that instead:\n` +
+            `    ffmpeg -i ${basename(path)} -c:v libvpx-vp9 -crf 32 -b:v 0 -an ` +
+            `${basename(path).replace(/\.[^.]+$/, '')}.webm\n`
+          : `  underlying error: ${e.message}\n`)
+    );
+  }
 
   // A stream-recorded webm frequently reports Infinity here - Chromium does not backfill the
   // duration element when MediaRecorder writes the container - so an explicit `end` is allowed to
