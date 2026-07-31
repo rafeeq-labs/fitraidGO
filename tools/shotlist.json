@@ -98,5 +98,29 @@
     "name": "biome-swamp",
     "path": "/dev/world.html",
     "query": "biome=swamp&freeze=1&t=3&scrub=0.36&fog=off&seed=7"
+  },
+  {
+    "name": "family-residential",
+    "path": "/dev/kit.html",
+    "query": "view=ladder&family=residential&freeze=1&stats=1&seed=7",
+    "w": 1820,
+    "h": 880,
+    "note": "One family's L0-L3 in a single row, framed like the reference sheets. Compare against shots/reference/asset-*-tiers.png per docs/ASSET-FAMILY-SPEC.md."
+  },
+  {
+    "name": "family-merchant",
+    "path": "/dev/kit.html",
+    "query": "view=ladder&family=merchant&freeze=1&stats=1&seed=7",
+    "w": 1820,
+    "h": 880,
+    "note": "One family's L0-L3 in a single row, framed like the reference sheets. Compare against shots/reference/asset-*-tiers.png per docs/ASSET-FAMILY-SPEC.md."
+  },
+  {
+    "name": "family-workshop",
+    "path": "/dev/kit.html",
+    "query": "view=ladder&family=workshop&freeze=1&stats=1&seed=7",
+    "w": 1820,
+    "h": 880,
+    "note": "One family's L0-L3 in a single row, framed like the reference sheets. Compare against shots/reference/asset-*-tiers.png per docs/ASSET-FAMILY-SPEC.md."
   }
 ]

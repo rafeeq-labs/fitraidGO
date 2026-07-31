@@ -89,7 +89,15 @@ const browser = await chromium.launch({
 
 let failed = 0;
 for (const shot of shots) {
-  const page = await browser.newPage({ viewport: VIEW, deviceScaleFactor: 1 });
+  // A shot may carry its own size. The default portrait 9:16 is the shipping GPS frame, but the
+  // per-family kit sheets are judged beside the reference PNGs, which are landscape rows of four —
+  // captured at 9:16 they frame two whole tiers and two clipped halves. Without this, a `w`/`h` in
+  // shotlist.json would be read by nobody and silently ignored.
+  const viewport = {
+    width: Number(shot.w ?? VIEW.width),
+    height: Number(shot.h ?? VIEW.height),
+  };
+  const page = await browser.newPage({ viewport, deviceScaleFactor: 1 });
   const pagePath = shot.path ?? opt('path', '/');
   const url = `${BASE}${pagePath}?${shot.query}`;
   const out = shot.file ?? (shot.name.endsWith('.png') ? shot.name : `shots/${shot.name}.png`);

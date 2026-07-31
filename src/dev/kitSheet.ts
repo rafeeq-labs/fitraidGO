@@ -206,12 +206,33 @@ function layout(
       cell.faceViewer === false ? 0 : FACE_VIEWER
     );
   }
-  const spanX = cols * pitchX;
   // A narrower lens than the game's: an asset sheet is judged on silhouette, and 22 degrees over
   // three rows shrinks the back row by a fifth. 10 keeps the row-to-row scale drift near 4%, so
   // the plot module reads as one identical square in every cell. The extra span is margin: at
   // 1.05 the nearest row ran off both frame edges.
-  renderer.isoCamera.setPreset({ ...preset, fov: 10, viewSpan: spanX * 1.2, anchorY });
+  //
+  // The sheet has to fit on BOTH axes, and it was sized from the column count alone. That held only
+  // while every sheet was three or four rows in a portrait frame; sixteen families is sixteen rows
+  // and ran off the top and bottom.
+  //
+  // `viewSpan` is always the HORIZONTAL ground span, whatever the frame's shape — `distanceForSpan`
+  // solves it against `halfFovX`, which already carries the aspect. Its doc comment says "the frame's
+  // short axis", which is true only for the portrait frames it was written for; read as written, it
+  // says to shrink the span for a landscape capture, and doing that clipped a 4-column row down to
+  // two whole cells and two half ones.
+  //
+  // Vertically the frame shows `viewSpan / aspect` of screen, and a ground offset along UP lands on
+  // screen foreshortened by sin(elevation) — which is why the two axes cannot be compared in bare
+  // metres.
+  const spanX = cols * pitchX;
+  const spanZ = rows * pitchZ * Math.sin(MathUtils.degToRad(preset.elevation));
+  const aspect = Math.max(window.innerWidth, 1) / Math.max(window.innerHeight, 1);
+  renderer.isoCamera.setPreset({
+    ...preset,
+    fov: 10,
+    viewSpan: Math.max(spanX, spanZ * aspect) * 1.2,
+    anchorY,
+  });
   renderer.isoCamera.snapTo(0, 0, 0);
   console.log(
     `kit sheet [${view}] ${cells.length} cells, ${cols} columns, row-major:\n` +
@@ -233,7 +254,28 @@ function layout(
 // rounds of review while claiming four.
 const PLOT_W = Number(params.get('w') ?? 16);
 const PLOT_D = Number(params.get('d') ?? 16);
-const LADDER_FAMILIES: readonly BuildingFamily[] = ['residential', 'merchant', 'workshop'];
+const ALL_LADDER_FAMILIES: readonly BuildingFamily[] = ['residential', 'merchant', 'workshop'];
+
+/**
+ * `?family=lumber` narrows the ladder to one family's four tiers, which is the layout every
+ * reference sheet uses — a single row of L0..L3 on identical plots. Reviewing a family means laying
+ * the capture beside `shots/reference/asset-<family>-tiers.png`, and that comparison is only honest
+ * if the two have the same shape. Comma-separated names work too, for a small group.
+ */
+const familyParam = params.get('family');
+const LADDER_FAMILIES: readonly BuildingFamily[] = familyParam
+  ? familyParam.split(',').map((s) => s.trim() as BuildingFamily)
+  : ALL_LADDER_FAMILIES;
+for (const f of LADDER_FAMILIES) {
+  if (!ALL_LADDER_FAMILIES.includes(f)) throw new Error(`kitSheet: unknown family "${f}"`);
+}
+
+/** Same string hash the rest of the kit uses, so two family names cannot collide on their length. */
+function hashName(name: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < name.length; i++) h = mix(h, name.charCodeAt(i));
+  return h;
+}
 
 function ladderCells(): Cell[] {
   const cells: Cell[] = [];
@@ -248,7 +290,9 @@ function ladderCells(): Cell[] {
             level,
             plotW: PLOT_W,
             plotD: PLOT_D,
-            seed: mix(seed, level * 17 + family.length),
+            // Seeded off a hash of the name, not its LENGTH: `merchant` and `workshop` are both 8
+            // characters and drew the identical seed, and thirteen more names makes that worse.
+            seed: mix(hashName(family), level * 17),
             variant: mix(seed, level * 5) % variantCount(family, level),
           });
           for (const name of KIT_CHANNELS) ctx.channel[name].merge(channels[name]);
@@ -415,7 +459,15 @@ if (view === 'plots') {
   const pitch = VEG_PLOT * Math.SQRT2 + 1.6;
   layout(treeCells(), Number(params.get('cols') ?? 4), pitch, pitch + 1.5, 0.56);
 } else {
-  layout(ladderCells(), 4, Math.hypot(PLOT_W, PLOT_D) + 3.5, Math.hypot(PLOT_W, PLOT_D) + 5.5);
+  // `?cols=` matters here because the reference sheets are not all one row: asset-warehouse-tiers
+  // and asset-shop-tiers are 1254x1254 squares laying their four tiers out 2x2. Comparing a 1x4
+  // capture against a 2x2 sheet is exactly the kind of mismatch that wastes a critic round.
+  layout(
+    ladderCells(),
+    Number(params.get('cols') ?? 4),
+    Math.hypot(PLOT_W, PLOT_D) + 3.5,
+    Math.hypot(PLOT_W, PLOT_D) + 5.5
+  );
 }
 
 lighting.setShadowExtent(renderer.isoCamera.preset.viewSpan * 0.75);

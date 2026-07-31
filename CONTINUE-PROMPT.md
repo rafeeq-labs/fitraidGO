@@ -65,8 +65,11 @@ biggest wins in this project came from exactly that: measuring the camera before
 revealed the projection is nearly orthographic, which made the entire distant-LOD design unfixable
 rather than mistuned.
 
-**Measure, do not eyeball.** `/tmp/sample.mjs <png> "name,x,y,w,h"` prints mean rgb, luma and B−R for
-a region; recreate it if missing, it is twenty lines. Quantified before/after beats adjectives, and
+**Measure, do not eyeball.** `node tools/probe.mjs <png> [x y w h ...]` prints mean rgb, luma, sd and
+B−R for a region, and `node tools/measure-sheet.mjs <png>` cuts an asset sheet into its tier grid and
+reports per-tier plot size, silhouette height in plot-widths and a colour band profile. Both are
+committed — do not recreate the `/tmp/sample.mjs` this line used to name; it no longer exists.
+Quantified before/after beats adjectives, and
 this loop has repeatedly found things no code reading would: cobble measuring a p5–p95 spread of 17
 (a statistically flat brown field), every hexagonal flagstone rendering as a circle because the
 outline used corner-cutting subdivision, and the level-3 building tier silently downgrading so a

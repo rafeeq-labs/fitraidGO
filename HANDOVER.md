@@ -230,5 +230,12 @@ flat brown field), every hexagonal flagstone rendering as a circle because the o
 corner-cutting subdivision, the level-3 building tier silently downgrading so a four-tier sheet
 showed three, and the tree LOD being chosen from the player's position rather than the camera's.
 
-**Measure, don't eyeball.** `/tmp/sample.mjs <png> "name,x,y,w,h"` prints mean rgb, luma and B−R for
-a region — recreate it if missing, it is twenty lines and it settles arguments that adjectives cannot.
+**Measure, don't eyeball.** Two committed tools do this; do **not** recreate the `/tmp/sample.mjs`
+this section used to point at, which no longer exists and was never as good.
+
+- `node tools/probe.mjs <png> [x y w h ...]` — mean rgb, luma, sd and B−R per region; with no
+  regions, a whole-frame luma histogram and the fraction below the spec's floor of 30.
+- `node tools/measure-sheet.mjs <png> [--cols N] [--rows N]` — cuts an asset sheet into its tier
+  grid and reports, per tier, the plot base size, the silhouette height above the plot centre in
+  plot-widths, and a colour band profile. Use it on a capture and on the matching
+  `shots/reference/asset-*-tiers.png` to compare a family ladder against its target.

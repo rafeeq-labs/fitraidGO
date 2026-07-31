@@ -157,13 +157,20 @@ for (let ry = 0; ry < ROWS; ry++) {
         waistY = y;
       }
     }
-    // Top of the plot base by diamond geometry, not by threshold. The base is an isometric square,
-    // so its widest row is its waist and its two vertical vertices are equidistant from it. Walking
-    // up from the waist while the span stays "wide" does NOT work — an L2 cabin is itself as wide as
-    // its plot, so the walk ran to the top of the roof and reported a tower as 0.2 plot-widths tall.
-    const plotTopY = Math.max(top, bottom - (bottom - waistY) * 2);
-    const plotH = bottom - plotTopY;
-    const buildPx = plotTopY - top;
+    // The plot base is an isometric square, so its widest row is its waist — the plot CENTRE, which
+    // is where the building stands — and its two vertical vertices are equidistant from it.
+    //
+    // Height is measured from the waist, not from the plot's far vertex. Measuring from the far
+    // vertex is what a silhouette "above the plot" intuitively means, but it silently floors at zero
+    // for any building shorter than half the plot's own depth projection: the kit's L1 cottage on a
+    // 16 m plot measured 0 px that way, and so did its L2 house. From the waist the same two measure
+    // 0.35 and 0.42 plot-widths, which is a usable ladder.
+    //
+    // Note the figure is a RATIO, not metres. The sheets are art: their building-to-plot proportion
+    // is a composition choice, not a scale, so the honest comparison between a capture and its sheet
+    // is ratio against ratio.
+    const plotH = (bottom - waistY) * 2;
+    const buildPx = waistY - top;
 
     const bands = [];
     for (let b = 0; b < BANDS; b++) {
