@@ -3,7 +3,7 @@ import { AO, UV } from '../../KitPieces.js';
 import { placePiece } from '../../KitPlacement.js';
 import { withTransform, type KitContext, type KitPlacement } from '../../KitTypes.js';
 import { type Site } from '../Site.js';
-import { yardSurface } from '../Yard.js';
+import { yardGround, type YardGround } from '../Yard.js';
 
 /** A surveyed but unbuilt plot - 40-60% of the town, per REFERENCE-SPEC 2.5. */
 
@@ -15,8 +15,8 @@ import { yardSurface } from '../Yard.js';
  * highest point on screen at this camera — was adding as much to the empty plot's silhouette as the
  * cottage added to the built one.
  */
-export function level0(ctx: KitContext, site: Site, v: number): void {
-  yardSurface(ctx, site.plotW, site.plotD, 0);
+export function level0(ctx: KitContext, site: Site, v: number, ground: YardGround = 'grass'): void {
+  yardGround(ctx, site.plotW, site.plotD, ground, 0);
   const at: KitPlacement = {
     x: site.halfX * (v === 1 ? -0.5 : 0.5),
     y: LAYER.plotSlab,

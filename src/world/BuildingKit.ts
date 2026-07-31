@@ -2,7 +2,7 @@ import { makeRng, mix } from '../engine/rng.js';
 import { LEVEL_MIN_DEPTH, LEVEL_MIN_WIDTH, bucket } from './building/Metrics.js';
 import { familyDef, type BuildingFamily } from './building/Registry.js';
 import { deliverableLevelFor, siteOf } from './building/Site.js';
-import { yardSurface } from './building/Yard.js';
+import { yardGround } from './building/Yard.js';
 import { level0 as sharedLevel0 } from './building/families/level0.js';
 import type { KitContext } from './KitTypes.js';
 
@@ -120,7 +120,7 @@ export function buildBuilding(ctx: KitContext, spec: BuildingSpec): void {
   };
 
   if (site.rearLimit - site.frontLimit < 2.5 || site.halfX < 1.8) {
-    yardSurface(local, plotW, plotD, spec.level >= 2 ? 1 : 0);
+    yardGround(local, plotW, plotD, def.ground ?? 'grass', spec.level >= 2 ? 1 : 0);
     return;
   }
   if (def.singleTier && level === 3) {
@@ -133,7 +133,7 @@ export function buildBuilding(ctx: KitContext, spec: BuildingSpec): void {
   // strip the level-3 manor put its rear wall a metre and a half outside its own kerb. What a
   // parcel can carry is a property of the parcel; see the containment invariant in PlotBuilder.
   if (spec.level <= 0 || level <= 0) {
-    (def.level0 ?? sharedLevel0)(local, siteOf(plotW, plotD, 0), v);
+    (def.level0 ?? sharedLevel0)(local, siteOf(plotW, plotD, 0), v, def.ground ?? 'grass');
     return;
   }
   def.levels[level - 1]!(local, site, v);

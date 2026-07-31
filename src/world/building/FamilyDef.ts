@@ -1,6 +1,7 @@
 import type { KitContext } from '../KitTypes.js';
 import type { LevelGate } from './Metrics.js';
 import type { Site } from './Site.js';
+import type { YardGround } from './Yard.js';
 
 /**
  * What a building family IS, as data.
@@ -14,6 +15,20 @@ import type { Site } from './Site.js';
 
 /** A level recipe. `v` is the variant, already reduced modulo the family's variant count. */
 export type Recipe = (ctx: KitContext, site: Site, v: number) => void;
+
+/**
+ * The surveyed-plot recipe, which additionally receives the family's ground.
+ *
+ * Separate from `Recipe` rather than widening it: an L1-L3 recipe chooses its own ground per level
+ * and has no use for the family default, so giving every recipe a parameter only one kind of recipe
+ * reads would be a signature that lies about what the others do.
+ */
+export type Level0Recipe = (
+  ctx: KitContext,
+  site: Site,
+  v: number,
+  ground: YardGround
+) => void;
 
 /**
  * `LevelGate` is the minimum buildable envelope each level needs, indexed by level, and it lives in
@@ -32,7 +47,25 @@ export interface FamilyDef {
   /** Per-level envelope minimums; only the supplied entries override the defaults. */
   readonly gate?: Partial<LevelGate>;
   /** Replaces the shared surveyed-plot recipe, for families whose empty state is not a lawn. */
-  readonly level0?: Recipe;
+  readonly level0?: Level0Recipe;
   /** One tier, ignoring the requested level entirely. Civic's behaviour, named rather than matched. */
   readonly singleTier?: boolean;
+  /**
+   * What an UNBUILT plot of this family is made of. Defaults to grass.
+   *
+   * Read by the dispatcher only - for the too-small bail and the shared level-0 recipe, which are
+   * the two paths where no family recipe is running to choose for itself. L1-L3 call yardGround
+   * directly with their own furrow counts and crop maturity, because pushing those into the def
+   * would make it a second, worse recipe language.
+   */
+  readonly ground?: YardGround;
+  /**
+   * Whether the generic rear-yard scatter runs. Defaults to running, so the original four are
+   * untouched.
+   *
+   * `dressYard` drops understory clumps and biome yard props across the rear of EVERY plot. On a
+   * crop field or a rock face that puts bushes in the wheat and shrubs on a quarry floor, so the
+   * families whose yard IS their identity opt out.
+   */
+  readonly dressing?: 'default' | 'none';
 }

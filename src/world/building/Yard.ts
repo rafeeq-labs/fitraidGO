@@ -7,7 +7,7 @@ import {
   groundSpill,
 } from '../KitPieces.js';
 import { placePiece } from '../KitPlacement.js';
-import { withTransform, type KitContext } from '../KitTypes.js';
+import { withTransform, type FaceOptionsLike, type KitContext } from '../KitTypes.js';
 import { buildTree } from '../Vegetation.js';
 import { CRYSTAL_GLOW } from './Glow.js';
 import {
@@ -17,22 +17,59 @@ import {
   PROP_REACH,
   clamp,
 } from './Metrics.js';
+import type { MeshBuilder } from '../MeshBuilder.js';
 import { type Mass, type Site } from './Site.js';
 
 /** The ground inside the kerb: turf, paving, paths, props, planting and the crystal lamps. */
 
 /**
- * Yard ground. The reference progression is grass -> half paved -> fully paved forecourt, so the
- * paved fraction is a level property, not a decoration: it is measured from the frontage inward.
+ * What a yard's ground is made of.
+ *
+ * Most of the thirteen new families carry their identity in the YARD rather than the mass - a farm
+ * is a field, a quarry is a hole, a fishery is a frontage on water - so the ground has to be able to
+ * be something other than lawn.
  */
-export function yardSurface(ctx: KitContext, plotW: number, plotD: number, paved: number): void {
-  // The fill stops at the kerb's INNER face plus the batter its taper adds at the base. At exactly
-  // the nominal face it clipped through the wall and laid a hard green line over the ashlar.
-  const iw = plotW - KERB_THICKNESS * 2 - 0.12;
-  const id = plotD - KERB_THICKNESS * 2 - 0.12;
-  const g = ctx.channel.foliage;
-  // A 3x3 grid rather than one quad, so the aAO channel can darken the metre inside the kerb line.
-  // That contact darkening is what makes the plot rim read as a boundary at thumbnail size.
+export type YardGround = 'grass' | 'soil' | 'crop' | 'hardstand' | 'rock' | 'water';
+
+/** Which builder and option bag a surface lays its base grid with. */
+function groundOf(ctx: KitContext, surface: YardGround): [MeshBuilder, FaceOptionsLike] {
+  switch (surface) {
+    case 'soil':
+    // A crop stands ON soil: the base grid is earth and the stems are separate geometry on top,
+    // which is what lets a field show its furrows between the rows the way the reference does.
+    case 'crop':
+      return [ctx.channel.stone, TAGGED.soil];
+    // The cut FACE is family geometry; this is the floor it stands on - bare worked stone, which
+    // is what separates a quarry floor from a stack yard's compacted spoil.
+    case 'rock':
+      return [ctx.channel.stone, TAGGED.rock];
+    case 'hardstand':
+      return [ctx.channel.stone, TAGGED.hardstand];
+    case 'water':
+    case 'grass':
+      return [ctx.channel.foliage, GRASS_OPTS];
+  }
+}
+
+const GRASS_OPTS: FaceOptionsLike = { uvScale: UV.foliage };
+
+/**
+ * The base grid every yard surface is laid with.
+ *
+ * A 3x3 grid rather than one quad, so the aAO channel can darken the metre inside the kerb line.
+ * That contact darkening is what makes the plot rim read as a boundary at thumbnail size, and it
+ * has to survive every surface: without it the thirteen new families stop looking like they belong
+ * to the same system as the three old ones. Hence the channel and the option bag being arguments
+ * rather than the grading being reimplemented per surface.
+ */
+function groundGrid(
+  ctx: KitContext,
+  iw: number,
+  id: number,
+  surface: YardGround,
+  y: number = LAYER.yard
+): void {
+  const [b, opts] = groundOf(ctx, surface);
   const xs = [-iw / 2, -iw / 2 + 1.1, iw / 2 - 1.1, iw / 2];
   const zs = [-id / 2, -id / 2 + 1.1, id / 2 - 1.1, id / 2];
   const edge = (i: number): number => (i === 0 || i === 3 ? 0.62 : 1);
@@ -44,16 +81,38 @@ export function yardSurface(ctx: KitContext, plotW: number, plotD: number, paved
         Math.min(edge(i + 1), edge(j)),
         Math.min(edge(i), edge(j)),
       ];
-      g.quad(
-        [xs[i]!, LAYER.yard, zs[j + 1]!],
-        [xs[i + 1]!, LAYER.yard, zs[j + 1]!],
-        [xs[i + 1]!, LAYER.yard, zs[j]!],
-        [xs[i]!, LAYER.yard, zs[j]!],
-        { uvScale: UV.foliage },
+      b.quad(
+        [xs[i]!, y, zs[j + 1]!],
+        [xs[i + 1]!, y, zs[j + 1]!],
+        [xs[i + 1]!, y, zs[j]!],
+        [xs[i]!, y, zs[j]!],
+        opts,
         ao
       );
     }
   }
+}
+
+/** The fill stops at the kerb's inner face plus the batter its taper adds; see yardSurface. */
+function innerW(plotW: number): number {
+  return plotW - KERB_THICKNESS * 2 - 0.12;
+}
+
+/**
+ * Yard ground. The reference progression is grass -> half paved -> fully paved forecourt, so the
+ * paved fraction is a level property, not a decoration: it is measured from the frontage inward.
+ */
+export function yardSurface(ctx: KitContext, plotW: number, plotD: number, paved: number): void {
+  // The fill stops at the kerb's INNER face plus the batter its taper adds at the base. At exactly
+  // the nominal face it clipped through the wall and laid a hard green line over the ashlar.
+  const iw = innerW(plotW);
+  const id = innerW(plotD);
+  groundGrid(ctx, iw, id, 'grass');
+  forecourt(ctx, iw, id, paved);
+}
+
+/** The paved fraction, measured from the frontage inward. Split out so any surface can carry one. */
+function forecourt(ctx: KitContext, iw: number, id: number, paved: number): void {
   if (paved <= 0) return;
   // The paved area is a TARGET, measured inside a planting band that survives on all four sides at
   // every level. Paving whatever the building did not cover made the L2 and L3 yards one
@@ -84,6 +143,139 @@ export function yardSurface(ctx: KitContext, plotW: number, plotD: number, paved
     [-pw / 2, LAYER.yard + 0.02, z0],
     TAGGED.paving
   );
+}
+
+/**
+ * Yard ground for any surface, with the overlay that makes it read as what it is.
+ *
+ * The base grid alone is a flat colour; what names a surface is its relief. Ploughed earth without
+ * furrows is a brown lawn, and a wheat field without stems is a gold one, so the overlays are the
+ * point rather than a decoration.
+ *
+ * L1-L3 recipes call this directly with their own row counts and maturity. That is deliberate:
+ * pushing furrow pitch and crop height into FamilyDef would make the def a second, worse recipe
+ * language, and the def only needs to say what an EMPTY plot of this family is made of.
+ */
+export function yardGround(
+  ctx: KitContext,
+  plotW: number,
+  plotD: number,
+  surface: YardGround,
+  paved = 0
+): void {
+  const iw = innerW(plotW);
+  const id = innerW(plotD);
+  groundGrid(ctx, iw, id, surface);
+
+  if (surface === 'soil' || surface === 'crop') {
+    fieldFurrows(ctx, iw, id);
+  }
+  if (surface === 'crop') {
+    cropRows(ctx, iw, id);
+  }
+  if (surface === 'water') {
+    waterFrontage(ctx, iw, id);
+  }
+  forecourt(ctx, iw, id, paved);
+}
+
+/**
+ * Ploughed ridges, running front to back.
+ *
+ * Front-to-back rather than across, because the plot is seen from the street: ridges running away
+ * from the viewer carry the eye into the parcel and read as depth, while ridges running across it
+ * read as a stack of bars. Low and wide - a furrow is 6 cm of relief, not a wall.
+ */
+function fieldFurrows(ctx: KitContext, iw: number, id: number): void {
+  const b = ctx.channel.stone;
+  const pitch = 0.55;
+  const n = Math.max(2, Math.floor(iw / pitch));
+  const w = iw / n;
+  const y = LAYER.yard + 0.005;
+  const h = 0.06;
+  for (let i = 0; i < n; i++) {
+    const x = -iw / 2 + (i + 0.5) * w;
+    // A ridge is two sloped quads meeting at a crown, which costs four triangles and reads from
+    // both flanks. A box would cost eight and show a flat top the sun cannot rake.
+    b.quad(
+      [x - w / 2, y, id / 2],
+      [x, y + h, id / 2],
+      [x, y + h, -id / 2],
+      [x - w / 2, y, -id / 2],
+      TAGGED.soil
+    );
+    b.quad(
+      [x, y + h, id / 2],
+      [x + w / 2, y, id / 2],
+      [x + w / 2, y, -id / 2],
+      [x, y + h, -id / 2],
+      TAGGED.soil
+    );
+  }
+}
+
+/**
+ * Standing cereal: crossed vertical quads on a grid, jittered.
+ *
+ * Crossed rather than single, for the same reason `bloom` is crossed - baked geometry cannot
+ * billboard, and a single plane disappears entirely when the camera swings onto its edge. Capped by
+ * cell count rather than by a triangle budget so a large parcel thins out instead of stopping
+ * abruptly halfway across itself.
+ */
+function cropRows(ctx: KitContext, iw: number, id: number): void {
+  const b = ctx.channel.foliage;
+  // A drilled crop has to CLOSE. At a 1.1 m cell the stems stood as separate objects and the field
+  // read as litter scattered on bare earth; the sheaves have to overlap slightly so the eye joins
+  // them into one mass and the soil shows only as the drill lines between rows.
+  const cell = 0.62;
+  const cols = Math.min(18, Math.max(1, Math.floor(iw / cell)));
+  const rows = Math.min(22, Math.max(1, Math.floor(id / cell)));
+  const y = LAYER.yard + 0.02;
+  for (let i = 0; i < cols; i++) {
+    for (let j = 0; j < rows; j++) {
+      const x = -iw / 2 + ((i + 0.5) * iw) / cols;
+      const z = -id / 2 + ((j + 0.5) * id) / rows;
+      const h = ctx.rng.range(0.55, 0.95);
+      const r = cell * 0.62;
+      const yaw = ctx.rng.range(0, Math.PI);
+      const dx = Math.cos(yaw) * r;
+      const dz = Math.sin(yaw) * r;
+      b.quad([x - dx, y, z - dz], [x + dx, y, z + dz], [x + dx, y + h, z + dz], [x - dx, y + h, z - dz], TAGGED.crop);
+      b.quad([x - dz, y, z + dx], [x + dz, y, z - dx], [x + dz, y + h, z - dx], [x - dz, y + h, z + dx], TAGGED.crop);
+    }
+  }
+}
+
+/**
+ * Standing water across the frontage, with a banked lip.
+ *
+ * The fishery is the only family that reshapes the plot's ground plan, and this is that reshaping.
+ * Water reuses the EXISTING `roof` water tag rather than earning a slot of its own - it already
+ * exists for the mill race and the mine sump - and it is inset like the grass grid so it cannot
+ * escape the kerb.
+ */
+function waterFrontage(ctx: KitContext, iw: number, id: number): void {
+  const depth = Math.min(id * 0.38, 4.2);
+  const z1 = -id / 2 + depth;
+  // ABOVE the yard grid, not below it. At LAYER.yard - 0.08 the water sat under LAYER.plotSlab and
+  // the slab covered it completely - the surface rendered as plain grass. There is no room to sink
+  // water between the two layers, so the drop is expressed by the bank standing proud of it instead.
+  const y = LAYER.yard + 0.01;
+  ctx.channel.roof.quad(
+    [-iw / 2, y, z1],
+    [iw / 2, y, z1],
+    [iw / 2, y, -id / 2],
+    [-iw / 2, y, -id / 2],
+    TAGGED.water,
+    [0.72, 0.72, 0.6, 0.6]
+  );
+  // The bank stands PROUD of the water, so the frontage reads as a cut edge rather than as a
+  // painted rectangle: a rock lip rising from the waterline to a low crest on the yard side.
+  const crest = LAYER.yard + 0.24;
+  ctx.channel.stone.box(-iw / 2, LAYER.yard, z1, iw / 2, crest, z1 + 0.3, {
+    ...TAGGED.rock,
+    skip: { ny: true },
+  });
 }
 
 /** The kerb-to-door path every built plot has in the references. */

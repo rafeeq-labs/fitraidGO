@@ -26,6 +26,7 @@ import {
   type BuildingFamily,
   type BuildingSpec,
 } from './BuildingKit.js';
+import { familyDef } from './building/Registry.js';
 import { createKitContext } from './KitPieces.js';
 import {
   CHANNEL_SLOTS,
@@ -197,6 +198,11 @@ const KERB_INSET = 0.55;
  * that one thing. Built parcels get a few props from the biome's own yard list on top.
  */
 function dressYard(ctx: KitContext, spec: BuildingSpec): void {
+  // Families whose yard IS their identity opt out entirely. This scatter drops understory clumps
+  // and biome yard props across the rear of every plot, which on a crop field puts bushes in the
+  // wheat and on a quarry floor puts shrubs on the rock. `'default'` is the default, so the four
+  // original families are untouched.
+  if (familyDef(spec.family).dressing === 'none') return;
   const halfW = spec.plotW / 2 - KERB_INSET;
   const halfD = spec.plotD / 2 - KERB_INSET;
   const front = spec.level <= 0 ? -halfD : Math.min(halfD, -halfD + MASS_DEPTH);
@@ -371,9 +377,13 @@ export function createKitMaterials(kit: BiomeKit, textures: TextureFactory): Kit
     // farm in the snow kit gets cold grey earth and one in farmland gets a red-brown loam.
     soil: new RampMaterial({
       map: textures.granular(`${kit.id}:soil`, {
-        base: grade(t.stone.mid, 0.72, 0.72, 0.3),
-        lit: grade(t.stone.lit, 0.86, 0.68, 0.28),
-        shade: grade(t.stone.shade, 0.6, 0.8, 0.24),
+        // Anchored to a BROWN, not to the palette's warm gold. `grade`'s default anchor is
+        // `#E8C860`, so warming grey ashlar toward it gives sand: the first pass measured as a
+        // pale tan beach rather than turned earth. The anchor is the target colour, so ploughed
+        // soil has to name one.
+        base: grade(t.stone.mid, 0.82, 0.6, 0.62, 0x6b4a32),
+        lit: grade(t.stone.lit, 0.88, 0.6, 0.55, 0x8a6242),
+        shade: grade(t.stone.shade, 0.7, 0.7, 0.62, 0x3d2a1c),
         grain: 0.7,
       }),
       vertexAO: true,
@@ -395,9 +405,12 @@ export function createKitMaterials(kit: BiomeKit, textures: TextureFactory): Kit
     // sits back and lets the machinery standing on it carry the frame.
     hardstand: new RampMaterial({
       map: textures.granular(`${kit.id}:hardstand`, {
-        base: grade(t.paving.stone, 0.92, 0.55, 0.06),
-        lit: grade(t.paving.stoneLit, 1, 0.5, 0.05),
-        shade: grade(t.paving.stoneShade, 0.82, 0.6, 0.04),
+        // Darker than the paving it derives from, and only slightly warmed: a working yard is
+        // dust and crushed stone, and at full paving value it came out as bright as a forecourt
+        // and lost the contrast the machinery standing on it needs.
+        base: grade(t.paving.stone, 0.78, 0.5, 0.12, 0x7a6a58),
+        lit: grade(t.paving.stoneLit, 0.86, 0.48, 0.1, 0x9a8a76),
+        shade: grade(t.paving.stoneShade, 0.66, 0.55, 0.12, 0x4a4038),
         grain: 0.85,
       }),
       vertexAO: true,

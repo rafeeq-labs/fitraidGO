@@ -9,9 +9,11 @@ import { TextureFactory } from '../engine/TextureGen.js';
 import { makeRng, mix } from '../engine/rng.js';
 import {
   BUILDING_FAMILIES,
+  buildPlotFoundation,
   variantCount,
   type BuildingFamily,
 } from '../world/BuildingKit.js';
+import { yardGround, type YardGround } from '../world/building/Yard.js';
 import { familyDef } from '../world/building/Registry.js';
 import { createKitContext } from '../world/KitPieces.js';
 import { placePiece } from '../world/KitPlacement.js';
@@ -313,6 +315,25 @@ function ladderCells(): Cell[] {
   return cells;
 }
 
+/**
+ * Every yard surface on an identical plot.
+ *
+ * The grounds are what carry family identity for most of the thirteen - a farm IS its field - so
+ * they need to be reviewable on their own, before a family is built on top of one and a defect in
+ * the ground gets blamed on the building.
+ */
+function groundCells(): Cell[] {
+  const surfaces: YardGround[] = ['grass', 'soil', 'crop', 'hardstand', 'rock', 'water'];
+  return surfaces.map((surface) => ({
+    label: surface,
+    build: (ctx: KitContext) => {
+      const local: KitContext = { channel: ctx.channel, kit, rng: makeRng(mix(seed, 0x2d)) };
+      buildPlotFoundation(local, { w: PLOT_W, d: PLOT_D });
+      yardGround(local, PLOT_W, PLOT_D, surface, 0);
+    },
+  }));
+}
+
 function propCells(): Cell[] {
   return PROP_NAMES.map((name) => ({
     label: name,
@@ -461,6 +482,8 @@ if (view === 'plots') {
   await plotsView();
 } else if (view === 'props') {
   layout(propCells(), Number(params.get('cols') ?? 8), 5, 8, 0.55);
+} else if (view === 'grounds') {
+  layout(groundCells(), Number(params.get('cols') ?? 3), PLOT_W * Math.SQRT2 + 2, PLOT_D * Math.SQRT2 + 2, 0.55);
 } else if (view === 'trees') {
   // Tight pitch, because the sheet is judged against reference asset-tree-species.png and there a
   // canopy fills two thirds of its cell. At the old 12 m plot and its 3 m margin a 9 m tree came
