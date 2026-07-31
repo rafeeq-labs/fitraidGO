@@ -48,6 +48,8 @@ export interface BuildWorldOptions {
   showStats?: boolean;
   /** Tufts per square metre of clear ground. */
   grassDensity?: number;
+  /** Multiplier on world tree planting. 0 removes them; 1 is the authored density. */
+  treeDensity?: number;
   /** Metres per streaming cell. */
   cellSize?: number;
   /** Metres of ground kept loaded beyond the frame. */
@@ -234,6 +236,16 @@ export function buildWorld(options: BuildWorldOptions): World {
     cellSize: options.cellSize,
     seed,
     coverDensity: options.grassDensity ?? 0.92,
+    /**
+     * World trees are OFF by default.
+     *
+     * Not a performance decision — an art one, made by the author looking at the frame. Massed dark
+     * canopies over open ground read as a wood with a town in it rather than a town with trees in
+     * it, and they were the single most disliked thing in the view. The planting code, the species,
+     * the ladder and the bank willows are all intact behind `?trees=`, so turning them back on is
+     * one parameter once the canopies are lighter and the massing is thinner.
+     */
+    densityScale: options.treeDensity ?? 0,
   });
   timings.index = lap();
   /**
