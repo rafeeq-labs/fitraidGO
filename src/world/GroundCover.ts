@@ -50,7 +50,7 @@ export interface GroundCoverResult {
 }
 
 /** The three flowering-clump silhouettes scattered through the cover. */
-const FLOWER_STYLES = ['daisy', 'spike', 'umbel'] as const;
+export const FLOWER_STYLES = ['daisy', 'spike', 'umbel'] as const;
 
 /**
  * Metres of an empty parcel kept clear of cover at its edge.
@@ -58,7 +58,7 @@ const FLOWER_STYLES = ['daisy', 'spike', 'umbel'] as const;
  * Matches PlotBuilder's own `KERB_INSET` of 0.55 with a little to spare, so blades never lean out
  * over the kerb course that rims every plot.
  */
-const PLOT_INSET = 0.85;
+export const PLOT_INSET = 0.85;
 
 /**
  * A `RampMaterial` that does not flip its normal on back faces.
@@ -343,7 +343,7 @@ function flowerGeometry(
  * which at real densities is tens of millions of comparisons and stalls the frame budget outright.
  * Stamping the obstacles into a grid once turns each candidate test into a single array read.
  */
-class BlockMask {
+export class BlockMask {
   private readonly cells: Uint8Array;
   private readonly cols: number;
   private readonly rows: number;
@@ -411,6 +411,116 @@ class BlockMask {
     if (cx < 0 || cz < 0 || cx >= this.cols || cz >= this.rows) return false;
     return this.cells[cz * this.cols + cx] === 1;
   }
+}
+
+/**
+ * Detail tiers, near to far. `2 * arched + 3 * filler`... in triangles: a tier-0 tuft is 31
+ * triangles for 13 blades where the old single shape was 27 for 9, and a tier-2 tuft is 12 for
+ * 6. The tier a tuft lands in is decided by distance, so the near field gains blades and the far
+ * field pays for its own coverage.
+ *
+ * Module scope, and exported, because the streaming world picks a tier per CELL at runtime rather
+ * than once per tuft at build time: the same tuft must be able to move between tiers as the camera
+ * approaches it, which it can only do if both builders agree about what a tier is.
+ */
+export const COVER_TIERS: readonly { readonly upTo: number; readonly shape: TuftShape }[] = [
+  { upTo: 0.14, shape: { arched: 8, filler: 11, height: 0.98, breadth: 1.15 } },
+  { upTo: 0.3, shape: { arched: 5, filler: 8, height: 0.9, breadth: 1.1 } },
+  { upTo: 0.58, shape: { arched: 2, filler: 7, height: 0.82, breadth: 1.05 } },
+  { upTo: 1, shape: { arched: 0, filler: 6, height: 0.72, breadth: 1.2 } },
+];
+
+/** How many distinct tuft stamps each tier carries; see the note in `buildGroundCover`. */
+export const COVER_VARIANTS = 5;
+
+export interface GroundCoverLibrary {
+  /** `tufts[tier][variant]`. */
+  tufts: BufferGeometry[][];
+  /** `flowers[style]`, indexed by FLOWER_STYLES. */
+  flowers: { leaves: BufferGeometry; heads: BufferGeometry }[];
+  materials: { blade: RampMaterial; leaf: RampMaterial; head: RampMaterial };
+  petals: Color[];
+  /** The two ends of the per-instance blade tint band. */
+  tuftDark: Color;
+  tuftLit: Color;
+  dispose(): void;
+}
+
+/**
+ * Every geometry and material ground cover can ever need, built once.
+ *
+ * This is the "persistent shared registry" half of the streaming contract: a tuft stamp is a single
+ * vertex buffer shared by every cell that uses it, so it must outlive any individual cell and must
+ * NEVER be disposed when one unloads. Only the per-cell instance buffers are transient.
+ */
+export function createGroundCoverLibrary(kit: BiomeKit, seed = 11): GroundCoverLibrary {
+  /**
+   * The blade colour: warmer and a value step LIGHTER than the lawn it stands in.
+   *
+   * Blades are regraded through the SAME function the ground sheets are, one stop brighter; see the
+   * long note this was lifted from. The dark end sits at the sheet's mid and the lit end above its
+   * sun stop, so the tufts are what is catching the light rather than a dark speckle over the turf.
+   */
+  const tuftDark = new Color(grade(kit.palette.groundMid, 1.16, 1.55, 0.08));
+  const tuftLit = new Color(grade(kit.palette.groundLit, 1.72, 1.6, 0.3));
+
+  const blade = new BladeMaterial({
+    color: 0xffffff,
+    vertexAO: true,
+    sway: true,
+    rim: 0.45,
+    side: DoubleSide,
+  });
+  const leaf = new BladeMaterial({
+    color: grade(kit.palette.groundLit, 1.34, 1.5, 0.16),
+    vertexAO: true,
+    sway: true,
+    rim: 0.4,
+    side: DoubleSide,
+  });
+  const head = new BladeMaterial({
+    color: 0xffffff,
+    vertexAO: true,
+    sway: true,
+    rim: 0.6,
+    side: DoubleSide,
+  });
+
+  const petals = [
+    PALETTE.flowerWhite,
+    PALETTE.flowerViolet,
+    PALETTE.flowerGold,
+    kit.palette.foliageAccent,
+    0xf6e2a0,
+    0xe4919a,
+    0xc98fc4,
+    0xfbf3dc,
+    0x9fb8e0,
+  ].map((c) => new Color(c).multiplyScalar(0.8));
+
+  const tufts = COVER_TIERS.map((tier, t) =>
+    Array.from({ length: COVER_VARIANTS }, (_, v) => tuftGeometry(tier.shape, mix(seed, t * 11 + v + 1)))
+  );
+  const flowers = FLOWER_STYLES.map((style, s) => flowerGeometry(mix(seed, 9 + s * 13), style));
+
+  return {
+    tufts,
+    flowers,
+    materials: { blade, leaf, head },
+    petals,
+    tuftDark,
+    tuftLit,
+    dispose(): void {
+      for (const tier of tufts) for (const g of tier) g.dispose();
+      for (const f of flowers) {
+        f.leaves.dispose();
+        f.heads.dispose();
+      }
+      blade.dispose();
+      leaf.dispose();
+      head.dispose();
+    },
+  };
 }
 
 export function buildGroundCover(
@@ -516,18 +626,7 @@ export function buildGroundCover(
     mask.stampRect(rect[0], rect[1], rect[2], rect[3], rect[4]);
   }
 
-  /**
-   * Detail tiers, near to far. `2 * arched + 3 * filler`... in triangles: a tier-0 tuft is 31
-   * triangles for 13 blades where the old single shape was 27 for 9, and a tier-2 tuft is 12 for
-   * 6. The tier a tuft lands in is decided by distance, so the near field gains blades and the far
-   * field pays for its own coverage.
-   */
-  const TIERS: readonly { readonly upTo: number; readonly shape: TuftShape }[] = [
-    { upTo: 0.14, shape: { arched: 8, filler: 11, height: 0.98, breadth: 1.15 } },
-    { upTo: 0.3, shape: { arched: 5, filler: 8, height: 0.9, breadth: 1.1 } },
-    { upTo: 0.58, shape: { arched: 2, filler: 7, height: 0.82, breadth: 1.05 } },
-    { upTo: 1, shape: { arched: 0, filler: 6, height: 0.72, breadth: 1.2 } },
-  ];
+  const TIERS = COVER_TIERS;
   const tierOf = (dSq: number): number => {
     const u = Math.sqrt(dSq) / maxRadius;
     for (let i = 0; i < TIERS.length; i++) if (u <= TIERS[i]!.upTo) return i;

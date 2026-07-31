@@ -628,6 +628,27 @@ export interface PlotMeshResult {
   materials: KitMaterials;
   assignments: Map<number, BuildingAssignment>;
   stats: PlotMeshStats;
+  /**
+   * The geometries this call created and the caller may free.
+   *
+   * Everything else it returns is BORROWED from `options.cache` — one vertex buffer per building
+   * key, shared by every parcel and every rebuild that carries that key. Disposing one of those
+   * because a rebuild dropped the last parcel using it would corrupt the next rebuild that picks it
+   * up, and would regenerate a whole building to do it. Only the merged batches, which are welded
+   * for this particular set of parcels and are worthless the moment the set changes, are disposable.
+   */
+  disposable: BufferGeometry[];
+}
+
+export interface PlotMeshOptions {
+  /**
+   * Materials to build against. Supply the same set on every rebuild: materials own compiled shader
+   * programs and GPU textures, so making a fresh set per rebuild leaks both and stalls the frame
+   * recompiling what it already had.
+   */
+  materials?: KitMaterials;
+  /** Per-key geometry cache, shared across rebuilds and freed only when the world is torn down. */
+  cache?: Map<string, Array<[MaterialSlot, BufferGeometry]>>;
 }
 
 interface KeyGroup {
@@ -645,9 +666,10 @@ interface KeyGroup {
 export function buildPlotMeshes(
   plots: readonly Plot[],
   kit: BiomeKit,
-  textures: TextureFactory
+  textures: TextureFactory,
+  options: PlotMeshOptions = {}
 ): PlotMeshResult {
-  const materials = createKitMaterials(kit, textures);
+  const materials = options.materials ?? createKitMaterials(kit, textures);
   const assignments = new Map<number, BuildingAssignment>();
   const groups = new Map<string, KeyGroup>();
   const delivered: Record<number, number> = { 0: 0, 1: 0, 2: 0, 3: 0 };
@@ -696,13 +718,19 @@ export function buildPlotMeshes(
 
   const ordered = [...groups.entries()].sort((a, b) => b[1].matrices.length - a[1].matrices.length);
 
+  const disposable: BufferGeometry[] = [];
+
   for (const [key, group] of ordered) {
-    const channels = buildPlotChannels(kit, group.spec);
-    const parts: Array<[MaterialSlot, BufferGeometry]> = [];
-    for (const name of KIT_CHANNELS) {
-      const builder = channels[name];
-      if (builder.isEmpty) continue;
-      parts.push(...splitTags(builder.toGeometry(`${key}:${name}`), CHANNEL_SLOTS[name]));
+    let parts = options.cache?.get(key);
+    if (!parts) {
+      const channels = buildPlotChannels(kit, group.spec);
+      parts = [];
+      for (const name of KIT_CHANNELS) {
+        const builder = channels[name];
+        if (builder.isEmpty) continue;
+        parts.push(...splitTags(builder.toGeometry(`${key}:${name}`), CHANNEL_SLOTS[name]));
+      }
+      options.cache?.set(key, parts);
     }
 
     if (
@@ -744,7 +772,9 @@ export function buildPlotMeshes(
   for (const [slot, batch] of batches) {
     if (batch.isEmpty) continue;
     triangles += batch.triangleCount;
-    const mesh = new Mesh(batch.toGeometry(`plots:${slot}`), materialOf(slot));
+    const welded = batch.toGeometry(`plots:${slot}`);
+    disposable.push(welded);
+    const mesh = new Mesh(welded, materialOf(slot));
     mesh.name = `plots:${slot}`;
     mesh.castShadow = !isEmissiveSlot(slot);
     mesh.receiveShadow = !isEmissiveSlot(slot);
@@ -757,6 +787,7 @@ export function buildPlotMeshes(
     meshes,
     materials,
     assignments,
+    disposable,
     stats: {
       plots: plots.length,
       built,

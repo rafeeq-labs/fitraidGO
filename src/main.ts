@@ -104,19 +104,14 @@ async function bootPlan(): Promise<void> {
 /**
  * The game.
  *
- * The world assembly — tile fetch, biome kit, renderer, lighting, camera, surfaces, plots,
- * vegetation, ground cover, player, route, ring, fog of war, companions and the frame loop — is
- * src/dev/worldView.ts, which today is a side-effecting module rather than a function. It is
- * therefore imported for its effects instead of being called, and the two things this entry adds
- * reach it without touching it:
+ * The world assembly — renderer, lighting, camera, surfaces, the streamed parcels, vegetation and
+ * ground cover, player, route, ring, fog of war, companions and the frame loop — is
+ * `buildWorld()`, which this entry calls with its own parameters and its own tile.
  *
- *  - position: `PositionSource.start()` claims the next `SimWalker` constructed, which is the local
- *    player's, and from then on overrides its pose on the frames GPS is trustworthy;
- *  - HUD: driven from its own animation frame, reading the claimed walker.
- *
- * Both must be set up BEFORE the import, because the import runs the assembly. That ordering is the
- * only sharp edge in the arrangement, and it disappears the moment the assembly becomes a function
- * that takes a position source and returns its handles.
+ * `PositionSource.start()` claims the next `SimWalker` constructed, which is the local player's,
+ * and from then on overrides its pose on the frames GPS is trustworthy; it must therefore be
+ * started before the world is built. That was once a load-bearing import ORDER, which is the sort
+ * of thing that breaks silently; now it is two statements in one function, in the obvious order.
  */
 async function bootGame(): Promise<void> {
   const gpsParam = params.get('gps');
@@ -136,9 +131,36 @@ async function bootGame(): Promise<void> {
 
   const hud = params.get('hud') === '0' ? null : new Hud({ placeName: 'Locating…' });
 
-  // Anything this throws is a failure to build the world at all, and is reported in the overlay
-  // rather than left as a blank canvas.
-  await import('./dev/worldView.js');
+  await import('./biomes/kits/index.js');
+  const { buildWorld } = await import('./game/buildWorld.js');
+  const { hasBiome } = await import('./biomes/BiomeKit.js');
+
+  const tileUrl = params.get('tile')
+    ? `/public/tiles/${params.get('tile')}.tile.json`
+    : '/public/tiles/bathwick.tile.json';
+  const res = await fetch(tileUrl);
+  if (!res.ok) throw new Error(`${tileUrl} -> HTTP ${res.status}`);
+  const tile = (await res.json()) as WorldTile;
+
+  const num = (name: string, dflt: number): number => {
+    const v = Number(params.get(name));
+    return params.get(name) !== null && Number.isFinite(v) ? v : dflt;
+  };
+  const biomeParam = params.get('biome') ?? 'temperate';
+
+  const world = buildWorld({
+    container: document.getElementById('app')!,
+    tile,
+    biome: hasBiome(biomeParam) ? biomeParam : 'temperate',
+    seed: num('seed', 7),
+    freezeAt: params.get('freeze') === '1' ? num('t', 3) : null,
+    scrub: num('scrub', 0.36),
+    fog: (params.get('fog') ?? 'off') as 'off' | 'preset' | 'on',
+    camera: params.get('cam') ?? 'gps',
+    players: num('players', 5),
+    showStats: params.get('stats') === '1',
+  });
+  world.start();
 
   const walker = source.walker;
   if (!walker) {

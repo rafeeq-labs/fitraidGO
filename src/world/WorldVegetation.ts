@@ -54,7 +54,7 @@ export interface WorldVegetationResult {
   stats: { instances: number; triangles: number };
 }
 
-interface Prototype {
+export interface Prototype {
   geometry: BufferGeometry;
   /**
    * Which material this part takes. `canopy` is a stand-in resolved per prototype set to whichever
@@ -64,9 +64,9 @@ interface Prototype {
 }
 
 /** Which of the canopy materials a prototype's foliage takes. */
-type FoliageSlot = 'canopy' | 'conifer' | 'willow' | 'blossom';
+export type FoliageSlot = 'canopy' | 'conifer' | 'willow' | 'blossom';
 
-interface ProtoSet {
+export interface ProtoSet {
   parts: Prototype[];
   /** Which foliage material this set's canopy takes; one archetype per set, so one material. */
   slot: FoliageSlot;
@@ -302,7 +302,285 @@ function canopyTint(rng: Rng, hueJitter: number, bias = 0): Color {
   );
 }
 
-function distanceToPolylineSq(x: number, z: number, points: Polyline): number {
+/**
+ * Leaf-cluster density for the near tier.
+ *
+ * The sheet's trees are authored at 1.0, which is 70k triangles for a shade tree — right for a
+ * 300 px asset shot and wrong for a thousand of them in one frame. Cluster count is the only knob
+ * that scales cost smoothly without touching silhouette, armature or the crown's light gradient,
+ * so the world takes the same geometry at a lower coverage rather than a different tree.
+ */
+export const NEAR_LEAF_DENSITY = 0.34;
+
+/** How many prototype slots the tree population is spread over; see `treeSlotSpecs`. */
+export const TREE_SLOTS = 20;
+
+export interface SlotSpec {
+  archetype: TreeArchetype;
+  blossom: boolean;
+  heightK: number;
+  hue: number;
+}
+
+/**
+ * Which archetype each prototype slot plants, weighted rather than alternating.
+ *
+ * A straight primary/secondary alternation gave the temperate town 50% conifers. REFERENCE-SPEC
+ * 3.1 calls the conifer "the darkest large mass allowed" and 13 uses it as an accent against
+ * deciduous canopies and willows; at half the population it stops being contrast and becomes the
+ * biome. One in four is the reference proportion.
+ *
+ * TWENTY slots, not five. Five prototypes over a street of forty trees is a repeat every fifth
+ * tree — close enough together to be seen, and no amount of per-instance yaw and scale hides two
+ * identical crowns twenty metres apart. Twenty is past the point where the eye can find the
+ * period. They cost twenty vertex buffers, once, for the whole world.
+ *
+ * The pattern below is a period of ten, run twice. Per ten: six of the biome's secondary (the
+ * deciduous shade tree in temperate), two primary (the conifer accent), one drawn from the kit's
+ * remaining archetype list, and one blossom — REFERENCE-SPEC 6.4 puts blossom at about six per
+ * frame, and `buildWorldVegetation` had never planted one because there was no material slot for
+ * it and no archetype entry that asked for it.
+ *
+ * Pulled out of `buildWorldVegetation` so the streaming world plants exactly the same mix: the slot
+ * a tree lands in is now a property of WHERE it stands rather than of the order it happened to be
+ * generated in, which is what lets a cell be built and rebuilt without the species changing.
+ */
+export function treeSlotSpecs(kit: BiomeKit): SlotSpec[] {
+  const primary = kit.vegetation.primary;
+  const secondary = kit.vegetation.secondary;
+  /** Archetypes the kit lists beyond its two staples, minus the two that are placed by hand. */
+  const extras = kit.vegetation.archetypes.filter(
+    (a) => a !== primary && a !== secondary && a !== 'willow' && a !== 'bare'
+  );
+  const PATTERN = ['S', 'S', 'P', 'S', 'X', 'S', 'S', 'P', 'B', 'S'] as const;
+  const specs: SlotSpec[] = [];
+  for (let i = 0; i < TREE_SLOTS; i++) {
+    const code = PATTERN[i % PATTERN.length]!;
+    let archetype = secondary;
+    let blossom = false;
+    if (code === 'P') archetype = primary;
+    else if (code === 'X') {
+      // Indexed by which PASS through the pattern this is, not by slot number.
+      const pass = Math.floor(i / PATTERN.length);
+      archetype = extras.length ? extras[pass % extras.length]! : secondary;
+    } else if (code === 'B') {
+      // One blossom slot in twenty, not one in ten.
+      if (kit.vegetation.blossom && i < PATTERN.length) blossom = true;
+      else archetype = extras.length ? extras[i % extras.length]! : secondary;
+    }
+    // Height and hue walk the range on coprime strides, so consecutive slots never land close to
+    // each other and the twenty together cover the interval evenly.
+    const hStep = ((i * 7) % TREE_SLOTS) / (TREE_SLOTS - 1);
+    const cStep = ((i * 9) % TREE_SLOTS) / (TREE_SLOTS - 1);
+    specs.push({
+      archetype,
+      blossom,
+      heightK: blossom ? 0.78 + hStep * 0.24 : 0.7 + hStep * 0.6,
+      hue: cStep * 2 - 1,
+    });
+  }
+  return specs;
+}
+
+/**
+ * One rung of the distance ladder a tree is built at.
+ *
+ * The switch used to be a build-time property of a tree — `detail: 'full' | 'distant'` chosen once
+ * from a fixed centre — so walking never changed anything's detail. It is now a property of the
+ * CELL a tree stands in, re-evaluated against the camera target every frame, and this table is what
+ * a tier means.
+ */
+export interface TreeLodTier {
+  /** Metres from the camera target out to which this tier is used. */
+  maxDistance: number;
+  leafDensity?: number;
+  distant?: boolean;
+  /** The surface roots, tufts and stones that ring a trunk; sub-pixel past the near field. */
+  base: boolean;
+}
+
+/**
+ * The shipped ladder: full detail in the near field, the cheap stand-in beyond it.
+ *
+ * 52 m is measured from the camera TARGET rather than from the player, and it reproduces where the
+ * old build-time swap actually fell: the old rule was 1.3 x the caller's radius from the PLAYER,
+ * which on the GPS camera is about 55 m ahead of the target and about 48 m off to the side, because
+ * the player sits at 87% down the frame and the target is some 67 m ahead of them. So the same
+ * trees get the same treatment — the difference is that the ones behind the camera are no longer
+ * built at all.
+ */
+export const DEFAULT_TREE_LOD: readonly TreeLodTier[] = [
+  { maxDistance: 52, leafDensity: NEAR_LEAF_DENSITY, base: true },
+  { maxDistance: Infinity, distant: true, base: false },
+];
+
+export interface VegetationLibrary {
+  slots: readonly SlotSpec[];
+  tiers: readonly TreeLodTier[];
+  shrubCount: number;
+  bankCount: number;
+  /** Prototype parts for one slot at one tier. Built on first use and kept forever. */
+  tree(slot: number, tier: number): ProtoSet;
+  shrub(i: number): ProtoSet;
+  bank(i: number): ProtoSet;
+  materialFor(proto: Prototype, set: ProtoSet): Material;
+  /** The dappled shadow stand-in a canopy casts through, or null for anything else. */
+  depthFor(proto: Prototype, set: ProtoSet): MeshDepthMaterial | null;
+  tint(rng: Rng, bias: number): Color;
+  dispose(): void;
+}
+
+/**
+ * Every tree prototype, material and shadow stand-in the world can need, built on demand and kept.
+ *
+ * This is the persistent shared registry the streaming world builds against. A prototype is one
+ * vertex buffer carrying thousands of instances, so it must survive any number of cells loading and
+ * unloading; disposing one because the last cell using it went out of range would corrupt every
+ * cell that picks it up again a second later, and would rebuild a 37 000-triangle broadleaf to do
+ * it. Only the per-cell instance buffers are transient.
+ */
+export function createVegetationLibrary(
+  kit: BiomeKit,
+  textures: TextureFactory,
+  options: { seed?: number; tiers?: readonly TreeLodTier[] } = {}
+): VegetationLibrary {
+  const seed = options.seed ?? 5;
+  const tiers = options.tiers ?? DEFAULT_TREE_LOD;
+  const slots = treeSlotSpecs(kit);
+  const foliageSlots = foliageMaterials(kit, textures);
+
+  const barkMaterial = new RampMaterial({
+    map: textures.timber(`${kit.id}:bark`, { lit: 0xb08a5e, mid: 0x7d5f42, shade: 0x4a3728, planks: 11 }),
+    vertexAO: true,
+    rim: 0.5,
+  });
+  const lawnMaterial = new RampMaterial({
+    map: textures.grass(kit.id, kit.textures.ground),
+    vertexAO: true,
+    sway: true,
+    rim: 0.2,
+  });
+  const stoneMaterial = new RampMaterial({
+    map: textures.ashlar(kit.id, kit.textures.stone),
+    vertexAO: true,
+    rim: 0.6,
+  });
+
+  const dapple = makeDappleMask();
+  const canopyDepth = dappledDepth(dapple);
+  const coniferDepth = dappledDepth(dapple, 0.64);
+
+  const trees = new Map<number, ProtoSet>();
+  const shrubs = new Map<number, ProtoSet>();
+  const banks = new Map<number, ProtoSet>();
+  const owned: BufferGeometry[] = [];
+
+  const keep = (set: ProtoSet): ProtoSet => {
+    for (const p of set.parts) owned.push(p.geometry);
+    return set;
+  };
+
+  const wantsWillow = kit.vegetation.archetypes.includes('willow');
+
+  return {
+    slots,
+    tiers,
+    shrubCount: kit.vegetation.understory === 'none' ? 0 : 5,
+    bankCount: wantsWillow ? 4 : 0,
+
+    tree(slot: number, tier: number): ProtoSet {
+      const key = tier * 1024 + slot;
+      const hit = trees.get(key);
+      if (hit) return hit;
+      const spec = slots[slot]!;
+      const rung = tiers[Math.min(tier, tiers.length - 1)]!;
+      // No blossom past the near field: `distantTree` builds one dome per archetype and knows
+      // nothing about flowering, and the six-per-frame accent has no business in the far field.
+      const blossom = spec.blossom && !rung.distant;
+      const built = keep({
+        slot: foliageSlotFor(spec.archetype, blossom),
+        hue: spec.hue,
+        parts: prototype(kit, mix(seed, 0x100 + slot + tier * 0x40), (ctx) =>
+          buildTree(ctx, {
+            archetype: spec.archetype,
+            blossom,
+            seed: mix(seed, 0x200 + slot),
+            leafDensity: rung.leafDensity,
+            detail: rung.distant ? 'distant' : 'full',
+            base: rung.base,
+            height:
+              (blossom && spec.archetype === 'broadleaf' ? 5 : DEFAULT_HEIGHT[spec.archetype]) *
+              spec.heightK,
+          })
+        ),
+      });
+      trees.set(key, built);
+      return built;
+    },
+
+    shrub(i: number): ProtoSet {
+      const hit = shrubs.get(i);
+      if (hit) return hit;
+      const built = keep({
+        slot: 'canopy',
+        hue: (i / 4) * 2 - 1,
+        parts: prototype(kit, mix(seed, 0x300 + i), (ctx) =>
+          buildUnderstory(ctx, { kind: kit.vegetation.understory, seed: mix(seed, 0x400 + i) })
+        ),
+      });
+      shrubs.set(i, built);
+      return built;
+    },
+
+    bank(i: number): ProtoSet {
+      const hit = banks.get(i);
+      if (hit) return hit;
+      const built = keep({
+        slot: 'willow',
+        hue: i / 1.5 - 1,
+        parts: prototype(kit, mix(seed, 0x500 + i), (ctx) =>
+          buildTree(ctx, {
+            archetype: 'willow',
+            seed: mix(seed, 0x520 + i),
+            leafDensity: NEAR_LEAF_DENSITY,
+            height: DEFAULT_HEIGHT.willow * (0.82 + i * 0.13),
+          })
+        ),
+      });
+      banks.set(i, built);
+      return built;
+    },
+
+    materialFor(proto: Prototype, set: ProtoSet): Material {
+      if (proto.slot === 'canopy') return foliageSlots[set.slot];
+      if (proto.slot === 'lawn') return lawnMaterial;
+      if (proto.slot === 'stone') return stoneMaterial;
+      return barkMaterial;
+    },
+
+    depthFor(proto: Prototype, set: ProtoSet): MeshDepthMaterial | null {
+      if (proto.slot !== 'canopy') return null;
+      return set.slot === 'conifer' ? coniferDepth : canopyDepth;
+    },
+
+    tint(rng: Rng, bias: number): Color {
+      return canopyTint(rng, kit.vegetation.hueJitter, bias);
+    },
+
+    dispose(): void {
+      for (const g of owned) g.dispose();
+      for (const m of Object.values(foliageSlots)) m.dispose();
+      barkMaterial.dispose();
+      lawnMaterial.dispose();
+      stoneMaterial.dispose();
+      canopyDepth.dispose();
+      coniferDepth.dispose();
+      dapple.dispose();
+    },
+  };
+}
+
+export function distanceToPolylineSq(x: number, z: number, points: Polyline): number {
   let best = Infinity;
   for (let i = 0; i + 3 < points.length; i += 2) {
     const ax = points[i]!;
@@ -321,7 +599,7 @@ function distanceToPolylineSq(x: number, z: number, points: Polyline): number {
   return best;
 }
 
-function insideRect(
+export function insideRect(
   x: number,
   z: number,
   cx: number,
@@ -378,88 +656,7 @@ export function buildWorldVegetation(
     return 0.32 + 0.68 * (1 - k * k * (3 - 2 * k));
   };
 
-  /**
-   * Which archetype each prototype slot plants, weighted rather than alternating.
-   *
-   * A straight primary/secondary alternation gave the temperate town 50% conifers. REFERENCE-SPEC
-   * 3.1 calls the conifer "the darkest large mass allowed" and 13 uses it as an accent against
-   * deciduous canopies and willows; at half the population it stops being contrast and becomes the
-   * biome. One in four is the reference proportion.
-   *
-   * TWENTY slots, not five. Five prototypes over a street of forty trees is a repeat every fifth
-   * tree — close enough together to be seen, and no amount of per-instance yaw and scale hides two
-   * identical crowns twenty metres apart. Twenty is past the point where the eye can find the
-   * period. They cost twenty vertex buffers, once, for the whole world.
-   *
-   * The pattern below is a period of ten, run twice. Per ten: six of the biome's secondary (the
-   * deciduous shade tree in temperate), two primary (the conifer accent), one drawn from the kit's
-   * remaining archetype list, and one blossom — REFERENCE-SPEC 6.4 puts blossom at about six per
-   * frame, and `buildWorldVegetation` had never planted a single one because there was no material
-   * slot for it and no archetype entry that asked for it.
-   */
-  const primary = kit.vegetation.primary;
-  const secondary = kit.vegetation.secondary;
-  /** Archetypes the kit lists beyond its two staples, minus the two that are placed by hand. */
-  const extras = kit.vegetation.archetypes.filter(
-    (a) => a !== primary && a !== secondary && a !== 'willow' && a !== 'bare'
-  );
-  const PATTERN = ['S', 'S', 'P', 'S', 'X', 'S', 'S', 'P', 'B', 'S'] as const;
-  const SLOTS = 20;
-
-  interface SlotSpec {
-    archetype: TreeArchetype;
-    blossom: boolean;
-    heightK: number;
-    hue: number;
-  }
-  const specs: SlotSpec[] = [];
-  for (let i = 0; i < SLOTS; i++) {
-    const code = PATTERN[i % PATTERN.length]!;
-    let archetype = secondary;
-    let blossom = false;
-    if (code === 'P') archetype = primary;
-    else if (code === 'X') {
-      // Indexed by which PASS through the pattern this is, not by slot number: `i % extras.length`
-      // with a pattern of period ten and an even-length extras list picks the same archetype every
-      // time, so temperate got two cypresses and never an olive.
-      const pass = Math.floor(i / PATTERN.length);
-      archetype = extras.length ? extras[pass % extras.length]! : secondary;
-    }
-    else if (code === 'B') {
-      // One blossom slot in twenty, not one in ten: the pattern's period is ten and it runs twice,
-      // so the second pass demotes its blossom back to a shade tree. REFERENCE-SPEC 6.4 caps
-      // blossom at about six per frame and 13 uses exactly that; at one slot in ten the temperate
-      // frame carried a dozen, which turns the one saturated accent vegetation gets into a
-      // background colour.
-      if (kit.vegetation.blossom && i < PATTERN.length) blossom = true;
-      else archetype = extras.length ? extras[i % extras.length]! : secondary;
-    }
-    // Height and hue walk the range on coprime strides, so consecutive slots never land close to
-    // each other and the twenty together cover the interval evenly.
-    const hStep = ((i * 7) % SLOTS) / (SLOTS - 1);
-    const cStep = ((i * 9) % SLOTS) / (SLOTS - 1);
-    specs.push({
-      archetype,
-      blossom,
-      // 0.7 to 1.3 of the archetype's reference height. A canopy's plan diameter is a fixed
-      // fraction of its height, so this is also the spread of the silhouette the camera reads.
-      // Blossom gets a narrower band ending at parity: REFERENCE-SPEC 6.4 puts it at 5 m against
-      // the shade tree's 9, and a 30 % oversize blossom standing alone on open lawn was the largest
-      // and the most saturated object in the frame — the accent outranking everything it accents.
-      heightK: blossom ? 0.78 + hStep * 0.24 : 0.7 + hStep * 0.6,
-      hue: cStep * 2 - 1,
-    });
-  }
-
-  /**
-   * Leaf-cluster density for the near tier.
-   *
-   * The sheet's trees are authored at 1.0, which is 70k triangles for a shade tree — right for a
-   * 300 px asset shot and wrong for a thousand of them in one frame. Cluster count is the only knob
-   * that scales cost smoothly without touching silhouette, armature or the crown's light gradient,
-   * so the world takes the same geometry at a lower coverage rather than a different tree.
-   */
-  const NEAR_LEAF_DENSITY = 0.34;
+  const specs = treeSlotSpecs(kit);
 
   const protoSets: ProtoSet[] = specs.map((spec, i) => ({
     slot: foliageSlotFor(spec.archetype, spec.blossom),

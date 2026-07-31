@@ -47,6 +47,14 @@ export const CAMERA_PRESETS: Record<string, CameraPreset> = {
 
 const SMOOTH_EPSILON = 1e-4;
 
+/** The four corners of the frame, in normalised device coordinates. */
+const NDC_CORNERS: readonly (readonly [number, number])[] = [
+  [-1, -1],
+  [1, -1],
+  [-1, 1],
+  [1, 1],
+];
+
 export class IsoCamera {
   readonly camera: PerspectiveCamera;
   preset: CameraPreset;
@@ -175,6 +183,65 @@ export class IsoCamera {
   /** Ground-plane extents currently visible, for shadow-frustum and fog-stamp fitting. */
   visibleGroundRadius(): number {
     return this.preset.viewSpan * 1.35;
+  }
+
+  /**
+   * Axis-aligned world bounds of the ground the frame can actually see, expanded by `margin`.
+   *
+   * This is what the world streams against, and it is much tighter than `groundRadius()`: the
+   * visible ground is a QUAD, and on a portrait frame at this elevation the disc that contains it
+   * has twice its area. Building the difference is building half the world for nothing.
+   *
+   * The four frustum corners are unprojected and dropped onto y = 0 rather than the shape being
+   * derived in closed form, so the answer stays correct for any preset — a lower elevation, a
+   * turned azimuth or a different aspect all just move the corners. A ray that would pass above the
+   * horizon is clamped to a few focus distances out, which no shipped preset reaches but which stops
+   * a mis-set elevation from asking for an infinite world.
+   *
+   * The margin is not decoration. A building whose base is past the top edge still shows its roof:
+   * at 52 degrees of elevation the top of a 15 m mass reads about 12 m of ground further away than
+   * its footprint, and its shadow reaches further still. Under-margining shows as a horizon that
+   * pops in.
+   */
+  groundBounds(
+    margin = 0,
+    out: { minX: number; minZ: number; maxX: number; maxZ: number } = {
+      minX: 0,
+      minZ: 0,
+      maxX: 0,
+      maxZ: 0,
+    }
+  ): { minX: number; minZ: number; maxX: number; maxZ: number } {
+    const cam = this.camera;
+    cam.updateMatrixWorld();
+    const maxT = this.distanceForSpan() * 3;
+    let minX = Infinity;
+    let minZ = Infinity;
+    let maxX = -Infinity;
+    let maxZ = -Infinity;
+    for (const [nx, ny] of NDC_CORNERS) {
+      this.scratch.set(nx, ny, 0.5).unproject(cam).sub(cam.position);
+      const len = this.scratch.length() || 1;
+      this.scratch.multiplyScalar(1 / len);
+      const t = this.scratch.y < -1e-4 ? Math.min(-cam.position.y / this.scratch.y, maxT) : maxT;
+      const x = cam.position.x + this.scratch.x * t;
+      const z = cam.position.z + this.scratch.z * t;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (z < minZ) minZ = z;
+      if (z > maxZ) maxZ = z;
+    }
+    // The target is inside the frame by construction; including it makes the result safe even if a
+    // degenerate projection collapses the corners.
+    minX = Math.min(minX, this.target.x);
+    maxX = Math.max(maxX, this.target.x);
+    minZ = Math.min(minZ, this.target.z);
+    maxZ = Math.max(maxZ, this.target.z);
+    out.minX = minX - margin;
+    out.minZ = minZ - margin;
+    out.maxX = maxX + margin;
+    out.maxZ = maxZ + margin;
+    return out;
   }
 
   /**

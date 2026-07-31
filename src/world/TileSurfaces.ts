@@ -242,6 +242,7 @@ export function buildTileSurfaces(
    * both — the macro map does that job properly, with real noise instead of three summed sines, and
    * running the two together only double-counts the drift.
    */
+  const __t0 = performance.now();
   const swardTex: Texture = textures.grass(kit.id, kit.textures.ground, 1, 'sward');
   const meadowTex: Texture = textures.grass(kit.id, kit.textures.ground, 1, 'meadow');
   const mownTex: Texture = textures.grass(kit.id, kit.textures.ground, 1, 'mown');
@@ -251,6 +252,8 @@ export function buildTileSurfaces(
   const stoneTex: Texture = textures.ashlar(kit.id, kit.textures.stone);
   const waterTex: Texture = textures.water(kit.id, kit.textures.water);
 
+  console.info(`raidfit: surface textures ${(performance.now() - __t0).toFixed(0)} ms`);
+  const __t1 = performance.now();
   const materials = {
     ground: new RampMaterial({
       groundBlend: {
@@ -296,6 +299,8 @@ export function buildTileSurfaces(
     stone: new RampMaterial({ map: stoneTex, vertexAO: true, rim: 0.8 }),
   };
 
+  console.info(`raidfit: surface materials ${(performance.now() - __t1).toFixed(0)} ms`);
+  const __t2 = performance.now();
   const meshes: Mesh[] = [];
   const waterMaterials: WaterMaterial[] = [];
   let triangles = 0;
@@ -334,5 +339,6 @@ export function buildTileSurfaces(
     meshes.push(mesh);
   }
 
+  console.info(`raidfit: surface assemble ${(performance.now() - __t2).toFixed(0)} ms`);
   return { meshes, stats: { triangles, draws: meshes.length }, water: waterMaterials };
 }
